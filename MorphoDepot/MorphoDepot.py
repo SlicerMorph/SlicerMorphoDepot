@@ -188,7 +188,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
 
         uiWidget = slicer.util.loadUI(os.path.normpath(self.resourcePath("UI/MorphoDepotCreate.ui")))
         uiWidget.setMRMLScene(slicer.mrmlScene)
-        self.tabWidget.addTab(uiWidget, "Create")
+        self.createTabIndex = self.tabWidget.addTab(uiWidget, "Create")
         self.createUI = slicer.util.childWidgetVariables(uiWidget)
 
         uiWidget = slicer.util.loadUI(os.path.normpath(self.resourcePath("UI/MorphoDepotRelease.ui")))
@@ -268,7 +268,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
 
         self.configureUI.creatorUser = qt.QLineEdit()
         self.configureUI.creatorUser.text = slicer.util.settingsValue("MorphoDepot/testingCreatorUser", "")
-        self.configureUI.creatorUser.toolTip = "GitHub user account for creating repositories in tests. Must be logged in via 'gh auth login' with 'delete_repo' scope."
+        self.configureUI.creatorUser.toolTip = "GitHub user account for creating repositories in tests. Must be logged in via 'gh auth login'."
         testingLayout.addRow("Creator:", self.configureUI.creatorUser)
 
         self.configureUI.annotatorUser = qt.QLineEdit()
@@ -313,9 +313,27 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.createUI.accessionLayout = qt.QVBoxLayout()
         self.createUI.accessionCollapsibleButton.setLayout(self.createUI.accessionLayout)
         self.createUI.createRepository.enabled = False
-        validationCallback = lambda valid, w=self.createUI.createRepository: w.setEnabled(valid)
-        self.createUI.accessionForm = MorphoDepotAccessionForm(validationCallback=validationCallback)
+        # "Create" now stages the repo privately on the personal account; going public (and
+        # transferring to an org) happens later at the Go-live gate below.
+        self.createUI.createRepository.text = "Create (stage privately)"
+        self.createUI.accessionForm = MorphoDepotAccessionForm(validationCallback=self._onAccessionFormValidated)
         self.createUI.accessionLayout.addWidget(self.createUI.accessionForm.topWidget)
+        # The destination dropdown is filled lazily the first time the Create tab is shown
+        # (see populateOwnerSelector / onCurrentTabChanged).
+        self.ownerSelectorPopulated = False
+        self._stagedNameWithOwner = None
+        self._stagedReposListPopulated = False
+        self._stagedReposByItem = {}
+        # Set when the form was pre-filled by resuming an existing staged repo, so Publish
+        # applies edits (saveStagedRepoEdits) rather than treating the form as a new repo.
+        self._resumedForEdit = False
+        self._resumedOriginalAccession = {}
+        # The color/baseline nodes auto-loaded on resume (and a content signature of the
+        # baseline), so Save/Publish can tell "kept unchanged" from "replaced", and can detect
+        # (and refuse) an in-place edit of the loaded segmentation.
+        self._resumedColorNode = None
+        self._resumedBaselineNode = None
+        self._resumedBaselineSignature = ""
 
         # Add a developer mode button to fill the form with test data
         self.createUI.fillFormForTestingButton = qt.QPushButton("Fill Form for Testing")
@@ -341,6 +359,109 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.createUI.screenshotCountLabel = qt.QLabel("0 screenshots taken")
         self.createUI.screenshotsLayout.addRow(self.createUI.screenshotCountLabel)
         self.createUI.verticalLayout.insertWidget(1, self.createUI.screenshotsCollapsibleButton)
+
+        # === REGION 1: Unpublished staged repositories (top of the Create tab) ===
+        # A live list (queried from GitHub by the `morphodepot-staging` topic) of repos staged
+        # privately but not yet published — the recovery path after a crash / close / different
+        # computer (no client state).  Double-click to load for editing; right-click for actions.
+        self.createUI.stagedReposCollapsible = ctk.ctkCollapsibleButton()
+        self.createUI.stagedReposCollapsible.text = "Existing yet to be published (staged only) Repos"
+        self.createUI.stagedReposCollapsible.collapsed = False
+        stagedReposLayout = qt.QVBoxLayout(self.createUI.stagedReposCollapsible)
+        stagedReposLayout.setContentsMargins(4, 4, 4, 4)
+        stagedReposLayout.setSpacing(4)
+        self.createUI.stagedReposList = qt.QListWidget()
+        self.createUI.stagedReposList.setToolTip(
+            "Repositories you staged privately but have not yet published. "
+            "Double-click one to load it for editing, or right-click for more actions. "
+            "Read live from GitHub, so it works from any computer.")
+        # Keep the list compact: cap its height and stop QListWidget's default Expanding
+        # vertical policy from claiming all the spare space in the tab layout.
+        self.createUI.stagedReposList.setFixedHeight(72)
+        self.createUI.stagedReposList.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Fixed)
+        self.createUI.stagedReposList.setContextMenuPolicy(qt.Qt.CustomContextMenu)
+        stagedReposLayout.addWidget(self.createUI.stagedReposList)
+        self.createUI.refreshStagedReposButton = qt.QPushButton("Refresh")
+        self.createUI.refreshStagedReposButton.toolTip = "Re-query GitHub for unpublished staged repositories."
+        stagedReposLayout.addWidget(self.createUI.refreshStagedReposButton)
+        self.createUI.verticalLayout.insertWidget(0, self.createUI.stagedReposCollapsible)
+
+        # === REGION 2 boundary: divider + dynamic header for the create/edit form ===
+        self.createUI.createSectionDivider = qt.QFrame()
+        self.createUI.createSectionDivider.setFrameShape(qt.QFrame.HLine)
+        self.createUI.createSectionDivider.setFrameShadow(qt.QFrame.Sunken)
+        self.createUI.createSectionDivider.setLineWidth(2)
+        self.createUI.createSectionHeader = qt.QLabel("Create a new repository")
+        headerFont = self.createUI.createSectionHeader.font
+        headerFont.setBold(True)
+        headerFont.setPointSize(headerFont.pointSize() + 3)
+        self.createUI.createSectionHeader.setFont(headerFont)
+        self.createUI.createSectionHeader.setAlignment(qt.Qt.AlignCenter)
+        self.createUI.verticalLayout.insertWidget(1, self.createUI.createSectionHeader)
+        self.createUI.verticalLayout.insertWidget(1, self.createUI.createSectionDivider)
+
+        # REGION 2 action: "Update Repository (staged)" sits beside the form's "Create (stage
+        # privately)" button (shown only when editing a reopened repo).  Both are form actions
+        # and belong with the form — NOT in the Go-live section.
+        self.createUI.saveEditsButton = qt.QPushButton("Update Repository (staged)")
+        self.createUI.saveEditsButton.toolTip = (
+            "Save your edits to the staged repository without publishing it. You can keep "
+            "editing and updating, then Publish when ready.")
+        self.createUI.saveEditsButton.visible = False
+        createButtonIndex = self.createUI.verticalLayout.indexOf(self.createUI.createRepository)
+        self.createUI.verticalLayout.insertWidget(createButtonIndex + 1, self.createUI.saveEditsButton)
+
+        # === REGION 3: Make Repository Public (shown only once a repo is staged) ===
+        # Separated from the form above by a divider + bold centered header (the SAME treatment
+        # as the form header), then a bounded box holding ONLY publishing controls: the contact
+        # email (required), the publish destination, and Publish / Discard.
+        self.createUI.goLiveDivider = qt.QFrame()
+        self.createUI.goLiveDivider.setFrameShape(qt.QFrame.HLine)
+        self.createUI.goLiveDivider.setFrameShadow(qt.QFrame.Sunken)
+        self.createUI.goLiveDivider.setLineWidth(2)
+        self.createUI.goLiveHeader = qt.QLabel("Make Repository Public (Publish)")
+        goLiveHeaderFont = self.createUI.goLiveHeader.font
+        goLiveHeaderFont.setBold(True)
+        goLiveHeaderFont.setPointSize(goLiveHeaderFont.pointSize() + 3)
+        self.createUI.goLiveHeader.setFont(goLiveHeaderFont)
+        self.createUI.goLiveHeader.setAlignment(qt.Qt.AlignCenter)
+        self.createUI.goLiveGroup = qt.QGroupBox("")
+        goLiveLayout = qt.QVBoxLayout(self.createUI.goLiveGroup)
+        self.createUI.stagingStatusLabel = qt.QLabel("")
+        self.createUI.stagingStatusLabel.setWordWrap(True)
+        goLiveLayout.addWidget(self.createUI.stagingStatusLabel)
+        # Contact email — required to publish, submitted to the MorphoDepot contact list at
+        # publish time (never for staged-only repos).
+        emailTooltip = ("Your email is added to the MorphoDepot contact list so you can be "
+                        "notified about new features and updates. It is submitted only when you "
+                        "publish, and is not stored in the repository.")
+        self.createUI.goLiveEmailLabel = qt.QLabel("Contact email (required to publish):")
+        self.createUI.goLiveEmailLabel.toolTip = emailTooltip
+        goLiveLayout.addWidget(self.createUI.goLiveEmailLabel)
+        self.createUI.goLiveEmail = qt.QLineEdit()
+        self.createUI.goLiveEmail.toolTip = emailTooltip
+        goLiveLayout.addWidget(self.createUI.goLiveEmail)
+        # Publish destination (personal account or an organization); hidden unless the user is
+        # in at least one organization (populateOwnerSelector decides).
+        self.createUI.destinationQuestion = FormComboBoxQuestion("Publish destination:")
+        self.createUI.destinationQuestion.questionBox.toolTip = (
+            "When you click 'Publish / Go live', the repository is made public under this owner. "
+            "Choose your personal account or an organization you belong to.")
+        self.createUI.destinationQuestion.questionBox.setVisible(False)
+        self.createUI.destinationPersonalLogin = ""
+        goLiveLayout.addWidget(self.createUI.destinationQuestion.questionBox)
+        goLiveButtonsLayout = qt.QHBoxLayout()
+        self.createUI.publishButton = qt.QPushButton("Publish / Go live")
+        self.createUI.publishButton.enabled = False
+        self.createUI.discardButton = qt.QPushButton("Discard")
+        self.createUI.discardButton.enabled = False
+        goLiveButtonsLayout.addWidget(self.createUI.publishButton)
+        goLiveButtonsLayout.addWidget(self.createUI.discardButton)
+        goLiveLayout.addLayout(goLiveButtonsLayout)
+        self.createUI.verticalLayout.addWidget(self.createUI.goLiveDivider)
+        self.createUI.verticalLayout.addWidget(self.createUI.goLiveHeader)
+        self.createUI.verticalLayout.addWidget(self.createUI.goLiveGroup)
+        self._setGoLiveZoneVisible(False)
 
         self.updateScreenshotCount()
         # Annotate
@@ -449,6 +570,13 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.configureUI.ghPath.comboBox().connect("currentTextChanged(QString)", self.onGhPathChanged)
         self.configureUI.reloadButton.clicked.connect(self.onReload)
         self.createUI.createRepository.clicked.connect(self.onCreateRepository)
+        self.createUI.saveEditsButton.clicked.connect(self.onSaveEdits)
+        self.createUI.publishButton.clicked.connect(self.onPublish)
+        self.createUI.discardButton.clicked.connect(self.onDiscard)
+        self.createUI.stagedReposList.itemDoubleClicked.connect(self.onStagedRepoActivated)
+        self.createUI.stagedReposList.customContextMenuRequested.connect(self.onStagedReposContextMenu)
+        self.createUI.refreshStagedReposButton.clicked.connect(lambda: self.refreshStagedReposList(force=True))
+        self.createUI.goLiveEmail.textChanged.connect(self._updatePublishEnabled)
         self.createUI.openRepository.clicked.connect(self.onOpenRepository)
         self.createUI.clearForm.clicked.connect(self.onClearForm)
         self.createUI.fillFormForTestingButton.clicked.connect(self.onFillFormForTesting)
@@ -485,6 +613,12 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
 
         self.updateRefreshButtonLabels()
 
+        # The currentChanged signal is connected after the tab index is restored above, so
+        # populate the destination dropdown here if the Create tab is the active one at launch.
+        if self.tabWidget.currentIndex == self.createTabIndex:
+            self.populateOwnerSelector()
+            self.refreshStagedReposList()
+
     def cleanup(self) -> None:
         """Called when the application closes and the module widget is destroyed."""
         self.removeObservers()
@@ -498,9 +632,363 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             else:
                 self.tabWidget.setTabEnabled(tabIndex, True)
 
+    def refreshStagedReposList(self, force=False):
+        """Populate the 'Unpublished staged repositories' list on the Create tab by querying
+        GitHub for repos carrying the `morphodepot-staging` topic (the source of truth).  The
+        query is lazy: it runs the first time the Create tab is shown and after stage/publish/
+        discard, or whenever `force` is set (the Refresh button)."""
+        listWidget = getattr(self.createUI, "stagedReposList", None)
+        if listWidget is None:
+            return
+        if self._stagedReposListPopulated and not force:
+            return
+        self._stagedReposByItem = {}
+        listWidget.clear()
+        try:
+            repos = self.logic.listStagedRepos()
+            self._stagedReposListPopulated = True
+        except Exception as e:
+            logging.warning(f"Could not list staged repositories: {e}")
+            return
+        if not repos:
+            placeholder = qt.QListWidgetItem("(none — repos you stage privately appear here)")
+            placeholder.setFlags(qt.Qt.NoItemFlags)
+            listWidget.addItem(placeholder)
+            return
+        for repo in repos:
+            item = qt.QListWidgetItem(repo.get("summary") or repo.get("nameWithOwner", ""))
+            listWidget.addItem(item)
+            self._stagedReposByItem[item] = repo
+
+    def onStagedReposContextMenu(self, point):
+        """Right-click menu on an unpublished staged repo: open it on GitHub, or load it to
+        edit (same as double-click)."""
+        listWidget = self.createUI.stagedReposList
+        item = listWidget.itemAt(point)
+        if item is None:
+            return
+        repo = self._stagedReposByItem.get(item)
+        if not repo:
+            return
+        menu = qt.QMenu(listWidget)
+        openAction = menu.addAction("Open the private repo in browser")
+        openAction.connect("triggered()", lambda r=repo: self._openStagedRepoInBrowser(r))
+        editAction = menu.addAction("Load the repo to edit")
+        editAction.connect("triggered()", lambda i=item: self.onStagedRepoActivated(i))
+        menu.exec_(listWidget.mapToGlobal(point))
+
+    def _openStagedRepoInBrowser(self, repo):
+        nameWithOwner = repo.get("nameWithOwner")
+        if nameWithOwner:
+            qt.QDesktopServices.openUrl(qt.QUrl(f"https://github.com/{nameWithOwner}"))
+
+    def onStagedRepoActivated(self, item):
+        """Resume the repo double-clicked in the unpublished list: clone it, pre-fill the
+        questionnaire from its committed metadata so the curator can review/correct it, and
+        restore the Publish / Discard gate.  Edits are applied at Publish (saveStagedRepoEdits)."""
+        repo = self._stagedReposByItem.get(item)
+        if not repo:
+            return
+        try:
+            with slicer.util.tryWithErrorDisplay(_("Trouble resuming staged repository"), waitCursor=True):
+                slicer.util.showStatusMessage("Resuming staged repository (cloning)...")
+                accession = self.logic.resumeStagedRepo(repo)
+
+                # Pre-fill the form from the repo's accession data and remember it (for the
+                # volume-derived fields the form does not carry, e.g. scan dimensions/spacing).
+                self._resumedOriginalAccession = accession or {}
+                self._resumedForEdit = True
+                if accession:
+                    self.createUI.accessionForm.setAccessionData(accession)
+                # The repo already exists; its name cannot be changed by editing the field.
+                self.createUI.accessionForm.questions["githubRepoName"].answerText.readOnly = True
+
+                # Load the submitted data into the scene so Subject Data looks exactly as
+                # submitted: source volume (from the v1 release asset, shown read-only), and the
+                # color table and baseline segmentation committed in the repo (both editable).
+                nameWithOwner = self.logic.stagingContext.get("personalNameWithOwner")
+                self._loadResumedSubjectData(self.logic.stagingContext.get("repoDir"), nameWithOwner)
+        except Exception:
+            slicer.util.showStatusMessage("")
+            return
+        slicer.util.showStatusMessage("")
+
+        self._enterGoLiveState(repo.get("nameWithOwner"))
+
+    def _loadResumedSubjectData(self, repoDir, nameWithOwner):
+        """On resume, load the submitted data into the scene and fill the Subject Data
+        selectors: the source volume (downloaded from the private repo's v1 release asset, then
+        shown read-only — it cannot be changed), and the color table and baseline segmentation
+        committed in the repo (both editable)."""
+        self._resumedColorNode = None
+        self._resumedBaselineNode = None
+        if not repoDir or not os.path.exists(repoDir):
+            return
+
+        # Source volume: download the v1 release asset (auth'd via gh for the private repo) into
+        # a cache dir OUTSIDE the git working tree (so it is never committed), load it, and show
+        # it read-only.
+        sourceVolumeName = ""
+        pointerPath = os.path.join(repoDir, "source_volume")
+        if os.path.exists(pointerPath):
+            try:
+                with open(pointerPath) as fp:
+                    base = os.path.basename(fp.read().strip())
+                sourceVolumeName = base[:-5] if base.endswith(".nrrd") else base
+            except Exception:
+                pass
+        self.createUI.inputSelector.setCurrentNode(None)
+        self.createUI.inputSelector.enabled = False
+        self.createUI.inputSelector.noneDisplay = (
+            f"{sourceVolumeName} (existing source volume — not editable)" if sourceVolumeName
+            else "(existing source volume — not editable)")
+        if sourceVolumeName and nameWithOwner:
+            try:
+                cacheDir = os.path.join(self.logic.localRepositoryDirectory(), "MorphoDepotCaches",
+                                        "Volumes", nameWithOwner.replace("/", "-"))
+                os.makedirs(cacheDir, exist_ok=True)
+                nrrdPath = os.path.join(cacheDir, f"{sourceVolumeName}.nrrd")
+                if not os.path.exists(nrrdPath):
+                    slicer.util.showStatusMessage("Downloading source volume...")
+                    self.logic.gh(f"release download v1 --repo {nameWithOwner} "
+                                  f"--pattern {sourceVolumeName}.nrrd --dir {cacheDir} --clobber")
+                volumeNode = slicer.util.loadVolume(nrrdPath)
+                self.createUI.inputSelector.setCurrentNode(volumeNode)
+            except Exception as e:
+                logging.warning(f"Could not load staged source volume: {e}")
+
+        # Color table: load the committed CSV and select it.
+        try:
+            csvFiles = [f for f in os.listdir(repoDir) if f.endswith(".csv")]
+            if csvFiles:
+                self._resumedColorNode = slicer.util.loadColorTable(os.path.join(repoDir, csvFiles[0]))
+                self.createUI.colorSelector.setCurrentNode(self._resumedColorNode)
+        except Exception as e:
+            logging.warning(f"Could not load staged color table: {e}")
+
+        # Baseline segmentation: load it if the repo has one.
+        baselinePath = os.path.join(repoDir, "baseline.seg.nrrd")
+        if os.path.exists(baselinePath):
+            try:
+                self._resumedBaselineNode = slicer.util.loadSegmentation(baselinePath)
+                self.createUI.segmentationSelector.setCurrentNode(self._resumedBaselineNode)
+            except Exception as e:
+                logging.warning(f"Could not load staged baseline segmentation: {e}")
+
+        # Snapshot the baseline's content signature so a later Save can detect (and refuse) an
+        # in-place edit of the loaded segmentation.
+        self._resumedBaselineSignature = self._segmentationContentSignature(self._resumedBaselineNode)
+
+        # Screenshots: load the committed set into the screenshot list so Take/Review work on
+        # the full set and edits (add/remove/recaption) are saved.  Copy the PNGs to a cache
+        # dir OUTSIDE the git tree so their paths survive the repo being rewritten on save.
+        self.screenshots = []
+        captionsPath = os.path.join(repoDir, "screenshots", "captions.json")
+        if os.path.exists(captionsPath):
+            try:
+                with open(captionsPath) as fp:
+                    captions = json.load(fp)
+                shotCacheDir = os.path.join(self.logic.localRepositoryDirectory(), "MorphoDepotCaches",
+                                            "StagedScreenshots", (nameWithOwner or "").replace("/", "-"))
+                if os.path.exists(shotCacheDir):
+                    shutil.rmtree(shotCacheDir, ignore_errors=True)
+                os.makedirs(shotCacheDir, exist_ok=True)
+                for name in sorted(captions.keys()):
+                    src = os.path.join(repoDir, "screenshots", name)
+                    if os.path.exists(src):
+                        dst = os.path.join(shotCacheDir, name)
+                        shutil.copy(src, dst)
+                        self.screenshots.append({"path": dst, "caption": captions[name]})
+            except Exception as e:
+                logging.warning(f"Could not load staged screenshots: {e}")
+        self.updateScreenshotCount()
+
+    def _segmentationContentSignature(self, segNode, referenceVolume=None):
+        """A content signature of a segmentation (segment ids + binary-labelmap voxels), used
+        to detect whether the loaded baseline was edited in the scene.  Hashes content, not
+        file bytes, so it is robust to save non-determinism.  A referenceVolume is required to
+        sample each segment's labelmap (the segmentation carries no reference geometry of its
+        own) — the source volume serves that role.  Falls back to the source volume if not
+        given, then to a modified-time string only as a last resort."""
+        if segNode is None:
+            return ""
+        if referenceVolume is None:
+            referenceVolume = self.createUI.inputSelector.currentNode()
+        try:
+            import numpy as np
+            import hashlib
+            seg = segNode.GetSegmentation()
+            h = hashlib.sha256()
+            for i in range(seg.GetNumberOfSegments()):
+                segId = seg.GetNthSegmentID(i)
+                h.update(segId.encode("utf-8"))
+                arr = slicer.util.arrayFromSegmentBinaryLabelmap(segNode, segId, referenceVolume)
+                if arr is not None:
+                    h.update(str(arr.shape).encode("utf-8"))
+                    h.update(np.ascontiguousarray(arr).tobytes())
+            return h.hexdigest()
+        except Exception as e:
+            logging.warning(f"Could not compute segmentation content signature: {e}")
+            try:
+                return f"mtime:{segNode.GetSegmentation().GetMTime()}"
+            except Exception:
+                return f"mtime:{segNode.GetMTime()}"
+
+    def _baselineWasEditedInScene(self, node):
+        """True if the loaded baseline was edited in the scene since it was read from disk.
+
+        Two-stage check.  Stage 1 (fast gate): Slicer's storable-node GetModifiedSinceRead()
+        — the exact flag the Save Data dialog uses; vtkMRMLSegmentationNode bumps its
+        StorableModifiedTime on segment edits.  If it is false there is no storable change at
+        all, so the baseline is unedited.  Stage 2 (confirm): when the flag is true it may also
+        have been tripped by generating a closed-surface representation for the 3D view (also a
+        RepresentationModified event), so we confirm against a content signature of the source
+        binary labelmap — which a display-only representation change does NOT alter — to avoid
+        a false 'modified' on a repo the curator merely viewed."""
+        try:
+            if not node.GetModifiedSinceRead():
+                return False
+        except Exception as e:
+            logging.warning(f"GetModifiedSinceRead unavailable, using content hash only: {e}")
+        return self._segmentationContentSignature(node) != self._resumedBaselineSignature
+
+    def _gatherStagedEdits(self):
+        """Assemble the edits to persist: the questionnaire (always), plus a REPLACEMENT color
+        table or baseline segmentation only when a *different* node has been selected.  The
+        accession form is the only thing meant to be edited on the reopen flow — the color
+        table and baseline are replaced by providing a finished file, not tweaked in place.
+        scanDimensions/scanSpacing carry over from the committed file (volume is not editable).
+
+        Returns (editedData, newColorTable, newSegmentation), or None to ABORT because the
+        loaded baseline was modified in the scene (the user is warned to reload the original
+        instead of editing here)."""
+        # Compare nodes by ID, not Python identity: Slicer's qMRMLNodeComboBox.currentNode()
+        # returns a fresh PythonQt wrapper each call, so `is` is unreliable.
+        loadedBaselineID = self._resumedBaselineNode.GetID() if self._resumedBaselineNode else None
+        currentBaseline = self.createUI.segmentationSelector.currentNode()
+        newSegmentation = None
+        if currentBaseline is not None and currentBaseline.GetID() == loadedBaselineID:
+            # Same node we loaded: allowed only if untouched — editing here is not supported.
+            if self._baselineWasEditedInScene(currentBaseline):
+                slicer.util.warningDisplay(
+                    "The baseline segmentation appears to have been modified in this scene.\n\n"
+                    "Editing the segmentation here is not supported.  Reopen the repository to "
+                    "reload the original from disk, or prepare the finished segmentation "
+                    "separately and load it as a new node, then try again.",
+                    windowTitle="Segmentation modified")
+                return None
+        elif currentBaseline is not None:
+            # A different, deliberately-provided node: use it as the replacement.
+            newSegmentation = currentBaseline
+
+        editedData = self.createUI.accessionForm.accessionData()
+        for preservedKey in ("scanDimensions", "scanSpacing"):
+            if preservedKey in self._resumedOriginalAccession:
+                editedData[preservedKey] = self._resumedOriginalAccession[preservedKey]
+
+        loadedColorID = self._resumedColorNode.GetID() if self._resumedColorNode else None
+        currentColor = self.createUI.colorSelector.currentNode()
+        newColorTable = currentColor if (currentColor is not None and currentColor.GetID() != loadedColorID) else None
+        return editedData, newColorTable, newSegmentation
+
+    def _rebaselineResumedNodes(self):
+        """After a save, treat the now-current color/baseline as the new baseline so a
+        subsequent save with no further change is correctly a no-op."""
+        self._resumedColorNode = self.createUI.colorSelector.currentNode()
+        self._resumedBaselineNode = self.createUI.segmentationSelector.currentNode()
+        self._resumedBaselineSignature = self._segmentationContentSignature(self._resumedBaselineNode)
+
+    def _exitResumeMode(self):
+        """Undo the resume-mode UI state so the Subject Data section works normally again for
+        creating a new repository."""
+        self._resumedForEdit = False
+        self._resumedColorNode = None
+        self._resumedBaselineNode = None
+        self._resumedBaselineSignature = ""
+        self.createUI.inputSelector.enabled = True
+        self.createUI.inputSelector.noneDisplay = "Select a source volume (required)"
+        self.createUI.accessionForm.questions["githubRepoName"].answerText.readOnly = False
+        self._updateCreateSectionHeader()
+
+    def _updateCreateSectionHeader(self):
+        """The section header below the staged-repos list reflects what the form is doing:
+        creating a new repository, or editing a reopened staged one."""
+        if self._resumedForEdit and self._stagedNameWithOwner:
+            self.createUI.createSectionHeader.text = f"Editing staged repository: {self._stagedNameWithOwner}"
+        else:
+            self.createUI.createSectionHeader.text = "Create a new repository"
+
     def onCurrentTabChanged(self,index):
         qt.QSettings().setValue("MorphoDepot/tabIndex", index)
         self.updateRefreshButtonLabels()
+        if index == self.createTabIndex:
+            if not self.ownerSelectorPopulated:
+                self.populateOwnerSelector()
+            self.refreshStagedReposList()
+
+    def _onAccessionFormValidated(self, valid):
+        """Enable the "Create (stage privately)" button when the accession form is valid — but
+        only while no repo is staged (the Go-live gate hidden).  Once a repo is staged or open
+        for editing, the gate is visible and Create is locked (Update/Publish are the actions)."""
+        # The accession form's first validateForm() fires during setup, before goLiveGroup is
+        # built — treat a missing gate as "not staged" (create mode).
+        goLiveGroup = getattr(self.createUI, "goLiveGroup", None)
+        gateVisible = goLiveGroup is not None and goLiveGroup.visible
+        self.createUI.createRepository.enabled = valid and not gateVisible
+
+    def _setGoLiveZoneVisible(self, visible):
+        """Show/hide the entire 'Make Repository Public' zone — divider + bold header + box —
+        as one unit, so the separator never dangles when the publish controls are hidden."""
+        self.createUI.goLiveDivider.visible = visible
+        self.createUI.goLiveHeader.visible = visible
+        self.createUI.goLiveGroup.visible = visible
+
+    def _updatePublishEnabled(self, *args):
+        """Publish is enabled only when the Go-live gate is open AND a syntactically valid
+        contact email has been entered (mandatory).  A fake-but-valid address is accepted — we
+        validate format, not deliverability — so a user who declines to share can still proceed,
+        but only by making a deliberate, valid-looking entry."""
+        emailRegex = r'^[^@\s]+@[^@\s]+\.[^@\s]+$'
+        email = self.createUI.goLiveEmail.text.strip()
+        self.createUI.publishButton.enabled = bool(
+            self.createUI.goLiveGroup.visible and re.match(emailRegex, email))
+
+    def populateOwnerSelector(self):
+        """Fill the Create-tab destination dropdown with the active user's account and orgs.
+
+        Detects the organizations the logged-in GitHub account belongs to; if there are any,
+        the destination selector offers a choice between the personal account and each
+        organization (consulted at Go-live).  Runs lazily the first time the Create tab is
+        opened; transient failures (e.g. gh not yet configured) leave the flag unset so it
+        retries next time."""
+        destination = getattr(self.createUI, "destinationQuestion", None)
+        if destination is None:
+            return
+        try:
+            personal = self.logic.whoami()
+        except Exception as e:
+            logging.warning(f"Could not determine active GitHub user: {e}")
+            personal = ""
+        organizations = self.logic.userOrganizations() if personal else []
+        options = []
+        if personal:
+            options.append((f"{personal} (your personal account)", personal))
+        for org in organizations:
+            options.append((f"{org} (organization)", org))
+        destination.setOptions(options)
+        destination.questionBox.setVisible(bool(organizations))
+        self.createUI.destinationPersonalLogin = personal
+        self.ownerSelectorPopulated = bool(personal)
+
+    def selectedDestination(self):
+        """Return the chosen Go-live destination owner login, or '' if none resolved yet."""
+        destination = getattr(self.createUI, "destinationQuestion", None)
+        return destination.answer() if destination is not None else ""
+
+    def selectedDestinationIsOrganization(self):
+        """True when the chosen Go-live destination is an organization, not the personal account."""
+        owner = self.selectedDestination()
+        return bool(owner) and owner != getattr(self.createUI, "destinationPersonalLogin", "")
 
     def updateRefreshButtonLabels(self):
         """Suffix the Annotate/Review/Release Refresh GitHub buttons with the active gh user."""
@@ -556,10 +1044,14 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.configureUI.userEmailStatusLabel.visible = not bool(userEmail)
 
     # Create
-    def onCreateRepository(self):
+    def _collectAccessionInputs(self):
+        """Validate the Create-tab selections and assemble accessionData.
+
+        Returns (sourceVolume, colorTable, sourceSegmentation, accessionData) or None if
+        anything is missing/invalid or the user cancels the terminology prompt."""
         if self.createUI.inputSelector.currentNode() == None or self.createUI.colorSelector.currentNode() == None:
             slicer.util.errorDisplay("Need to select volume and color table")
-            return
+            return None
 
         sourceVolume = self.createUI.inputSelector.currentNode()
         sourceSegmentation = self.createUI.segmentationSelector.currentNode()
@@ -569,14 +1061,13 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         if re.fullmatch(validGithubAsset, sourceVolume.GetName()) is None:
             slicer.util.errorDisplay("Please rename volume.\n"
                 "Only alphanumerics, periods, hyphens and underscores accepted.")
-            return
+            return None
         if re.fullmatch(validGithubAsset, colorTable.GetName()) is None:
             slicer.util.errorDisplay("Please rename color table.\n"
                 "Only alphanumerics, periods, hyphens and underscores accepted.\n"
                 "Use the 'All nodes' tab of the Data module to access the color table and right-click to rename.")
-            return
+            return None
 
-        slicer.util.showStatusMessage(f"Creating...")
         accessionData = self.createUI.accessionForm.accessionData()
         accessionData['scanDimensions'] = str(sourceVolume.GetImageData().GetDimensions())
         accessionData['scanSpacing'] = str(sourceVolume.GetSpacing())
@@ -585,7 +1076,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             for colorIndex in range(1, colorTable.GetNumberOfColors()):
                 if colorTable.GetTerminologyAsString(colorIndex) == "~^^~^^~^^~~^^~^^~":
                     slicer.util.errorDisplay(f"Selected Color table is missing terminology for index {colorIndex}, {colorTable.GetColorName(colorIndex)}", windowTitle="Missing Terminology")
-                    return
+                    return None
         else:
             validTerminology = True
             for colorIndex in range(1, colorTable.GetNumberOfColors()):
@@ -598,53 +1089,219 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                     for colorIndex in range(1, colorTable.GetNumberOfColors()):
                         colorTable.SetTerminology(colorIndex, "SCT", "85756007", "Tissue", "SCT", "85756007", "Tissue")
                 else:
-                    return
+                    return None
 
+        return sourceVolume, colorTable, sourceSegmentation, accessionData
+
+    def _submitContactForm(self):
+        """Best-effort submission of the creator's contact info to the MorphoDepot contact list.
+        Called at PUBLISH time only — never for staged-only repos, so the list never accumulates
+        contacts for repositories that are discarded or never go public.  Reads the email from
+        the Go-live field and the repo type from the (still-populated) accession form, and runs
+        on a background thread so it never blocks the UI."""
+        CONTACT_FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLScqzoTAIklSg2Dc4sQHMw-_J8PPQUOSBqFrpLnWpLS-tvvVHQ/formResponse"
+        CONTACT_FORM_ENTRY_EMAIL       = "entry.2057466047"  # Email Address
+        CONTACT_FORM_ENTRY_GH_USER     = "entry.1912463514"  # GitHub Username
+        CONTACT_FORM_ENTRY_REPO_NAME   = "entry.683034902"   # Repository Name
+        CONTACT_FORM_ENTRY_REPO_TYPE   = "entry.156019116"   # Repository Type
+        try:
+            ghUser = self.logic.gh("api user --jq .login").strip()
+        except Exception:
+            ghUser = ""
+        try:
+            repoTypeFull = self.createUI.accessionForm.questions["repoType"].answer()
+        except Exception:
+            repoTypeFull = ""
+        repoTypeShort = "Archival" if repoTypeFull.startswith("Archival") else "Short-term"
+        repoName = (self._stagedNameWithOwner or "").split("/")[-1]
+        formData = {
+            CONTACT_FORM_ENTRY_EMAIL:     self.createUI.goLiveEmail.text.strip(),
+            CONTACT_FORM_ENTRY_GH_USER:   ghUser,
+            CONTACT_FORM_ENTRY_REPO_NAME: repoName,
+            CONTACT_FORM_ENTRY_REPO_TYPE: repoTypeShort,
+        }
+        import threading
+        def _post(url, data):
+            try:
+                requests.post(url, data=data, timeout=5)
+            except Exception:
+                pass  # non-critical
+        threading.Thread(target=_post, args=(CONTACT_FORM_URL, formData), daemon=True).start()
+
+    def onCreateRepository(self):
+        """Stage the repository: build it locally and provision it PRIVATE on the personal
+        account.  The Go-live gate then lets the user publish or discard it."""
+        # A fresh create is never an edit-resume; restore normal Subject Data behavior.
+        self._exitResumeMode()
+        inputs = self._collectAccessionInputs()
+        if inputs is None:
+            return
+        sourceVolume, colorTable, sourceSegmentation, accessionData = inputs
 
         if not self.showConfirmationDialog(sourceVolume, colorTable, accessionData, sourceSegmentation, self.screenshots):
             self.progressMethod("Repository creation aborted")
             return
 
+        slicer.util.showStatusMessage("Staging repository (private)...")
+        staged = None
         try:
             with slicer.util.tryWithErrorDisplay(_("Trouble creating repository"), waitCursor=True):
-                self.logic.createAccessionRepo(sourceVolume, colorTable, accessionData, sourceSegmentation, self.screenshots)
-                # Collect contact info — best-effort, runs in background thread so it never blocks the UI
-                CONTACT_FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLScqzoTAIklSg2Dc4sQHMw-_J8PPQUOSBqFrpLnWpLS-tvvVHQ/formResponse"
-                CONTACT_FORM_ENTRY_EMAIL       = "entry.2057466047"  # Email Address
-                CONTACT_FORM_ENTRY_GH_USER     = "entry.1912463514"  # GitHub Username
-                CONTACT_FORM_ENTRY_REPO_NAME   = "entry.683034902"   # Repository Name
-                CONTACT_FORM_ENTRY_REPO_TYPE   = "entry.156019116"   # Repository Type
-                try:
-                    ghUser = self.logic.gh("api user --jq .login").strip()
-                except Exception:
-                    ghUser = ""
-                repoTypeFull = accessionData['repoType'][1]
-                repoTypeShort = "Archival" if repoTypeFull.startswith("Archival") else "Short-term"
-                formData = {
-                    CONTACT_FORM_ENTRY_EMAIL:     self.createUI.accessionForm.contactEmailQuestion.answer().strip(),
-                    CONTACT_FORM_ENTRY_GH_USER:   ghUser,
-                    CONTACT_FORM_ENTRY_REPO_NAME: accessionData['githubRepoName'][1],
-                    CONTACT_FORM_ENTRY_REPO_TYPE: repoTypeShort,
-                }
-                import threading
-                def _submitContactForm(url, data):
-                    try:
-                        requests.post(url, data=data, timeout=5)
-                    except Exception:
-                        pass  # non-critical
-                threading.Thread(target=_submitContactForm, args=(CONTACT_FORM_URL, formData), daemon=True).start()
+                staged = self.logic.createAccessionRepo(sourceVolume, colorTable, accessionData, sourceSegmentation, self.screenshots)
         except Exception as e:
-            slicer.util.showStatusMessage(f"Cleaning up...")
-            repoName = accessionData['githubRepoName'][1]
+            slicer.util.showStatusMessage("Cleaning up...")
+            repoName = accessionData['githubRepoName'][1].split("/")[-1]
             repoDir = os.path.join(self.logic.localRepositoryDirectory(), repoName)
             if os.path.exists(repoDir):
                 shutil.rmtree(repoDir)
+            slicer.util.showStatusMessage("")
+            return
 
-        self.createUI.createRepository.enabled = False
-        self.createUI.openRepository.enabled = True
-        slicer.util.showStatusMessage(f"")
+        slicer.util.showStatusMessage("")
+        if not staged:
+            return
         self.screenshots = []
         self.updateScreenshotCount()
+        self._enterGoLiveState(staged)
+
+    def _enterGoLiveState(self, stagedNameWithOwner):
+        """Reveal the Go-live gate after a repo has been staged privately."""
+        self._stagedNameWithOwner = stagedNameWithOwner
+        self.populateOwnerSelector()
+        self.createUI.createRepository.enabled = False
+        self._setGoLiveZoneVisible(True)
+        # Require a conscious, valid contact-email entry before Publish enables (see
+        # _updatePublishEnabled).  Cleared on every entry so it is never carried over.
+        self.createUI.goLiveEmail.text = ""
+        self._updatePublishEnabled()
+        self.createUI.discardButton.enabled = True
+        self.createUI.openRepository.enabled = True
+        # "Save changes" only applies when editing a reopened repo; a fresh stage has no edits.
+        self.createUI.saveEditsButton.visible = self._resumedForEdit
+        self.createUI.saveEditsButton.enabled = self._resumedForEdit
+        self._updateCreateSectionHeader()
+        if self._resumedForEdit:
+            self.createUI.stagingStatusLabel.text = (
+                f"Editing staged repo {stagedNameWithOwner} (private, not yet published).\n"
+                "Correct any fields, Save changes as many times as you need, then Publish.")
+        else:
+            self.createUI.stagingStatusLabel.text = (
+                f"Staged privately as {stagedNameWithOwner} — not yet public, not discoverable.\n"
+                "Review it on GitHub, then choose a destination and Publish, or Discard.")
+        self.refreshStagedReposList(force=True)
+
+    def onSaveEdits(self):
+        """Persist edits to the reopened staged repo without publishing, so it can be corrected
+        repeatedly before going live."""
+        if not self._resumedForEdit:
+            return
+        gathered = self._gatherStagedEdits()
+        if gathered is None:
+            return  # aborted: the loaded segmentation was edited in place (user was warned)
+        editedData, newColorTable, newSegmentation = gathered
+        changed = False
+        try:
+            with slicer.util.tryWithErrorDisplay(_("Trouble updating repository"), waitCursor=True):
+                slicer.util.showStatusMessage("Updating staged repository...")
+                changed = self.logic.saveStagedRepoEdits(editedData, colorTable=newColorTable,
+                                                         sourceSegmentation=newSegmentation,
+                                                         screenshots=self.screenshots)
+        except Exception as e:
+            slicer.util.showStatusMessage("")
+            return
+        slicer.util.showStatusMessage("")
+        self._rebaselineResumedNodes()
+        repoName = self._stagedNameWithOwner
+        if changed:
+            statusText = f"✓ Repository updated: {repoName} (still staged — not yet published)."
+            popupText = (f"'{repoName}' was updated.\n\nIt is still staged (private, not "
+                         "published). Keep editing and updating, or click Publish when ready.")
+        else:
+            statusText = "No changes to save — the repository already matches the form."
+            popupText = "No changes to save — the repository already matches the form."
+        self.createUI.stagingStatusLabel.text = statusText
+        self.refreshStagedReposList(force=True)
+        if not self.testingMode:
+            slicer.util.infoDisplay(popupText, windowTitle="MorphoDepot")
+
+    def onPublish(self):
+        """Take the staged repo live: make it public and, if an org was chosen, transfer it."""
+        repoOwner = self.selectedDestination()
+        isOrg = self.selectedDestinationIsOrganization()
+        destDescription = f"{repoOwner} (organization)" if isOrg else f"{repoOwner} (personal account)"
+        prompt = (f"Publish the staged repository to {destDescription}?\n\n"
+                  "This makes it public and discoverable"
+                  + (" and transfers it into the organization." if isOrg else "."))
+        if not (self.testingMode or slicer.util.confirmOkCancelDisplay(prompt, windowTitle="Publish repository")):
+            return
+        # Gather any pending edits up front so we can abort cleanly (without publishing) if the
+        # loaded segmentation was edited in place.
+        editsBundle = None
+        if self._resumedForEdit:
+            editsBundle = self._gatherStagedEdits()
+            if editsBundle is None:
+                return  # warned; abort publish
+        final = None
+        try:
+            with slicer.util.tryWithErrorDisplay(_("Trouble publishing repository"), waitCursor=True):
+                # Apply pending edits first (rewrites main as one clean commit; the source
+                # volume is never touched).  No-op if nothing changed since the last save.
+                if editsBundle is not None:
+                    slicer.util.showStatusMessage("Saving edits...")
+                    editedData, newColorTable, newSegmentation = editsBundle
+                    self.logic.saveStagedRepoEdits(editedData, colorTable=newColorTable,
+                                                   sourceSegmentation=newSegmentation,
+                                                   screenshots=self.screenshots)
+                slicer.util.showStatusMessage("Publishing...")
+                final = self.logic.publishStagedRepo(repoOwner=repoOwner)
+        except Exception as e:
+            slicer.util.showStatusMessage("")
+            return
+        slicer.util.showStatusMessage("")
+        if not final:
+            return
+        # Now that the repo is actually public, add the creator to the contact list (best-effort,
+        # background).  Done here — never at stage — so discarded/abandoned repos never leak a
+        # contact.  Reads _stagedNameWithOwner (the repo name is stable across the transfer).
+        self._submitContactForm()
+        self._exitResumeMode()
+        self._stagedNameWithOwner = final
+        self.createUI.publishButton.enabled = False
+        self.createUI.discardButton.enabled = False
+        self.createUI.openRepository.enabled = True
+        self.createUI.stagingStatusLabel.text = f"Published: {final} is now public and discoverable."
+        self.refreshStagedReposList(force=True)
+
+    def onDiscard(self):
+        """Abandon the staged repo.  Deleting a repo needs the `delete_repo` token scope,
+        which we don't request, so instead we open the repo's GitHub Settings page for the
+        user to delete it from the web (Danger Zone), and clean up our own side."""
+        if not (self.testingMode or slicer.util.confirmOkCancelDisplay(
+                "Discard the staged repository?\n\n"
+                "Its GitHub Settings page will open so you can delete it from the web "
+                "(scroll to the Danger Zone -> 'Delete this repository').  The local copy will "
+                "be removed.", windowTitle="Discard repository")):
+            return
+        settingsURL = None
+        try:
+            with slicer.util.tryWithErrorDisplay(_("Trouble discarding repository"), waitCursor=True):
+                slicer.util.showStatusMessage("Discarding...")
+                settingsURL = self.logic.discardStagedRepo()
+        except Exception as e:
+            slicer.util.showStatusMessage("")
+            return
+        slicer.util.showStatusMessage("")
+        if settingsURL and not self.testingMode:
+            qt.QDesktopServices.openUrl(qt.QUrl(settingsURL))
+            slicer.util.infoDisplay(
+                "Opened the repository's GitHub Settings page.\n\n"
+                "Scroll to the bottom (Danger Zone) and click 'Delete this repository' to "
+                "remove it from GitHub.",
+                windowTitle="Delete on GitHub")
+        self._setGoLiveZoneVisible(False)
+        self.createUI.stagingStatusLabel.text = ""
+        self.createUI.openRepository.enabled = False
+        self.refreshStagedReposList(force=True)
+        self.onClearForm()
 
     def showConfirmationDialog(self, sourceVolume, colorTable, accessionData, sourceSegmentation, screenshots):
         """Shows a confirmation dialog with a summary of the repository to be created."""
@@ -701,6 +1358,8 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             return f"{label}: <i>{value}</i><br>"
 
         summary += add_detail("GitHub Repository", accessionData['githubRepoName'][1])
+        summary += add_detail("Initial state", "Private staging repo on your personal account "
+                              "(made public — and transferred to an org if you choose — at Go-live)")
         summary += add_detail("Source Volume", sourceVolume.GetName())
         summary += add_detail("Color Table", colorTable.GetName())
         if sourceSegmentation:
@@ -786,8 +1445,8 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         form.questions["githubRepoName"].answerText.text = repoName
         form.questions["redistributionAcknowledgement"].optionButtons["I have the right to allow redistribution of this data."].click()
         form.questions["repoType"].optionButtons["Short-term (e.g. repositories for classroom exercises, that are not meant to be maintained for long-term)"].click()
-        form.contactEmailQuestion.answerText.text = "test@example.com"
-        form.contactEmailConfirmQuestion.answerText.text = "test@example.com"
+        # Contact email is no longer part of the accession form; it is entered in the widget's
+        # Go-live section and submitted at publish.
 
     def onTakeScreenshot(self):
         viewport = slicer.app.layoutManager().viewport()
@@ -1805,6 +2464,9 @@ class MorphoDepotAccessionForm():
 
         # section 7
         layout = self.sectionWidgets[7].layout()
+        # Note: the repository destination (personal account vs. organization) is chosen later,
+        # at the Go-live gate in the Create tab — not here. Every repo is first staged privately
+        # on the creator's personal account. See MorphoDepotWidget.populateOwnerSelector().
         q,a,t = form["githubRepoName"]
         self.questions["githubRepoName"] = FormTextQuestion(q, self.validateForm)
         self.questions["githubRepoName"].questionBox.toolTip = t
@@ -1813,13 +2475,9 @@ class MorphoDepotAccessionForm():
         self.questions["repoType"] = FormRadioQuestion(q, a, self.validateForm)
         layout.addWidget(self.questions["repoType"].questionBox)
 
-        emailTooltip = "Your email will be added to the MorphoDepot contact list so you can be notified about new features and updates"
-        self.contactEmailQuestion = FormTextQuestion("What is your email address?", self.validateForm)
-        self.contactEmailQuestion.questionBox.toolTip = emailTooltip
-        layout.addWidget(self.contactEmailQuestion.questionBox)
-        self.contactEmailConfirmQuestion = FormTextQuestion("Confirm your email address:", self.validateForm)
-        self.contactEmailConfirmQuestion.questionBox.toolTip = emailTooltip
-        layout.addWidget(self.contactEmailConfirmQuestion.questionBox)
+        # NOTE: the contact email is intentionally NOT collected here.  It belongs to publishing,
+        # not accession metadata, so it is gathered in the widget's Go-live section and submitted
+        # only when the repo is published (see MorphoDepotWidget.goLiveEmail / _submitContactForm).
 
         if self.workflowMode:
             self.showSection(0)
@@ -1901,11 +2559,7 @@ class MorphoDepotAccessionForm():
         valid = valid and self.questions["repoType"].answer() != ""
         repoNameRegex = r"^(?:([a-zA-Z\d]+(?:-[a-zA-Z\d]+)*)/)?([\w.-]+)$"
         valid = valid and (re.match(repoNameRegex, self.questions["githubRepoName"].answer()) != None)
-        emailRegex = r'^[^@\s]+@[^@\s]+\.[^@\s]+$'
-        email = self.contactEmailQuestion.answer().strip()
-        valid = valid and bool(re.match(emailRegex, email))
-        valid = valid and (email == self.contactEmailConfirmQuestion.answer().strip().lower() or
-                           email.lower() == self.contactEmailConfirmQuestion.answer().strip().lower())
+        # The contact email is validated separately at Go-live (see _updatePublishEnabled), not here.
         self.validationCallback(valid)
 
     def accessionData(self):
@@ -1913,6 +2567,21 @@ class MorphoDepotAccessionForm():
         for key in MorphoDepotAccessionForm.formQuestions.keys():
             data[key] = (self.questions[key].questionLabel.text, self.questions[key].answer())
         return data
+
+    def setAccessionData(self, data):
+        """Pre-fill the questionnaire from a stored accessionData dict (each value is a
+        (label, answer) pair, as written to MorphoDepotAccession.json).  Used when resuming a
+        staged repo so the curator can review/correct the metadata before publishing."""
+        for key, question in self.questions.items():
+            if key not in data:
+                continue
+            value = data[key]
+            answer = value[1] if isinstance(value, (list, tuple)) and len(value) > 1 else value
+            try:
+                question.setAnswer(answer)
+            except Exception as e:
+                logging.warning(f"Could not pre-fill form field '{key}': {e}")
+        self.validateForm()
 
 
 class FormBaseQuestion():
@@ -1943,6 +2612,10 @@ class FormRadioQuestion(FormBaseQuestion):
                 return option
         return ""
 
+    def setAnswer(self, value):
+        for option, button in self.optionButtons.items():
+            button.checked = (option == value)
+
 
 class FormCheckBoxesQuestion(FormBaseQuestion):
     def __init__(self, question, options, validator):
@@ -1960,6 +2633,11 @@ class FormCheckBoxesQuestion(FormBaseQuestion):
                 answers.append(option)
         return answers
 
+    def setAnswer(self, values):
+        values = values or []
+        for option, button in self.optionButtons.items():
+            button.checked = (option in values)
+
 class FormTextQuestion(FormBaseQuestion):
     def __init__(self, question, validator):
         super().__init__(question)
@@ -1969,6 +2647,47 @@ class FormTextQuestion(FormBaseQuestion):
 
     def answer(self):
         return self.answerText.text
+
+    def setAnswer(self, value):
+        self.answerText.text = value if value is not None else ""
+
+class FormComboBoxQuestion(FormBaseQuestion):
+    """A dropdown question whose options are populated dynamically at runtime.
+
+    Each option carries a display string and an underlying value; answer() returns
+    the value of the current selection.  The values are tracked in a parallel Python
+    list (rather than Qt item data) so retrieval does not depend on QVariant round-trips.
+    Used for the Create tab's repository destination selector (personal account vs.
+    organizations)."""
+    def __init__(self, question, validator=None):
+        super().__init__(question)
+        self.comboBox = qt.QComboBox()
+        self.optionValues = []
+        if validator:
+            self.comboBox.connect("currentIndexChanged(int)", lambda _index: validator())
+        self.questionLayout.addWidget(self.comboBox)
+
+    def setOptions(self, options):
+        """Replace the dropdown contents.
+
+        options: list of (displayText, value) tuples.  The previous selection is
+        preserved by value when it is still present after repopulating."""
+        previous = self.answer()
+        self.comboBox.blockSignals(True)
+        self.comboBox.clear()
+        self.optionValues = []
+        for displayText, value in options:
+            self.comboBox.addItem(displayText)
+            self.optionValues.append(value)
+        if previous and previous in self.optionValues:
+            self.comboBox.currentIndex = self.optionValues.index(previous)
+        self.comboBox.blockSignals(False)
+
+    def answer(self):
+        index = self.comboBox.currentIndex
+        if index < 0 or index >= len(self.optionValues):
+            return ""
+        return self.optionValues[index]
 
 class FormSpeciesQuestion(FormTextQuestion):
     def __init__(self, question, validator):
@@ -2436,6 +3155,61 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
     def whoami(self):
         """ Get the active gh account """
         return(self.gh("auth status --active").split()[7])
+
+    def userOrganizations(self):
+        """Return the list of GitHub organization logins the active gh user belongs to.
+
+        A user may belong to several organizations; all are returned so the Create tab
+        can offer them as repository destinations.  Returns an empty list on any error
+        (e.g. gh not configured) so callers can fall back to the personal account.
+        """
+        try:
+            data = self.ghJSON(["api", "user/orgs", "--paginate"])
+        except Exception as e:
+            logging.warning(f"Could not fetch user organizations: {e}")
+            return []
+        if not isinstance(data, list):
+            return []
+        return [org["login"] for org in data if isinstance(org, dict) and "login" in org]
+
+    def repoExists(self, nameWithOwner):
+        """Read-only check: does a repo at {owner}/{name} exist and is it visible to us?
+
+        Used as the pre-create / pre-publish collision preflight.  Creates nothing.  Returns
+        True if the GET succeeds, False on a 404 (or any error, treated as 'available')."""
+        try:
+            self.gh(["api", f"/repos/{nameWithOwner}", "--silent"])
+            return True
+        except RuntimeError:
+            return False
+
+    def setRepoVisibility(self, nameWithOwner, public=True):
+        """Flip a repository's visibility via the REST API.
+
+        Using the API avoids `gh repo edit --visibility`'s required
+        --accept-visibility-change-consequences confirmation flag."""
+        privateValue = "false" if public else "true"
+        self.gh(["api", "--method", "PATCH", f"/repos/{nameWithOwner}",
+                 "-F", f"private={privateValue}"])
+
+    def transferRepo(self, nameWithOwner, newOwner):
+        """Transfer a repository to a new owner (e.g. a personal repo into an organization).
+
+        The transfer endpoint returns 202 and completes asynchronously, so callers should
+        wait for the repo to appear at its new location before acting on it."""
+        self.gh(["api", "--method", "POST", f"/repos/{nameWithOwner}/transfer",
+                 "-f", f"new_owner={newOwner}"])
+
+    def addMorphoTopics(self, nameWithOwner, speciesTopicString):
+        """Publish topic transition (last step of go-live): add the discoverability topic(s)
+        and REMOVE the `morphodepot-staging` marker, so the repo becomes findable by RepoClerk
+        and the extension and simultaneously leaves the unpublished list.  The species topic is
+        skipped when unknown (e.g. recovered repos with no species)."""
+        command = f"repo edit {nameWithOwner} --add-topic morphodepot --remove-topic {self.stagingTopic}"
+        if speciesTopicString:
+            command = (f"repo edit {nameWithOwner} --add-topic morphodepot "
+                       f"--add-topic md-{speciesTopicString} --remove-topic {self.stagingTopic}")
+        self.gh(command)
 
     def issueList(self):
         me = self.whoami()
@@ -3135,10 +3909,105 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
             self.gh(["pr", "close", n, "--repo", nameWithOwner])
         return len(issues), len(prs)
 
-    def createAccessionRepo(self, sourceVolume, colorTable, accessionData, sourceSegmentation=None, screenshots=None):
+    def _resolveSpeciesString(self, accessionData, fallbackSpecies=""):
+        """Determine the species string from accession data — via the iDigBio record when the
+        specimen is accessioned there, otherwise the directly-entered species field.  Shared by
+        create (_stageRepoFiles) and edit (saveStagedRepoEdits) so the README/topic stay
+        consistent.  Robust to an unavailable/empty iDigBio response (network error, bad
+        specimen id, service down): it never raises, and on the edit path `fallbackSpecies`
+        (the species already recorded for the repo) is used so a transient outage does not
+        blank a previously-resolved species."""
+        if accessionData.get('iDigBioAccessioned', ['', ''])[1] == "Yes":
+            idigbioURL = accessionData.get('iDigBioURL', ['', ''])[1]
+            specimenID = idigbioURL.split("/")[-1] if idigbioURL else ""
+            try:
+                import idigbio
+                api = idigbio.json()
+                idigbioData = api.view("records", specimenID) if specimenID else None
+                data = idigbioData.get('data') if isinstance(idigbioData, dict) else None
+                if data:
+                    if 'ala:species' in data:
+                        return data['ala:species']
+                    if 'dwc:scientificName' in data:
+                        return data['dwc:scientificName']
+                logging.warning(f"Could not find species for '{idigbioURL}' (response: {idigbioData})")
+            except Exception as e:
+                logging.warning(f"iDigBio species lookup failed for '{idigbioURL}': {e}")
+            # Lookup unavailable/empty: keep the already-recorded species (edit), then the
+            # directly-entered field, then a safe default — never crash, never blindly blank.
+            return fallbackSpecies or accessionData.get('species', ['', ''])[1] or "Unknown species"
+        return accessionData.get('species', ['', ''])[1]
 
-        repoName = accessionData['githubRepoName'][1]
-        repoDir = os.path.join(self.localRepositoryDirectory(), repoName)
+    def _writeLicense(self, repoDir, accessionData):
+        """Write LICENSE.txt for the chosen Creative Commons license."""
+        if accessionData["license"][1].startswith("CC BY-NC"):
+            licenseURL = "https://creativecommons.org/licenses/by-nc/4.0/legalcode.txt"
+        else:
+            licenseURL = "https://creativecommons.org/licenses/by/4.0/legalcode.txt"
+        response = requests.get(licenseURL)
+        with open(os.path.join(repoDir, "LICENSE.txt"), "w") as fp:
+            fp.write(response.content.decode('ascii', errors="ignore"))
+
+    def _renderReadme(self, accessionData, speciesString, screenshotItems=None):
+        """Build README.md text from accession data.  screenshotItems is an ordered list of
+        (filename, caption) for images under the screenshots/ directory."""
+        readme_content = f"""
+## MorphoDepot Repository
+Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepotAccession.json) for specimen details.
+* Species: {speciesString}
+* Modality: {accessionData['modality'][1]}
+* Contrast: {accessionData['contrastEnhancement'][1]}
+* Dimensions: {accessionData['scanDimensions']}
+* Spacing (mm): {accessionData['scanSpacing']}
+"""
+        if screenshotItems:
+            readme_content += "\n\n## Screenshots\n"
+            for filename, caption in screenshotItems:
+                readme_content += f"\n![{caption or filename}](screenshots/{filename})\n"
+                if caption:
+                    readme_content += f"_{caption}_\n"
+        return readme_content
+
+    def _readScreenshotCaptions(self, repoDir):
+        """Read an existing repo's screenshots/captions.json into an ordered list of
+        (filename, caption) so the README can be regenerated without the live screenshots."""
+        captionsPath = os.path.join(repoDir, "screenshots", "captions.json")
+        if not os.path.exists(captionsPath):
+            return []
+        try:
+            with open(captionsPath) as fp:
+                captions = json.load(fp)
+        except Exception:
+            return []
+        return [(name, captions[name]) for name in sorted(captions.keys())]
+
+    def _speciesFromReadme(self, repoDir):
+        """Extract the already-recorded species from a repo's committed README (the
+        '* Species: ...' line).  Used as the fallback when re-resolving species on edit so a
+        transient iDigBio outage cannot blank a previously-resolved species."""
+        readmePath = os.path.join(repoDir, "README.md")
+        if not os.path.exists(readmePath):
+            return ""
+        try:
+            with open(readmePath) as fp:
+                for line in fp:
+                    if line.strip().startswith("* Species:"):
+                        return line.split(":", 1)[1].strip()
+        except Exception:
+            pass
+        return ""
+
+    def _stageRepoFiles(self, repoDir, sourceVolume, colorTable, accessionData, sourceSegmentation=None, screenshots=None):
+        """Build the repository content on disk: save every file (including the CURATOR
+        file), `git init`, and make the initial commit.  No GitHub interaction beyond the
+        non-GitHub license/iDigBio lookups.  Returns a build context dict consumed by
+        provisionStagedRepo()."""
+
+        # The CURATOR is the person creating the repo and is responsible for reviewing its
+        # segmentation PRs.  It is always the creator, regardless of where the repo ends up.
+        curator = self.whoami()
+        repoName = os.path.basename(repoDir.rstrip(os.sep))
+
         os.makedirs(repoDir)
 
         # save data
@@ -3168,54 +4037,25 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         fp.close()
 
         # write license file
-        if accessionData["license"][1].startswith("CC BY-NC"):
-            licenseURL = "https://creativecommons.org/licenses/by-nc/4.0/legalcode.txt"
-        else:
-            licenseURL = "https://creativecommons.org/licenses/by/4.0/legalcode.txt"
-        response = requests.get(licenseURL)
-        fp = open(os.path.join(repoDir, "LICENSE.txt"), "w")
-        fp.write(response.content.decode('ascii', errors="ignore"))
-        fp.close()
+        self._writeLicense(repoDir, accessionData)
 
-        if accessionData['iDigBioAccessioned'][1] == "Yes":
-            idigbioURL = accessionData['iDigBioURL'][1]
-            specimenID = idigbioURL.split("/")[-1]
-            import idigbio
-            api = idigbio.json()
-            idigbioData = api.view("records", specimenID)
-            if 'ala:species' in idigbioData['data']:
-                speciesString = idigbioData['data']['ala:species']
-            elif 'dwc:scientificName' in idigbioData['data']:
-                speciesString = idigbioData['data']['dwc:scientificName']
-            else:
-                logging.warning(f"Could not find species for {idigbioURL}")
-                logging.warning(f"Response from api: {idigbioData}")
-                speciesString = "Unknown species"
-        else:
-            speciesString = accessionData['species'][1]
+        speciesString = self._resolveSpeciesString(accessionData)
         speciesTopicString = speciesString.lower().replace(" ", "-")
 
         # write readme file
-        readme_content = f"""
-## MorphoDepot Repository
-Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepotAccession.json) for specimen details.
-* Species: {speciesString}
-* Modality: {accessionData['modality'][1]}
-* Contrast: {accessionData['contrastEnhancement'][1]}
-* Dimensions: {accessionData['scanDimensions']}
-* Spacing (mm): {accessionData['scanSpacing']}
-"""
+        screenshotItems = None
         if screenshots:
-            readme_content += "\n\n## Screenshots\n"
-            for i, screenshotInfo in enumerate(screenshots):
-                screenshot_filename = f"screenshot-{i+1}.png"
-                caption = screenshotInfo['caption']
-                readme_content += f"\n![{caption or screenshot_filename}](screenshots/{screenshot_filename})\n"
-                if caption:
-                    readme_content += f"_{caption}_\n"
+            screenshotItems = [(f"screenshot-{i+1}.png", ss['caption']) for i, ss in enumerate(screenshots)]
+        readme_content = self._renderReadme(accessionData, speciesString, screenshotItems)
         fp = open(os.path.join(repoDir, "README.md"), "w")
         fp.write(readme_content)
         fp.close()
+
+        # write CURATOR file: the GitHub handle of the person responsible for curating this
+        # repository and reviewing its segmentation PRs.  Always the creator, regardless of
+        # whether the repo eventually lives under a personal account or an organization.
+        with open(os.path.join(repoDir, "CURATOR"), "w") as fp:
+            fp.write(f"{curator}\n")
 
         # create initial repo
         repo = git.Repo.init(repoDir, initial_branch='main')
@@ -3225,6 +4065,7 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
             "LICENSE.txt",
             "MorphoDepotAccession.json",
             "source_volume_checksum",
+            "CURATOR",
         ]
         if sourceSegmentation:
             segmentationName = "baseline" # keyword used to detect segmentation to import when startin new issue
@@ -3251,8 +4092,65 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
         repo.index.add(repoFilePaths)
         repo.index.commit("Initial commit")
 
+        return {
+            "repoDir": repoDir,
+            "repo": repo,
+            "curator": curator,
+            "repoName": repoName,
+            "sourceFilePath": sourceFilePath,
+            "sourceFileName": sourceFileName,
+            "speciesTopicString": speciesTopicString,
+            "species": speciesString,
+            "committedFiles": repoFileNames,
+        }
+
+    def createAccessionRepo(self, sourceVolume, colorTable, accessionData, sourceSegmentation=None, screenshots=None):
+        """Stage a new accession repository: build it locally, then provision it PRIVATE on
+        the creator's personal account.  Does NOT publish — call publishStagedRepo() to go
+        live (optionally transferring to an org) or discardStagedRepo() to abandon it.
+        Returns the personal nameWithOwner of the staged repo."""
+        repoName = accessionData['githubRepoName'][1].split("/")[-1]
+
+        # Fail fast on a GitHub name collision (the authoritative check) BEFORE building
+        # anything locally, so we never half-build for a name that is already taken.
+        curator = self.whoami()
+        personalTarget = f"{curator}/{repoName}"
+        if self.repoExists(personalTarget):
+            raise ValueError(
+                f"A repository named '{repoName}' already exists on your account ({curator}). "
+                "If it is a repo you staged earlier but never published, reopen the MorphoDepot "
+                "module to resume or discard it, or delete it on GitHub; otherwise choose a "
+                "different name.")
+
+        # Local clones are disposable working copies.  Clear any stale leftover (e.g. from a
+        # previous interrupted attempt) so it never blocks a fresh build with the same name.
+        repoDir = os.path.join(self.localRepositoryDirectory(), repoName)
+        if os.path.exists(repoDir):
+            self.progressMethod(f"Removing stale local directory {repoDir}")
+            shutil.rmtree(repoDir, ignore_errors=True)
+
+        buildContext = self._stageRepoFiles(repoDir, sourceVolume, colorTable, accessionData,
+                                            sourceSegmentation, screenshots)
+        return self.provisionStagedRepo(buildContext)
+
+    def provisionStagedRepo(self, buildContext):
+        """Create the repo PRIVATE under the creator's personal account and populate it
+        (settings, notification subscription, v1 release + source-volume asset, source_volume
+        pointer).  No topics are added, so the repo is not discoverable.  Records staging
+        state for publishStagedRepo()/discardStagedRepo() and returns its nameWithOwner."""
+        repoDir = buildContext["repoDir"]
+        repo = buildContext["repo"]
+        curator = buildContext["curator"]
+        repoName = buildContext["repoName"]
+        sourceFilePath = buildContext["sourceFilePath"]
+        sourceFileName = buildContext["sourceFileName"]
+
+        # The GitHub name collision was already checked in createAccessionRepo (before build).
+        personalTarget = f"{curator}/{repoName}"
+
+        # Create PRIVATE: the staging state is invisible (private + no topic) until go-live.
         try:
-            self.gh(f"repo create {repoName} --add-readme --disable-wiki --public --source {repoDir} --push")
+            self.gh(f"repo create {personalTarget} --disable-wiki --private --source {repoDir} --push")
         except RuntimeError as e:
             # gh repo create --push can race with GitHub provisioning the new repo for
             # git-over-HTTPS access; the create succeeds but the immediate push fails with
@@ -3279,12 +4177,14 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
 
         self.gh(f"repo edit {repoNameWithOwner} --enable-projects=false --enable-discussions=false")
 
-        self.gh(f"repo edit {repoNameWithOwner} --add-topic morphodepot --add-topic md-{speciesTopicString}")
+        # Tag the repo as staged-but-unpublished.  This topic is the durable, queryable record
+        # of staging state (no client-side marker); publish removes it.
+        self.gh(f"repo edit {repoNameWithOwner} --add-topic {self.stagingTopic}")
 
         # subscribe to all notifications for the new repository
         # gh repo watch was removed in newer gh CLI versions; use the API directly
-        owner, repoName = repoNameWithOwner.split("/", 1)
-        self.gh(f"api --method PUT /repos/{owner}/{repoName}/subscription --field subscribed=true --field ignored=false")
+        owner, name = repoNameWithOwner.split("/", 1)
+        self.gh(f"api --method PUT /repos/{owner}/{name}/subscription --field subscribed=true --field ignored=false")
 
         # create initial release and add asset
         # use list for command to handle spaces in notes
@@ -3302,7 +4202,267 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
         repo.index.commit("Add source file url file")
         repo.remote(name="origin").push()
 
+        self.stagingContext = {
+            "repoDir": repoDir,
+            "personalNameWithOwner": repoNameWithOwner,
+            "repoName": repoName,
+            "curator": curator,
+            "speciesTopicString": buildContext["speciesTopicString"],
+        }
+
+        # The local working copy is disposable now that the repo is fully on GitHub — remove it
+        # (and the multi-GB source-volume file it holds) immediately.  Editing later re-clones
+        # via the reopen path.
+        self.localRepo = None
+        if os.path.exists(repoDir):
+            shutil.rmtree(repoDir, ignore_errors=True)
+        return repoNameWithOwner
+
+    def publishStagedRepo(self, repoOwner=None):
+        """Take the staged private repo live.  Flip it public while it is still on the
+        personal account (org visibility changes are owners-only), transfer it into the
+        organization if one was chosen, then add the discoverability topics LAST.  Returns
+        the final nameWithOwner."""
+        ctx = getattr(self, "stagingContext", None)
+        if not ctx:
+            raise RuntimeError("No staged repository to publish.")
+        personal = ctx["personalNameWithOwner"]
+        curator = ctx["curator"]
+        repoName = ctx["repoName"]
+        speciesTopicString = ctx["speciesTopicString"]
+
+        targetIsOrg = bool(repoOwner) and repoOwner != curator
+
+        # Collision preflight on the org namespace before touching anything.
+        if targetIsOrg:
+            orgTarget = f"{repoOwner}/{repoName}"
+            if self.repoExists(orgTarget):
+                raise ValueError(f"A repository named '{repoName}' already exists in the "
+                                 f"organization '{repoOwner}'.  Rename it or pick another "
+                                 f"destination before publishing.")
+
+        # 1. Flip public while still personally owned.
+        self.setRepoVisibility(personal, public=True)
+
+        finalNameWithOwner = personal
+        # 2. Transfer into the organization, if requested.
+        if targetIsOrg:
+            self.transferRepo(personal, repoOwner)
+            finalNameWithOwner = f"{repoOwner}/{repoName}"
+            # The transfer is asynchronous; wait for the repo to appear at its new location.
+            for delay in (1, 2, 4, 8, 16):
+                if self.repoExists(finalNameWithOwner):
+                    break
+                self.progressMethod(f"Waiting for transfer to {finalNameWithOwner} to complete...")
+                time.sleep(delay)
+            # Point the local origin remote at the new location (GitHub keeps a redirect too).
+            if self.localRepo:
+                try:
+                    self.localRepo.remote(name="origin").set_url(f"https://github.com/{finalNameWithOwner}")
+                except Exception as e:
+                    logging.warning(f"Could not update origin remote after transfer: {e}")
+
+        # 3. Topics last: add the discoverability topic(s) and drop the staging topic — this
+        # is the moment the repo becomes discoverable and leaves the unpublished list.
+        self.addMorphoTopics(finalNameWithOwner, speciesTopicString)
+
         self.ghTopicClearCache()
+
+        # The local working copy is no longer needed once published — remove it.
+        repoDir = ctx.get("repoDir")
+        self.localRepo = None
+        if repoDir and os.path.exists(repoDir):
+            shutil.rmtree(repoDir, ignore_errors=True)
+        self.stagingContext = None
+        return finalNameWithOwner
+
+    def discardStagedRepo(self):
+        """Abandon the staged repo.  Deleting a repository needs the `delete_repo` token
+        scope, which we deliberately do not request — so instead of calling the API, we hand
+        the user off to the repo's GitHub Settings page (Danger Zone) to delete it from the
+        web, and clean up our own side: remove the local clone and the in-memory staging
+        state.  Returns the repo's settings URL for the caller to open.  Note: if the user
+        does not actually delete it, the repo keeps its `morphodepot-staging` topic and so
+        correctly stays in the unpublished list."""
+        ctx = getattr(self, "stagingContext", None)
+        if not ctx:
+            return None
+        personal = ctx["personalNameWithOwner"]
+        repoDir = ctx.get("repoDir")
+        self.localRepo = None
+        if repoDir and os.path.exists(repoDir):
+            shutil.rmtree(repoDir, ignore_errors=True)
+        self.stagingContext = None
+        return f"https://github.com/{personal}/settings"
+
+    # --- Staged-repo recovery via the `morphodepot-staging` topic.  GitHub is the source of
+    # truth: a staged-but-unpublished repo is simply one carrying this topic.  No durable
+    # client state, so recovery works from any machine and survives a /tmp flush. ---
+
+    stagingTopic = "morphodepot-staging"
+
+    def listStagedRepos(self):
+        """Return the active user's repositories that are staged but not yet published,
+        identified by the `morphodepot-staging` topic.  Uses the repo LIST endpoint (topics
+        are reflected immediately, unlike the search index which lags for fresh repos), so it
+        is reliable right after staging and from any machine.  Returns marker-shaped dicts."""
+        me = self.whoami()
+        try:
+            repos = self.ghJSON(["api", "/user/repos?affiliation=owner&per_page=100", "--paginate"])
+        except Exception as e:
+            logging.warning(f"listStagedRepos: could not list repositories: {e}")
+            return []
+        staged = []
+        for repo in repos:
+            if not isinstance(repo, dict):
+                continue
+            owner = (repo.get("owner") or {}).get("login")
+            if owner != me:
+                continue
+            if self.stagingTopic not in (repo.get("topics") or []):
+                continue
+            name = repo.get("name")
+            nameWithOwner = repo.get("full_name") or f"{owner}/{name}"
+            staged.append({
+                "nameWithOwner": nameWithOwner,
+                "repoName": name,
+                "curator": me,
+                "repoDir": os.path.join(self.localRepositoryDirectory(), name),
+                "summary": nameWithOwner,
+            })
+        return staged
+
+    def _fetchAccessionData(self, nameWithOwner):
+        """Fetch and decode a repo's MorphoDepotAccession.json, or None if it has none.
+        Used to re-derive the species topic when resuming a repo from the unpublished list."""
+        try:
+            data = self.ghJSON(["api", f"/repos/{nameWithOwner}/contents/MorphoDepotAccession.json"])
+        except Exception:
+            return None
+        if not isinstance(data, dict) or "content" not in data:
+            return None
+        try:
+            import base64
+            decoded = base64.b64decode(data["content"]).decode("utf-8", errors="ignore")
+            return json.loads(decoded)
+        except Exception:
+            return None
+
+    def resumeStagedRepo(self, stagedRepo):
+        """Resume a repo chosen from the unpublished list: CLONE it fresh (so its accession
+        form can be pre-filled and edits applied), rebuild the in-memory staging context, and
+        return the loaded accession data.  Cloning is cheap — the source volume is a release
+        asset, not a git-tracked file — and gives a working tree for saveStagedRepoEdits()."""
+        nameWithOwner = stagedRepo.get("nameWithOwner")
+        repoName = stagedRepo.get("repoName")
+        repoDir = os.path.join(self.localRepositoryDirectory(), repoName)
+        if os.path.exists(repoDir):
+            shutil.rmtree(repoDir, ignore_errors=True)
+        self.gh(f"repo clone {nameWithOwner} {repoDir}")
+        self.localRepo = git.Repo(repoDir)
+
+        accession = {}
+        accessionPath = os.path.join(repoDir, "MorphoDepotAccession.json")
+        if os.path.exists(accessionPath):
+            try:
+                with open(accessionPath) as fp:
+                    accession = json.load(fp)
+            except Exception as e:
+                logging.warning(f"Could not read accession data for {nameWithOwner}: {e}")
+
+        species = ""
+        try:
+            species = (accession.get("species") or ["", ""])[1] or ""
+        except Exception:
+            species = ""
+        self.stagingContext = {
+            "repoDir": repoDir,
+            "personalNameWithOwner": nameWithOwner,
+            "repoName": repoName,
+            "curator": stagedRepo.get("curator"),
+            "speciesTopicString": species.lower().replace(" ", "-") if species else "",
+        }
+        return accession
+
+    def saveStagedRepoEdits(self, accessionData, colorTable=None, sourceSegmentation=None, screenshots=None):
+        """Apply edits to the currently-resumed staged repo (clone in stagingContext): rewrite
+        the metadata-derived files from `accessionData`, optionally replace the color table
+        and/or baseline segmentation, regenerate the screenshots from `screenshots` (None =
+        leave as-is), then — only if something actually changed — rewrite the repo's `main` as
+        a single clean commit and force-push it.  The source volume and its release asset are
+        NEVER touched (out of scope by design).  Recomputes the staging context's species topic
+        for the subsequent publish.  Returns True if a change was pushed, False if the repo was
+        already up to date."""
+        ctx = getattr(self, "stagingContext", None)
+        if not ctx:
+            raise RuntimeError("No staged repository is open to edit.")
+        repoDir = ctx.get("repoDir")
+        repo = self.localRepo
+        if not (repoDir and repo and os.path.exists(repoDir)):
+            raise RuntimeError("No local working copy is available to apply edits.")
+
+        # Capture the already-recorded species (from the committed README, before we rewrite
+        # it) so a transient iDigBio outage during re-resolution can't blank it.
+        priorSpecies = self._speciesFromReadme(repoDir)
+
+        # Regenerate the metadata-derived files from the edited data.
+        accessionData['fileFormatVersion'] = MorphoDepotLogic.accessionFileFormatVersion
+        with open(os.path.join(repoDir, "MorphoDepotAccession.json"), "w") as fp:
+            fp.write(json.dumps(accessionData, indent=4))
+
+        speciesString = self._resolveSpeciesString(accessionData, fallbackSpecies=priorSpecies)
+        ctx["speciesTopicString"] = speciesString.lower().replace(" ", "-") if speciesString else ""
+
+        self._writeLicense(repoDir, accessionData)
+
+        # Replace the color table only if a new one was supplied (else keep the committed CSV).
+        if colorTable is not None:
+            for existing in os.listdir(repoDir):
+                if existing.endswith(".csv"):
+                    os.remove(os.path.join(repoDir, existing))
+            slicer.util.saveNode(colorTable, os.path.join(repoDir, colorTable.GetName()) + ".csv")
+
+        # Replace the baseline segmentation only if a new one was supplied.
+        if sourceSegmentation is not None:
+            slicer.util.saveNode(sourceSegmentation, os.path.join(repoDir, "baseline.seg.nrrd"))
+
+        # Screenshots: when a set is supplied, fully regenerate screenshots/ + captions.json
+        # from it (add/remove/recaption); when None, leave the committed screenshots untouched.
+        screenshotsDir = os.path.join(repoDir, "screenshots")
+        if screenshots is not None:
+            if os.path.exists(screenshotsDir):
+                shutil.rmtree(screenshotsDir)
+            screenshotItems = []
+            if screenshots:
+                os.makedirs(screenshotsDir, exist_ok=True)
+                captions = {}
+                for i, ss in enumerate(screenshots):
+                    name = f"screenshot-{i+1}.png"
+                    shutil.copy(ss["path"], os.path.join(screenshotsDir, name))
+                    captions[name] = ss.get("caption", "")
+                    screenshotItems.append((name, ss.get("caption", "")))
+                with open(os.path.join(screenshotsDir, "captions.json"), "w") as f:
+                    json.dump(captions, f, indent=2)
+        else:
+            screenshotItems = self._readScreenshotCaptions(repoDir)
+
+        # Regenerate the README (screenshot section reflects the current screenshot set).
+        readme = self._renderReadme(accessionData, speciesString, screenshotItems)
+        with open(os.path.join(repoDir, "README.md"), "w") as fp:
+            fp.write(readme)
+
+        # Push only if the working tree actually changed.
+        repo.git.add("-A")
+        if not repo.git.diff("--cached", "--name-only").strip():
+            return False
+
+        # Reset history to a single clean commit ("as if created correctly") and force-push.
+        repo.git.checkout("--orphan", "_morphodepot_clean")
+        repo.git.add("-A")
+        repo.git.commit("-m", "MorphoDepot accession")
+        repo.git.branch("-M", "main")
+        repo.git.push("--force", "origin", "main")
+        return True
 
     #
     # Search
@@ -3670,13 +4830,19 @@ class MorphoDepotTest(ScriptedLoadableModuleTest):
         form.questions["imageContents"].optionButtons["Whole specimen"].click()
         form.questions["redistributionAcknowledgement"].optionButtons["I have the right to allow redistribution of this data."].click()
         form.questions["license"].optionButtons["CC BY 4.0 (requires attribution, allows commercial usage)"].click()
-        form.questions["githubRepoName"].answerText.text = f"MorphoDepotTesting/{repoName}"
-        repoNameWithOwner = form.questions["githubRepoName"].answerText.text
+        form.questions["githubRepoName"].answerText.text = repoName
+        repoNameWithOwner = f"MorphoDepotTesting/{repoName}"
 
-        # Create the repository
+        # Stage the repository privately on the creator's personal account, then publish it to
+        # the MorphoDepotTesting organization (flip public + transfer + add topics).
         widget.onCreateRepository()
         slicer.app.processEvents()
-        self.delayDisplay(f"Repository {repoName} created.")
+        self.delayDisplay("Repository staged privately; publishing to MorphoDepotTesting")
+        publishedNameWithOwner = logic.publishStagedRepo(repoOwner="MorphoDepotTesting")
+        self.assertEqual(publishedNameWithOwner, repoNameWithOwner,
+                         f"Published name {publishedNameWithOwner} does not match expected {repoNameWithOwner}")
+        slicer.app.processEvents()
+        self.delayDisplay(f"Repository {repoNameWithOwner} created and published.")
 
         # Open the repository page
         self.delayDisplay(f"Opening repository page for {repoNameWithOwner}")
