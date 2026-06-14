@@ -725,9 +725,9 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         if not repoDir or not os.path.exists(repoDir):
             return
 
-        # Source volume: download the v1 release asset (auth'd via gh for the private repo) into
-        # a cache dir OUTSIDE the git working tree (so it is never committed), load it, and show
-        # it read-only.
+        # Source volume: download it (from its source_volume URL for new repos — the JS2 object
+        # store — or the legacy private v1 release asset otherwise) into a cache dir OUTSIDE the
+        # git working tree (so it is never committed), load it, and show it read-only.
         sourceVolumeName = ""
         pointerPath = os.path.join(repoDir, "source_volume")
         if os.path.exists(pointerPath):
@@ -750,8 +750,15 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                 nrrdPath = os.path.join(cacheDir, f"{sourceVolumeName}.nrrd")
                 if not os.path.exists(nrrdPath):
                     slicer.util.showStatusMessage("Downloading source volume...")
-                    self.logic.gh(f"release download v1 --repo {nameWithOwner} "
-                                  f"--pattern {sourceVolumeName}.nrrd --dir {cacheDir} --clobber")
+                    volumeRef = open(pointerPath).read().strip()
+                    if volumeRef.startswith("http"):
+                        # New repos: source_volume is an absolute, public object-store URL.
+                        volumeURL = self.logic.resolveVolumeURL(volumeRef, nameWithOwner)
+                        slicer.util.downloadFile(volumeURL, nrrdPath)
+                    else:
+                        # Legacy staged repo: volume is a private v1 release asset (needs gh auth).
+                        self.logic.gh(f"release download v1 --repo {nameWithOwner} "
+                                      f"--pattern {sourceVolumeName}.nrrd --dir {cacheDir} --clobber")
                 volumeNode = slicer.util.loadVolume(nrrdPath)
                 self.createUI.inputSelector.setCurrentNode(volumeNode)
             except Exception as e:
@@ -2911,10 +2918,57 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
     def resolveVolumeURL(self, volumeRef, repoNameWithOwner):
         """Convert a source_volume file reference to a full download URL.
         Accepts both legacy full URLs (backwards compatible) and new relative paths.
+        A source_volume now holds an absolute object-store (JS2) URL; because it starts with
+        "http" it passes straight through here unchanged — only the older relative
+        "releases/download/v1/..." pointers are re-based onto the repo owner.
         """
         if volumeRef.startswith("http"):
-            return volumeRef  # existing repos with hardcoded URL — use as-is
+            return volumeRef  # full URL (object-store or legacy hardcoded) — use as-is
         return f"https://github.com/{repoNameWithOwner}/{volumeRef}"
+
+    def uploadSourceVolumeToObjectStore(self, sourceFilePath, sha256):
+        """Upload the source volume to the MorphoDepot object store (JS2) via a pre-signed
+        PUT URL minted by the signing service, and return the public URL of the stored object.
+
+        The object is content-addressed (key = volumes/{sha256}.nrrd), so an identical volume
+        is uploaded only once; the signing service skips the PUT and returns the existing
+        object's URL when it already exists.  The client holds no bucket credentials — only the
+        signing-endpoint URL and a bearer token, both from QSettings
+        (MorphoDepot/uploadSignEndpoint, MorphoDepot/uploadSignToken).  See
+        docs/ObjectStorage-model.md."""
+        import requests
+        qsettings = qt.QSettings()
+        signEndpoint = qsettings.value("MorphoDepot/uploadSignEndpoint",
+                                       "https://join.morphodepot.org/uploads/sign")
+        token = qsettings.value("MorphoDepot/uploadSignToken", "")
+
+        size = os.path.getsize(sourceFilePath)
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        self.progressMethod("Requesting upload URL from the object-store signing service...")
+        signResponse = requests.post(
+            signEndpoint,
+            json={"sha256": sha256, "size": size, "content_type": "application/octet-stream"},
+            headers=headers, timeout=30)
+        if signResponse.status_code != 200:
+            raise RuntimeError(f"Object-store signing failed "
+                               f"({signResponse.status_code}): {signResponse.text}")
+        info = signResponse.json()
+        publicURL = info["public_url"]
+
+        if info.get("already_exists"):
+            self.progressMethod("Source volume already in the object store; skipping upload.")
+            return publicURL
+
+        putURL = info["put_url"]
+        self.progressMethod(f"Uploading source volume ({size / 2**20:.0f} MB) to the object store...")
+        with open(sourceFilePath, "rb") as fp:
+            putResponse = requests.put(
+                putURL, data=fp,
+                headers={"Content-Type": "application/octet-stream"}, timeout=None)
+        if putResponse.status_code not in (200, 201):
+            raise RuntimeError(f"Object-store upload failed "
+                               f"({putResponse.status_code}): {putResponse.text}")
+        return publicURL
 
     def localRepositoryDirectory(self):
         repoDirectory = os.path.normpath(slicer.util.settingsValue("MorphoDepot/repoDirectory", "") or "")
@@ -4016,9 +4070,12 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
         sourceFilePath = os.path.join(repoDir, sourceFileName) + ".nrrd"
         slicer.util.saveNode(sourceVolume, sourceFilePath, properties={'useCompression': True})
 
-        githubReleaseAssetSizeLimit = 2 * 2**30 - 1 # 2GB - 1
-        if os.path.getsize(sourceFilePath) > githubReleaseAssetSizeLimit:
-            raise ValueError("Volume file is too large, crop or resample so that saved size is less than 2GB")
+        # Single-PUT cap for the JS2 object store (Ceph RadosGW rgw_max_put_size, 5 GiB).
+        # Larger volumes need multipart upload (deferred); see docs/ObjectStorage-model.md.
+        objectStoreSinglePutLimit = 5 * 2**30  # 5 GiB
+        if os.path.getsize(sourceFilePath) > objectStoreSinglePutLimit:
+            raise ValueError("Volume file is too large for a single upload (limit 5 GB). "
+                             "Crop or resample the volume so the saved size is under 5 GB.")
 
         # calculate and save checksum
         checksum = slicer.util.computeChecksum('SHA256', sourceFilePath)
@@ -4099,6 +4156,7 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
             "repoName": repoName,
             "sourceFilePath": sourceFilePath,
             "sourceFileName": sourceFileName,
+            "checksum": checksum,
             "speciesTopicString": speciesTopicString,
             "species": speciesString,
             "committedFiles": repoFileNames,
@@ -4143,7 +4201,7 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
         curator = buildContext["curator"]
         repoName = buildContext["repoName"]
         sourceFilePath = buildContext["sourceFilePath"]
-        sourceFileName = buildContext["sourceFileName"]
+        checksum = buildContext["checksum"]
 
         # The GitHub name collision was already checked in createAccessionRepo (before build).
         personalTarget = f"{curator}/{repoName}"
@@ -4186,16 +4244,22 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
         owner, name = repoNameWithOwner.split("/", 1)
         self.gh(f"api --method PUT /repos/{owner}/{name}/subscription --field subscribed=true --field ignored=false")
 
-        # create initial release and add asset
+        # create the initial v1 release: the version anchor / initial-accession snapshot of
+        # main.  The source volume is NO LONGER a release asset — it now lives in the JS2
+        # object store (see docs/ObjectStorage-model.md), so v1 carries no asset.
         # use list for command to handle spaces in notes
         commandList = ["release", "create", "--repo", repoNameWithOwner, "v1"]
         commandList += ["--notes", "Initial release"]
         self.gh(commandList)
-        self.gh(f"release upload --repo {repoNameWithOwner} v1 {sourceFilePath}#{sourceFileName}.nrrd")
 
-        # write source volume pointer file (owner-agnostic relative path for transfer safety)
+        # upload the source volume to the JS2 object store and record its absolute public URL
+        publicURL = self.uploadSourceVolumeToObjectStore(sourceFilePath, checksum)
+
+        # write source volume pointer file: an absolute object-store URL.  resolveVolumeURL
+        # passes full URLs through unchanged, and a content-addressed (owner-independent) URL
+        # survives the personal->org transfer at publish.
         fp = open(os.path.join(repoDir, "source_volume"), "w")
-        fp.write(f"releases/download/v1/{sourceFileName}.nrrd")
+        fp.write(publicURL)
         fp.close()
 
         repo.index.add([f"{repoDir}/source_volume"])
