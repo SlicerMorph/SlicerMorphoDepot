@@ -4384,24 +4384,18 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
         owner, name = repoNameWithOwner.split("/", 1)
         self.gh(f"api --method PUT /repos/{owner}/{name}/subscription --field subscribed=true --field ignored=false")
 
-        # create the initial v1 release: the version anchor / initial-accession snapshot of
-        # main.  The source volume is NO LONGER a release asset — it now lives in the JS2
-        # object store (see docs/ObjectStorage-model.md), so v1 carries no asset.
-        # use list for command to handle spaces in notes
+        # Non-member tier: create the v1 release and upload the source volume AS A RELEASE ASSET
+        # (the volume lives on GitHub, capped at 2 GB). Members use S3 instead — see
+        # _provisionStagedRepoInOrg and docs/org-design.md §1.0.
         commandList = ["release", "create", "--repo", repoNameWithOwner, "v1"]
         commandList += ["--notes", "Initial release"]
         self.gh(commandList)
+        self.gh(f"release upload --repo {repoNameWithOwner} v1 {sourceFilePath}#{sourceFileName}.nrrd")
 
-        # upload the source volume to the JS2 object store, keyed {curator}/{repoName}/{file}
-        # (with the volume's identity stamped as metadata), and record its absolute public URL
-        publicURL = self.uploadSourceVolumeToObjectStore(
-            sourceFilePath, checksum, curator, repoName, f"{sourceFileName}.nrrd")
-
-        # write source volume pointer file: an absolute object-store URL.  resolveVolumeURL
-        # passes full URLs through unchanged, and a content-addressed (owner-independent) URL
-        # survives the personal->org transfer at publish.
+        # write source volume pointer: an owner-relative path resolved against the repo's current
+        # owner at read time (resolveVolumeURL).
         fp = open(os.path.join(repoDir, "source_volume"), "w")
-        fp.write(publicURL)
+        fp.write(f"releases/download/v1/{sourceFileName}.nrrd")
         fp.close()
 
         repo.index.add([f"{repoDir}/source_volume"])
