@@ -1145,6 +1145,27 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             return
         sourceVolume, colorTable, sourceSegmentation, accessionData = inputs
 
+        # Destination: members choose where the repo lives; non-members always use their own
+        # account.  Org = S3, 5 GB, governed (you cannot delete a *public* org repo — owners do).
+        # Personal = a GitHub release asset, 2 GB, fully yours (delete anytime) — for
+        # disposable/classroom repos.
+        useOrg = False
+        if self.logic.userIsOrgMember():
+            who = self.logic.whoami()
+            org = self.logic.morphoDepotOrg
+            items = [f"My account ({who}) — personal, 2 GB, you can delete it anytime",
+                     f"{org} (organization) — S3, 5 GB, governed"]
+            if self.testingMode:
+                choice, ok = items[1], True
+            else:
+                choice, ok = qt.QInputDialog.getItem(
+                    slicer.util.mainWindow(), "Where should this repository live?",
+                    "Create this repository under:", items, 0, False)
+            if not ok:
+                self.progressMethod("Repository creation aborted")
+                return
+            useOrg = (choice == items[1])
+
         if not self.showConfirmationDialog(sourceVolume, colorTable, accessionData, sourceSegmentation, self.screenshots):
             self.progressMethod("Repository creation aborted")
             return
@@ -1153,7 +1174,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         staged = None
         try:
             with slicer.util.tryWithErrorDisplay(_("Trouble creating repository"), waitCursor=True):
-                staged = self.logic.createAccessionRepo(sourceVolume, colorTable, accessionData, sourceSegmentation, self.screenshots)
+                staged = self.logic.createAccessionRepo(sourceVolume, colorTable, accessionData, sourceSegmentation, self.screenshots, useOrg=useOrg)
         except Exception as e:
             slicer.util.showStatusMessage("Cleaning up...")
             repoName = accessionData['githubRepoName'][1].split("/")[-1]
@@ -4122,7 +4143,7 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
             pass
         return ""
 
-    def _stageRepoFiles(self, repoDir, sourceVolume, colorTable, accessionData, sourceSegmentation=None, screenshots=None):
+    def _stageRepoFiles(self, repoDir, sourceVolume, colorTable, accessionData, sourceSegmentation=None, screenshots=None, useOrg=False):
         """Build the repository content on disk: save every file (including the CURATOR
         file), `git init`, and make the initial commit.  No GitHub interaction beyond the
         non-GitHub license/iDigBio lookups.  Returns a build context dict consumed by
@@ -4143,13 +4164,13 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
 
         # Size cap depends on tier: members upload to S3 (5 GiB single-PUT cap); non-members
         # store the volume as a GitHub release asset (2 GiB limit). See docs/ObjectStorage-model.md.
-        if self.userIsOrgMember():
-            limit, label = 5 * 2**30, "5 GB (object-store single-PUT limit)"
+        if useOrg:
+            limit, label = 5 * 2**30, "5 GB (org / object-store single-PUT limit)"
         else:
-            limit, label = 2 * 2**30 - 1, "2 GB (GitHub release-asset limit; join MorphoDepot for 5 GB)"
+            limit, label = 2 * 2**30 - 1, "2 GB (personal / GitHub release-asset limit; use the org for 5 GB)"
         if os.path.getsize(sourceFilePath) > limit:
-            raise ValueError(f"Volume file is too large for your tier — limit {label}. "
-                             "Crop or resample the volume.")
+            raise ValueError(f"Volume file is too large for this destination — limit {label}. "
+                             "Crop or resample the volume, or choose a different destination.")
 
         # calculate and save checksum
         checksum = slicer.util.computeChecksum('SHA256', sourceFilePath)
@@ -4231,24 +4252,27 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
             "sourceFilePath": sourceFilePath,
             "sourceFileName": sourceFileName,
             "checksum": checksum,
+            "useOrg": useOrg,
             "speciesTopicString": speciesTopicString,
             "species": speciesString,
             "committedFiles": repoFileNames,
         }
 
-    def createAccessionRepo(self, sourceVolume, colorTable, accessionData, sourceSegmentation=None, screenshots=None):
-        """Stage a new accession repository: build it locally, then provision it PRIVATE on
-        the creator's personal account.  Does NOT publish — call publishStagedRepo() to go
-        live (optionally transferring to an org) or discardStagedRepo() to abandon it.
-        Returns the personal nameWithOwner of the staged repo."""
+    def createAccessionRepo(self, sourceVolume, colorTable, accessionData, sourceSegmentation=None, screenshots=None, useOrg=None):
+        """Stage a new accession repository: build it locally, then provision it.  `useOrg`
+        chooses the destination — True = born in the MorphoDepot org (members only; S3, 5 GB,
+        governed); False = the creator's personal account (GitHub release asset, 2 GB, fully
+        theirs).  When unspecified, defaults to the org for members.  Returns the staged
+        nameWithOwner."""
         repoName = accessionData['githubRepoName'][1].split("/")[-1]
+        if useOrg is None:
+            useOrg = self.userIsOrgMember()
 
         # Fail fast on a GitHub name collision (the authoritative check) BEFORE building
         # anything locally, so we never half-build for a name that is already taken.
         curator = self.whoami()
-        # Members create in-org; non-members on their personal account. Collision-check the
-        # namespace the repo will actually land in.
-        if self.userIsOrgMember():
+        # Collision-check the namespace the repo will actually land in.
+        if useOrg:
             target, where = f"{self.morphoDepotOrg}/{repoName}", f"the {self.morphoDepotOrg} organization"
         else:
             target, where = f"{curator}/{repoName}", f"your account ({curator})"
@@ -4267,7 +4291,7 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
             shutil.rmtree(repoDir, ignore_errors=True)
 
         buildContext = self._stageRepoFiles(repoDir, sourceVolume, colorTable, accessionData,
-                                            sourceSegmentation, screenshots)
+                                            sourceSegmentation, screenshots, useOrg=useOrg)
         return self.provisionStagedRepo(buildContext)
 
     def _provisionStagedRepoInOrg(self, buildContext):
@@ -4343,7 +4367,7 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
         """Provision the staged repo.  Members: born in-org via the App control plane
         (_provisionStagedRepoInOrg).  Non-members: PRIVATE on the creator's personal account
         (the path below).  Records staging state and returns the nameWithOwner."""
-        if self.userIsOrgMember():
+        if buildContext.get("useOrg"):
             return self._provisionStagedRepoInOrg(buildContext)
         repoDir = buildContext["repoDir"]
         repo = buildContext["repo"]
