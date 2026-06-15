@@ -1423,9 +1423,17 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         return summary
 
     def onOpenRepository(self):
-        nameWithOwner = self.logic.nameWithOwner("origin")
-        repoURL = qt.QUrl(f"https://github.com/{nameWithOwner}")
-        qt.QDesktopServices.openUrl(repoURL)
+        # After staging, the local clone is deleted (so the multi-GB volume does not linger),
+        # so nameWithOwner("origin") would be empty.  The staged repo's name is recorded in
+        # stagingContext; fall back to the local remote only if a clone is present (reopen/edit).
+        ctx = getattr(self.logic, "stagingContext", None) or {}
+        nameWithOwner = ctx.get("personalNameWithOwner")
+        if not nameWithOwner and self.logic.localRepo:
+            nameWithOwner = self.logic.nameWithOwner("origin")
+        if not nameWithOwner:
+            slicer.util.errorDisplay(_("No staged repository to open yet."))
+            return
+        qt.QDesktopServices.openUrl(qt.QUrl(f"https://github.com/{nameWithOwner}"))
 
     def onClearForm(self):
         slicer.util.reloadScriptedModule(self.moduleName)
@@ -2926,14 +2934,16 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
             return volumeRef  # full URL (object-store or legacy hardcoded) — use as-is
         return f"https://github.com/{repoNameWithOwner}/{volumeRef}"
 
-    def uploadSourceVolumeToObjectStore(self, sourceFilePath, sha256):
-        """Upload the source volume to the MorphoDepot object store (JS2) via a pre-signed
-        PUT URL minted by the signing service, and return the public URL of the stored object.
+    def uploadSourceVolumeToObjectStore(self, sourceFilePath, sha256, creator, repo, filename):
+        """Upload the source volume to the MorphoDepot object store (JS2) via a pre-signed PUT
+        URL minted by the signing service, and return the public URL of the stored object.
 
-        The object is content-addressed (key = volumes/{sha256}.nrrd), so an identical volume
-        is uploaded only once; the signing service skips the PUT and returns the existing
-        object's URL when it already exists.  The client holds no bucket credentials — only the
-        signing-endpoint URL and a bearer token, both from QSettings
+        The object is keyed {creator}/{repo}/{filename} and carries the volume's identity
+        (sha256, creator, repo, original filename) as immutable S3 user-metadata stamped at
+        this first/only write.  The signing service signs those headers into the URL, so we PUT
+        with exactly the headers it returns.  The dedup short-circuit fires only when an object
+        with the same content (sha256) already exists at the key.  The client holds no bucket
+        credentials — only the signing-endpoint URL and a bearer token, both from QSettings
         (MorphoDepot/uploadSignEndpoint, MorphoDepot/uploadSignToken).  See
         docs/ObjectStorage-model.md."""
         import requests
@@ -2943,12 +2953,13 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         token = qsettings.value("MorphoDepot/uploadSignToken", "")
 
         size = os.path.getsize(sourceFilePath)
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        authHeaders = {"Authorization": f"Bearer {token}"} if token else {}
         self.progressMethod("Requesting upload URL from the object-store signing service...")
         signResponse = requests.post(
             signEndpoint,
-            json={"sha256": sha256, "size": size, "content_type": "application/octet-stream"},
-            headers=headers, timeout=30)
+            json={"sha256": sha256, "size": size, "creator": creator, "repo": repo,
+                  "filename": filename, "content_type": "application/octet-stream"},
+            headers=authHeaders, timeout=30)
         if signResponse.status_code != 200:
             raise RuntimeError(f"Object-store signing failed "
                                f"({signResponse.status_code}): {signResponse.text}")
@@ -2960,11 +2971,11 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
             return publicURL
 
         putURL = info["put_url"]
+        putHeaders = info.get("headers", {})  # exact signed headers to echo (content-type,
+                                              # content-disposition, x-amz-meta-*)
         self.progressMethod(f"Uploading source volume ({size / 2**20:.0f} MB) to the object store...")
         with open(sourceFilePath, "rb") as fp:
-            putResponse = requests.put(
-                putURL, data=fp,
-                headers={"Content-Type": "application/octet-stream"}, timeout=None)
+            putResponse = requests.put(putURL, data=fp, headers=putHeaders, timeout=None)
         if putResponse.status_code not in (200, 201):
             raise RuntimeError(f"Object-store upload failed "
                                f"({putResponse.status_code}): {putResponse.text}")
@@ -4201,6 +4212,7 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
         curator = buildContext["curator"]
         repoName = buildContext["repoName"]
         sourceFilePath = buildContext["sourceFilePath"]
+        sourceFileName = buildContext["sourceFileName"]
         checksum = buildContext["checksum"]
 
         # The GitHub name collision was already checked in createAccessionRepo (before build).
@@ -4252,8 +4264,10 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
         commandList += ["--notes", "Initial release"]
         self.gh(commandList)
 
-        # upload the source volume to the JS2 object store and record its absolute public URL
-        publicURL = self.uploadSourceVolumeToObjectStore(sourceFilePath, checksum)
+        # upload the source volume to the JS2 object store, keyed {curator}/{repoName}/{file}
+        # (with the volume's identity stamped as metadata), and record its absolute public URL
+        publicURL = self.uploadSourceVolumeToObjectStore(
+            sourceFilePath, checksum, curator, repoName, f"{sourceFileName}.nrrd")
 
         # write source volume pointer file: an absolute object-store URL.  resolveVolumeURL
         # passes full URLs through unchanged, and a content-addressed (owner-independent) URL
