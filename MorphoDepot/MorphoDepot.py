@@ -1166,7 +1166,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                 return
             useOrg = (choice == items[1])
 
-        if not self.showConfirmationDialog(sourceVolume, colorTable, accessionData, sourceSegmentation, self.screenshots):
+        if not self.showConfirmationDialog(sourceVolume, colorTable, accessionData, sourceSegmentation, self.screenshots, useOrg=useOrg):
             self.progressMethod("Repository creation aborted")
             return
 
@@ -1331,13 +1331,24 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.refreshStagedReposList(force=True)
         self.onClearForm()
 
-    def showConfirmationDialog(self, sourceVolume, colorTable, accessionData, sourceSegmentation, screenshots):
+    def showConfirmationDialog(self, sourceVolume, colorTable, accessionData, sourceSegmentation, screenshots, useOrg=False):
         """Shows a confirmation dialog with a summary of the repository to be created."""
         if self.testingMode:
             return True
         dialog = qt.QDialog(slicer.util.mainWindow())
         dialog.setWindowTitle("Confirm Repository Creation")
         layout = qt.QVBoxLayout(dialog)
+
+        # When creating under the org, make the destination unmistakable at the top.
+        if useOrg:
+            repoName = accessionData['githubRepoName'][1].split("/")[-1]
+            headerLabel = qt.QLabel(
+                f"<b>This repository will be created in the MorphoDepot organization, as "
+                f"<code>{self.logic.morphoDepotOrg}/{repoName}</code>.</b><br>"
+                "Cancel if you'd rather create it under your own account.")
+            headerLabel.setWordWrap(True)
+            headerLabel.setStyleSheet("color:#b35900;")
+            layout.addWidget(headerLabel)
 
         # Summary Text
         summaryText = self.getAccessionSummary(sourceVolume, colorTable, accessionData, sourceSegmentation)
@@ -4164,13 +4175,22 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
 
         # Size cap depends on tier: members upload to S3 (5 GiB single-PUT cap); non-members
         # store the volume as a GitHub release asset (2 GiB limit). See docs/ObjectStorage-model.md.
+        sourceBytes = os.path.getsize(sourceFilePath)
+        sizeGB = sourceBytes / 2**30
         if useOrg:
-            limit, label = 5 * 2**30, "5 GB (org / object-store single-PUT limit)"
-        else:
-            limit, label = 2 * 2**30 - 1, "2 GB (personal / GitHub release-asset limit; use the org for 5 GB)"
-        if os.path.getsize(sourceFilePath) > limit:
-            raise ValueError(f"Volume file is too large for this destination — limit {label}. "
-                             "Crop or resample the volume, or choose a different destination.")
+            if sourceBytes > 5 * 2**30:
+                raise ValueError(
+                    f"This volume ({sizeGB:.1f} GB) exceeds the 5 GB limit; volumes that large are "
+                    "not currently supported. Crop or resample the volume.")
+        elif sourceBytes > 2 * 2**30:
+            if self.userIsOrgMember():
+                raise ValueError(
+                    f"This volume ({sizeGB:.1f} GB) exceeds the 2 GB limit for personal "
+                    "repositories. Create it under MorphoDepot instead — the org supports up to 5 GB.")
+            raise ValueError(
+                f"This volume is {sizeGB:.1f} GB. Personal repositories cap files at 2 GB (a GitHub "
+                "restriction). To publish volumes up to 5 GB, join the MorphoDepot organization and "
+                "create your repository there.")
 
         # calculate and save checksum
         checksum = slicer.util.computeChecksum('SHA256', sourceFilePath)
