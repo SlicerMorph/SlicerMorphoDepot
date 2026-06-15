@@ -1156,14 +1156,20 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             items = [f"My account ({who}) — personal, 2 GB, you can delete it anytime",
                      f"{org} (organization) — S3, 5 GB, governed"]
             if self.testingMode:
-                choice, ok = items[1], True
+                choice = items[1]
             else:
-                choice, ok = qt.QInputDialog.getItem(
-                    slicer.util.mainWindow(), "Where should this repository live?",
-                    "Create this repository under:", items, 0, False)
-            if not ok:
-                self.progressMethod("Repository creation aborted")
-                return
+                # PythonQt's static getItem doesn't return (text, ok) like PyQt, so drive an
+                # explicit dialog: exec_() gives the OK/Cancel, textValue() the selection.
+                dialog = qt.QInputDialog(slicer.util.mainWindow())
+                dialog.setWindowTitle("Where should this repository live?")
+                dialog.setLabelText("Create this repository under:")
+                dialog.setComboBoxItems(items)
+                dialog.setComboBoxEditable(False)
+                dialog.setTextValue(items[0])
+                if not dialog.exec_():
+                    self.progressMethod("Repository creation aborted")
+                    return
+                choice = dialog.textValue()
             useOrg = (choice == items[1])
 
         if not self.showConfirmationDialog(sourceVolume, colorTable, accessionData, sourceSegmentation, self.screenshots, useOrg=useOrg):
