@@ -2950,7 +2950,14 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         qsettings = qt.QSettings()
         signEndpoint = qsettings.value("MorphoDepot/uploadSignEndpoint",
                                        "https://join.morphodepot.org/uploads/sign")
-        token = qsettings.value("MorphoDepot/uploadSignToken", "")
+        # Authenticate with the user's own gh token (member tier — "git + gh, nothing else").
+        # Falls back to a QSettings shared token only if gh is somehow unavailable.
+        try:
+            token = self._ghToken()
+        except Exception:
+            token = ""
+        if not token:
+            token = qsettings.value("MorphoDepot/uploadSignToken", "")
 
         size = os.path.getsize(sourceFilePath)
         authHeaders = {"Authorization": f"Bearer {token}"} if token else {}
