@@ -3013,21 +3013,25 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         return f"https://github.com/{repoNameWithOwner}/{volumeRef}"
 
     def uploadSourceVolumeToObjectStore(self, sourceFilePath, sha256, creator, repo, filename):
-        """Upload the source volume to the MorphoDepot object store (JS2) via a pre-signed PUT
-        URL minted by the signing service, and return the public URL of the stored object.
+        """Upload the source volume to the MorphoDepot object store (JS2) with a server-mediated
+        S3 MULTIPART upload, and return the public URL of the stored object.
 
-        The object is keyed {creator}/{repo}/{filename} and carries the volume's identity
-        (sha256, creator, repo, original filename) as immutable S3 user-metadata stamped at
-        this first/only write.  The signing service signs those headers into the URL, so we PUT
-        with exactly the headers it returns.  The dedup short-circuit fires only when an object
-        with the same content (sha256) already exists at the key.  The client holds no bucket
-        credentials — only the signing-endpoint URL and a bearer token, both from QSettings
-        (MorphoDepot/uploadSignEndpoint, MorphoDepot/uploadSignToken).  See
-        docs/ObjectStorage-model.md."""
+        The signing service holds the bucket credentials; the client never does.  The server
+        runs create / complete / abort and signs each part URL on demand, so a slow upload never
+        outlives a part URL (the client re-signs on a 403).  The client PUTs each chunk directly
+        to S3 and verifies the returned part ETag.  On any failure the whole upload is aborted so
+        no orphaned parts linger (a bucket lifecycle rule is the backstop).  The object is keyed
+        {creator}/{repo}/{filename} with the volume's identity (sha256, creator, repo, original
+        filename) stamped as immutable S3 user-metadata at create time; integrity is guaranteed
+        end-to-end by the committed source_volume_checksum (SHA-256 of the whole file).  Endpoint
+        + fallback token come from QSettings (MorphoDepot/uploadSignEndpoint,
+        MorphoDepot/uploadSignToken).  See docs/ObjectStorage-model.md."""
         import requests
         qsettings = qt.QSettings()
         signEndpoint = qsettings.value("MorphoDepot/uploadSignEndpoint",
                                        "https://join.morphodepot.org/uploads/sign")
+        # Derive the multipart base: …/uploads/sign -> …/uploads/multipart
+        base = signEndpoint.rsplit("/uploads/", 1)[0] + "/uploads/multipart"
         # Authenticate with the user's own gh token (member tier — "git + gh, nothing else").
         # Falls back to a QSettings shared token only if gh is somehow unavailable.
         try:
@@ -3036,35 +3040,87 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
             token = ""
         if not token:
             token = qsettings.value("MorphoDepot/uploadSignToken", "")
+        authHeaders = {"Authorization": f"Bearer {token}"} if token else {}
+
+        def post(path, body):
+            r = requests.post(f"{base}/{path}", json=body, headers=authHeaders, timeout=60)
+            if r.status_code != 200:
+                raise RuntimeError(f"Object-store multipart {path} failed "
+                                   f"({r.status_code}): {r.text}")
+            return r.json()
 
         size = os.path.getsize(sourceFilePath)
-        authHeaders = {"Authorization": f"Bearer {token}"} if token else {}
-        self.progressMethod("Requesting upload URL from the object-store signing service...")
-        signResponse = requests.post(
-            signEndpoint,
-            json={"sha256": sha256, "size": size, "creator": creator, "repo": repo,
-                  "filename": filename, "content_type": "application/octet-stream"},
-            headers=authHeaders, timeout=30)
-        if signResponse.status_code != 200:
-            raise RuntimeError(f"Object-store signing failed "
-                               f"({signResponse.status_code}): {signResponse.text}")
-        info = signResponse.json()
-        publicURL = info["public_url"]
-
-        if info.get("already_exists"):
+        self.progressMethod("Requesting multipart upload from the object-store signing service...")
+        created = post("create", {"sha256": sha256, "size": size, "creator": creator,
+                                  "repo": repo, "filename": filename})
+        publicURL = created["public_url"]
+        if created.get("already_exists"):
             self.progressMethod("Source volume already in the object store; skipping upload.")
             return publicURL
 
-        putURL = info["put_url"]
-        putHeaders = info.get("headers", {})  # exact signed headers to echo (content-type,
-                                              # content-disposition, x-amz-meta-*)
-        self.progressMethod(f"Uploading source volume ({size / 2**20:.0f} MB) to the object store...")
-        with open(sourceFilePath, "rb") as fp:
-            putResponse = requests.put(putURL, data=fp, headers=putHeaders, timeout=None)
-        if putResponse.status_code not in (200, 201):
-            raise RuntimeError(f"Object-store upload failed "
-                               f"({putResponse.status_code}): {putResponse.text}")
-        return publicURL
+        key = created["key"]
+        uploadId = created["upload_id"]
+        partSize = int(created.get("part_size") or (128 * 2**20))
+        parts = []
+        try:
+            with open(sourceFilePath, "rb") as fp:
+                partNumber = 0
+                uploaded = 0
+                while True:
+                    chunk = fp.read(partSize)
+                    if not chunk:
+                        break
+                    partNumber += 1
+                    etag = self._uploadOneVolumePart(post, key, uploadId, partNumber, chunk)
+                    parts.append({"part_number": partNumber, "etag": etag})
+                    uploaded += len(chunk)
+                    self.progressMethod(f"Uploaded {uploaded / 2**20:.0f} / {size / 2**20:.0f} MB "
+                                        "to the object store...")
+            self.progressMethod("Finalizing multipart upload...")
+            completed = post("complete", {"key": key, "upload_id": uploadId, "parts": parts})
+            return completed.get("public_url", publicURL)
+        except Exception:
+            # Abort so a partial upload leaves no orphaned parts (lifecycle rule is the backstop).
+            try:
+                post("abort", {"key": key, "upload_id": uploadId})
+                self.progressMethod("Upload failed — aborted the multipart upload (no orphaned data).")
+            except Exception as abortError:
+                logging.warning(f"Could not abort multipart upload {key}/{uploadId}: {abortError}")
+            raise
+
+    def _uploadOneVolumePart(self, post, key, uploadId, partNumber, chunk):
+        """PUT one multipart chunk to a freshly-signed part URL, verify its ETag, and return it.
+        Re-signs the URL (handling expiry) and retries on transient failure."""
+        import requests
+        import hashlib
+        expectedMd5 = hashlib.md5(chunk).hexdigest()
+        lastError = None
+        for _attempt in range(4):
+            signed = post("sign", {"key": key, "upload_id": uploadId, "part_number": partNumber})
+            try:
+                resp = requests.put(signed["url"], data=chunk, timeout=None)
+            except Exception as e:
+                lastError = e
+                continue
+            if resp.status_code == 403:   # part URL expired — re-sign and retry
+                lastError = RuntimeError("part URL expired (403)")
+                continue
+            if resp.status_code not in (200, 201):
+                lastError = RuntimeError(f"part {partNumber} PUT failed "
+                                         f"({resp.status_code}): {resp.text}")
+                continue
+            etag = (resp.headers.get("ETag") or "").strip()
+            clean = etag.strip('"').lower()
+            # For our unencrypted bucket the part ETag is the part's MD5 — verify when it looks
+            # like one (skip for non-MD5 ETags; the whole-file SHA-256 still backstops on download).
+            if len(clean) == 32 and all(c in "0123456789abcdef" for c in clean) and clean != expectedMd5:
+                lastError = RuntimeError(f"part {partNumber} checksum mismatch")
+                continue
+            if not etag:
+                lastError = RuntimeError(f"part {partNumber} returned no ETag")
+                continue
+            return etag
+        raise RuntimeError(f"part {partNumber} failed after retries: {lastError}")
 
     # --- Membership tier + App control plane (member repos are born in-org, App-mediated) ---
 
@@ -4245,23 +4301,23 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
         sourceFilePath = os.path.join(repoDir, sourceFileName) + ".nrrd"
         slicer.util.saveNode(sourceVolume, sourceFilePath, properties={'useCompression': True})
 
-        # Size cap depends on tier: members upload to S3 (5 GiB single-PUT cap); non-members
+        # Size cap depends on tier: members upload to S3 via multipart (10 GiB cap); non-members
         # store the volume as a GitHub release asset (2 GiB limit). See docs/ObjectStorage-model.md.
         sourceBytes = os.path.getsize(sourceFilePath)
         sizeGB = sourceBytes / 2**30
         if useOrg:
-            if sourceBytes > 5 * 2**30:
+            if sourceBytes > 10 * 2**30:
                 raise ValueError(
-                    f"This volume ({sizeGB:.1f} GB) exceeds the 5 GB limit; volumes that large are "
+                    f"This volume ({sizeGB:.1f} GB) exceeds the 10 GB limit; volumes that large are "
                     "not currently supported. Crop or resample the volume.")
         elif sourceBytes > 2 * 2**30:
             if self.userIsOrgMember():
                 raise ValueError(
                     f"This volume ({sizeGB:.1f} GB) exceeds the 2 GB limit for personal "
-                    "repositories. Create it under MorphoDepot instead — the org supports up to 5 GB.")
+                    "repositories. Create it under MorphoDepot instead — the org supports up to 10 GB.")
             raise ValueError(
                 f"This volume is {sizeGB:.1f} GB. Personal repositories cap files at 2 GB (a GitHub "
-                "restriction). To publish volumes up to 5 GB, join the MorphoDepot organization and "
+                "restriction). To publish volumes up to 10 GB, join the MorphoDepot organization and "
                 "create your repository there.")
 
         # calculate and save checksum
