@@ -1160,26 +1160,29 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         # Personal = a GitHub release asset, 2 GB, fully yours (delete anytime) — for
         # disposable/classroom repos.
         useOrg = False
-        if self.logic.userIsOrgMember():
+        testingOwner = None
+        if self.testingMode:
+            # Developer self-test: provision directly into the throwaway testing org using the
+            # creator's own gh rights (release asset, no App, no S3) — never the personal account
+            # or the production MorphoDepot org.  No destination prompt.
+            testingOwner = self.logic.morphoDepotTestingOrg
+        elif self.logic.userIsOrgMember():
             who = self.logic.whoami()
             org = self.logic.morphoDepotOrg
             items = [f"My account ({who}) — personal, 2 GB, you can delete it anytime",
                      f"{org} (organization) — S3, 5 GB, governed"]
-            if self.testingMode:
-                choice = items[1]
-            else:
-                # PythonQt's static getItem doesn't return (text, ok) like PyQt, so drive an
-                # explicit dialog: exec_() gives the OK/Cancel, textValue() the selection.
-                dialog = qt.QInputDialog(slicer.util.mainWindow())
-                dialog.setWindowTitle("Where should this repository live?")
-                dialog.setLabelText("Create this repository under:")
-                dialog.setComboBoxItems(items)
-                dialog.setComboBoxEditable(False)
-                dialog.setTextValue(items[0])
-                if not dialog.exec_():
-                    self.progressMethod("Repository creation aborted")
-                    return
-                choice = dialog.textValue()
+            # PythonQt's static getItem doesn't return (text, ok) like PyQt, so drive an
+            # explicit dialog: exec_() gives the OK/Cancel, textValue() the selection.
+            dialog = qt.QInputDialog(slicer.util.mainWindow())
+            dialog.setWindowTitle("Where should this repository live?")
+            dialog.setLabelText("Create this repository under:")
+            dialog.setComboBoxItems(items)
+            dialog.setComboBoxEditable(False)
+            dialog.setTextValue(items[0])
+            if not dialog.exec_():
+                self.progressMethod("Repository creation aborted")
+                return
+            choice = dialog.textValue()
             useOrg = (choice == items[1])
 
         if not self.showConfirmationDialog(sourceVolume, colorTable, accessionData, sourceSegmentation, self.screenshots, useOrg=useOrg):
@@ -1190,7 +1193,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         staged = None
         try:
             with slicer.util.tryWithErrorDisplay(_("Trouble creating repository"), waitCursor=True):
-                staged = self.logic.createAccessionRepo(sourceVolume, colorTable, accessionData, sourceSegmentation, self.screenshots, useOrg=useOrg)
+                staged = self.logic.createAccessionRepo(sourceVolume, colorTable, accessionData, sourceSegmentation, self.screenshots, useOrg=useOrg, targetOwner=testingOwner)
         except Exception as e:
             slicer.util.showStatusMessage("Cleaning up...")
             repoName = accessionData['githubRepoName'][1].split("/")[-1]
@@ -3067,6 +3070,11 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
 
     morphoDepotOrg = "MorphoDepot"
 
+    # Throwaway org for the developer Reload-and-Test self-test.  Test repos are created here
+    # directly (the developer's own gh rights — no App, no S3), never on a personal account or in
+    # the production org, and are deleted at the end of the test.  Both dev accounts are members.
+    morphoDepotTestingOrg = "MorphoDepotTesting"
+
     def controlPlaneBase(self):
         return qt.QSettings().value(
             "MorphoDepot/controlPlaneBase", "https://join.morphodepot.org").rstrip("/")
@@ -3420,14 +3428,6 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         privateValue = "false" if public else "true"
         self.gh(["api", "--method", "PATCH", f"/repos/{nameWithOwner}",
                  "-F", f"private={privateValue}"])
-
-    def transferRepo(self, nameWithOwner, newOwner):
-        """Transfer a repository to a new owner (e.g. a personal repo into an organization).
-
-        The transfer endpoint returns 202 and completes asynchronously, so callers should
-        wait for the repo to appear at its new location before acting on it."""
-        self.gh(["api", "--method", "POST", f"/repos/{nameWithOwner}/transfer",
-                 "-f", f"new_owner={newOwner}"])
 
     def addMorphoTopics(self, nameWithOwner, speciesTopicString):
         """Publish topic transition (last step of go-live): add the discoverability topic(s)
@@ -4226,7 +4226,7 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
             pass
         return ""
 
-    def _stageRepoFiles(self, repoDir, sourceVolume, colorTable, accessionData, sourceSegmentation=None, screenshots=None, useOrg=False):
+    def _stageRepoFiles(self, repoDir, sourceVolume, colorTable, accessionData, sourceSegmentation=None, screenshots=None, useOrg=False, targetOwner=None):
         """Build the repository content on disk: save every file (including the CURATOR
         file), `git init`, and make the initial commit.  No GitHub interaction beyond the
         non-GitHub license/iDigBio lookups.  Returns a build context dict consumed by
@@ -4338,7 +4338,8 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
 
         # Best-effort duplicate-volume check while the staging progress is already up, so the
         # network round-trip is hidden; surfaced passively in the Go-live status and at publish.
-        duplicateRepos = self.duplicateVolumeRepos(checksum)
+        # Skipped for the developer self-test (targetOwner) — test volumes are not real data.
+        duplicateRepos = [] if targetOwner else self.duplicateVolumeRepos(checksum)
 
         return {
             "repoDir": repoDir,
@@ -4350,26 +4351,33 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
             "checksum": checksum,
             "duplicateRepos": duplicateRepos,
             "useOrg": useOrg,
+            "targetOwner": targetOwner,
             "speciesTopicString": speciesTopicString,
             "species": speciesString,
             "committedFiles": repoFileNames,
         }
 
-    def createAccessionRepo(self, sourceVolume, colorTable, accessionData, sourceSegmentation=None, screenshots=None, useOrg=None):
+    def createAccessionRepo(self, sourceVolume, colorTable, accessionData, sourceSegmentation=None, screenshots=None, useOrg=None, targetOwner=None):
         """Stage a new accession repository: build it locally, then provision it.  `useOrg`
         chooses the destination — True = born in the MorphoDepot org (members only; S3, 5 GB,
         governed); False = the creator's personal account (GitHub release asset, 2 GB, fully
-        theirs).  When unspecified, defaults to the org for members.  Returns the staged
+        theirs).  When unspecified, defaults to the org for members.  `targetOwner` (set only by
+        the developer self-test) overrides routing: provision directly into that org via the
+        creator's own gh rights, non-member style (release asset, no App/S3).  Returns the staged
         nameWithOwner."""
         repoName = accessionData['githubRepoName'][1].split("/")[-1]
         if useOrg is None:
             useOrg = self.userIsOrgMember()
+        if targetOwner:
+            useOrg = False  # targetOwner forces the direct-to-org (non-member-style) path
 
         # Fail fast on a GitHub name collision (the authoritative check) BEFORE building
         # anything locally, so we never half-build for a name that is already taken.
         curator = self.whoami()
         # Collision-check the namespace the repo will actually land in.
-        if useOrg:
+        if targetOwner:
+            target, where = f"{targetOwner}/{repoName}", f"the {targetOwner} organization"
+        elif useOrg:
             target, where = f"{self.morphoDepotOrg}/{repoName}", f"the {self.morphoDepotOrg} organization"
         else:
             target, where = f"{curator}/{repoName}", f"your account ({curator})"
@@ -4388,7 +4396,8 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
             shutil.rmtree(repoDir, ignore_errors=True)
 
         buildContext = self._stageRepoFiles(repoDir, sourceVolume, colorTable, accessionData,
-                                            sourceSegmentation, screenshots, useOrg=useOrg)
+                                            sourceSegmentation, screenshots, useOrg=useOrg,
+                                            targetOwner=targetOwner)
         return self.provisionStagedRepo(buildContext)
 
     def _provisionStagedRepoInOrg(self, buildContext):
@@ -4465,7 +4474,9 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
     def provisionStagedRepo(self, buildContext):
         """Provision the staged repo.  Members: born in-org via the App control plane
         (_provisionStagedRepoInOrg).  Non-members: PRIVATE on the creator's personal account
-        (the path below).  Records staging state and returns the nameWithOwner."""
+        (the path below).  The developer self-test (`targetOwner`) uses this same non-member path
+        but creates directly in the testing org via the creator's own gh rights.  Records staging
+        state and returns the nameWithOwner."""
         if buildContext.get("useOrg"):
             return self._provisionStagedRepoInOrg(buildContext)
         repoDir = buildContext["repoDir"]
@@ -4477,7 +4488,9 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
         checksum = buildContext["checksum"]
 
         # The GitHub name collision was already checked in createAccessionRepo (before build).
-        personalTarget = f"{curator}/{repoName}"
+        # Owner is the creator's account by default, or an explicit targetOwner (testing org).
+        owner = buildContext.get("targetOwner") or curator
+        personalTarget = f"{owner}/{repoName}"
 
         # Create PRIVATE: the staging state is invisible (private + no topic) until go-live.
         try:
@@ -4570,55 +4583,24 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
         self.stagingContext = None
         return finalNameWithOwner
 
-    def publishStagedRepo(self, repoOwner=None):
-        """Publish the staged repo.  Members: one-way private->public via the App
-        (_publishStagedRepoInOrg).  Non-members: flip public on the personal account (below).
-        Returns the final nameWithOwner."""
+    def publishStagedRepo(self):
+        """Publish the staged repo IN PLACE — it already lives at its final location (members:
+        in the MorphoDepot org via the App; non-members: their personal account; the developer
+        self-test: the testing org).  Members go through the App's one-way private->public
+        (_publishStagedRepoInOrg); everyone else flips public + adds discoverability topics
+        directly.  No transfer.  Returns the final nameWithOwner."""
         ctx = getattr(self, "stagingContext", None)
         if not ctx:
             raise RuntimeError("No staged repository to publish.")
         if ctx.get("isMember"):
             return self._publishStagedRepoInOrg(ctx)
         personal = ctx["personalNameWithOwner"]
-        curator = ctx["curator"]
-        repoName = ctx["repoName"]
         speciesTopicString = ctx["speciesTopicString"]
 
-        targetIsOrg = bool(repoOwner) and repoOwner != curator
-
-        # Collision preflight on the org namespace before touching anything.
-        if targetIsOrg:
-            orgTarget = f"{repoOwner}/{repoName}"
-            if self.repoExists(orgTarget):
-                raise ValueError(f"A repository named '{repoName}' already exists in the "
-                                 f"organization '{repoOwner}'.  Rename it or pick another "
-                                 f"destination before publishing.")
-
-        # 1. Flip public while still personally owned.
+        # Flip public, then add the discoverability topic(s) and drop the staging topic — the
+        # moment the repo becomes discoverable and leaves the unpublished list.
         self.setRepoVisibility(personal, public=True)
-
-        finalNameWithOwner = personal
-        # 2. Transfer into the organization, if requested.
-        if targetIsOrg:
-            self.transferRepo(personal, repoOwner)
-            finalNameWithOwner = f"{repoOwner}/{repoName}"
-            # The transfer is asynchronous; wait for the repo to appear at its new location.
-            for delay in (1, 2, 4, 8, 16):
-                if self.repoExists(finalNameWithOwner):
-                    break
-                self.progressMethod(f"Waiting for transfer to {finalNameWithOwner} to complete...")
-                time.sleep(delay)
-            # Point the local origin remote at the new location (GitHub keeps a redirect too).
-            if self.localRepo:
-                try:
-                    self.localRepo.remote(name="origin").set_url(f"https://github.com/{finalNameWithOwner}")
-                except Exception as e:
-                    logging.warning(f"Could not update origin remote after transfer: {e}")
-
-        # 3. Topics last: add the discoverability topic(s) and drop the staging topic — this
-        # is the moment the repo becomes discoverable and leaves the unpublished list.
-        self.addMorphoTopics(finalNameWithOwner, speciesTopicString)
-
+        self.addMorphoTopics(personal, speciesTopicString)
         self.ghTopicClearCache()
 
         # The local working copy is no longer needed once published — remove it.
@@ -4627,7 +4609,7 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
         if repoDir and os.path.exists(repoDir):
             shutil.rmtree(repoDir, ignore_errors=True)
         self.stagingContext = None
-        return finalNameWithOwner
+        return personal
 
     def discardStagedRepo(self):
         """Abandon the staged repo.  Deleting a repository needs the `delete_repo` token
@@ -5139,8 +5121,33 @@ class MorphoDepotTest(ScriptedLoadableModuleTest):
         # Set to True to stop before exercising the Release tab so it can be inspected manually.
         # gh auth is left in creator mode at the stop point.
         widget.stopBeforeRelease = False
-        self.test_MorphoDepot1()
-        widget.testingMode = False
+        self._createdTestRepo = None  # set by the test once the repo exists; deleted below
+        try:
+            self.test_MorphoDepot1()
+        finally:
+            # Keep the repo when stopping for manual inspection; otherwise delete it.
+            if not getattr(widget, "stopBeforeRelease", False):
+                self._cleanupTestRepo()
+            widget.testingMode = False
+
+    def _cleanupTestRepo(self):
+        """Tidy up the test repo created in the testing org.  Deletion needs the `delete_repo`
+        token scope, which developers may intentionally not grant; without it the repo is left in
+        MorphoDepotTesting (hidden from the RepoClerk dashboard) and we just print a direct link
+        for manual removal — no failed-delete noise, no nag."""
+        nwo = getattr(self, "_createdTestRepo", None)
+        if not nwo:
+            return
+        logic = slicer.modules.MorphoDepotWidget.logic
+        try:
+            logic.gh(["repo", "delete", nwo, "--yes"])
+            self.delayDisplay(f"Cleaned up test repo {nwo}")
+        except Exception:
+            self.delayDisplay(
+                f"Test repo left for manual cleanup: {nwo}\n"
+                f"  delete it at https://github.com/{nwo}/settings (Danger Zone)")
+        finally:
+            self._createdTestRepo = None
 
     def _generate_random_species_name(self):
         """Generates a random species-like name for testing."""
@@ -5208,14 +5215,16 @@ class MorphoDepotTest(ScriptedLoadableModuleTest):
         form.questions["redistributionAcknowledgement"].optionButtons["I have the right to allow redistribution of this data."].click()
         form.questions["license"].optionButtons["CC BY 4.0 (requires attribution, allows commercial usage)"].click()
         form.questions["githubRepoName"].answerText.text = repoName
-        repoNameWithOwner = f"MorphoDepotTesting/{repoName}"
+        repoNameWithOwner = f"{logic.morphoDepotTestingOrg}/{repoName}"
 
-        # Stage the repository privately on the creator's personal account, then publish it to
-        # the MorphoDepotTesting organization (flip public + transfer + add topics).
+        # In testingMode, onCreateRepository provisions the repo PRIVATE directly in the testing
+        # org (release asset, no App/S3 — see onCreateRepository).  Record it so it is deleted
+        # even if a later step fails, then publish IN PLACE (flip public + topics, no transfer).
         widget.onCreateRepository()
         slicer.app.processEvents()
-        self.delayDisplay("Repository staged privately; publishing to MorphoDepotTesting")
-        publishedNameWithOwner = logic.publishStagedRepo(repoOwner="MorphoDepotTesting")
+        self._createdTestRepo = repoNameWithOwner
+        self.delayDisplay(f"Repository staged privately in {logic.morphoDepotTestingOrg}; publishing")
+        publishedNameWithOwner = logic.publishStagedRepo()
         self.assertEqual(publishedNameWithOwner, repoNameWithOwner,
                          f"Published name {publishedNameWithOwner} does not match expected {repoNameWithOwner}")
         slicer.app.processEvents()
@@ -5538,6 +5547,7 @@ class MorphoDepotTest(ScriptedLoadableModuleTest):
             logic.morphoRepos = originalMorphoRepos
             logic.closedIssuesSinceLastRelease = originalClosedIssuesSince
 
-        #logic.gh(f"repo delete {repoNameWithOwner} --yes")
+        # The test repo is deleted in runTest's finally (self._createdTestRepo), so it is cleaned
+        # up even if a step above fails.
 
         self.delayDisplay("Test passed")
