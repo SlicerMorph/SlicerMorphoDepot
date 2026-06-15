@@ -951,14 +951,20 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.createUI.goLiveGroup.visible = visible
 
     def _updatePublishEnabled(self, *args):
-        """Publish is enabled only when the Go-live gate is open AND a syntactically valid
-        contact email has been entered (mandatory).  A fake-but-valid address is accepted — we
-        validate format, not deliverability — so a user who declines to share can still proceed,
-        but only by making a deliberate, valid-looking entry."""
+        """Publish is enabled only when the Go-live gate is open.  For non-members it ALSO
+        requires a syntactically valid contact email (mandatory) — a fake-but-valid address is
+        accepted (we validate format, not deliverability) so someone who declines to share can
+        still proceed, but only via a deliberate, valid-looking entry.  Org members are already
+        on the contact list from ORCID onboarding, so no email is asked of them."""
+        if not self.createUI.goLiveGroup.visible:
+            self.createUI.publishButton.enabled = False
+            return
+        if not getattr(self, "_contactEmailNeeded", True):
+            self.createUI.publishButton.enabled = True
+            return
         emailRegex = r'^[^@\s]+@[^@\s]+\.[^@\s]+$'
         email = self.createUI.goLiveEmail.text.strip()
-        self.createUI.publishButton.enabled = bool(
-            self.createUI.goLiveGroup.visible and re.match(emailRegex, email))
+        self.createUI.publishButton.enabled = bool(re.match(emailRegex, email))
 
     def populateOwnerSelector(self):
         """Fill the Create-tab destination dropdown with the active user's account and orgs.
@@ -1111,6 +1117,10 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         CONTACT_FORM_ENTRY_GH_USER     = "entry.1912463514"  # GitHub Username
         CONTACT_FORM_ENTRY_REPO_NAME   = "entry.683034902"   # Repository Name
         CONTACT_FORM_ENTRY_REPO_TYPE   = "entry.156019116"   # Repository Type
+        if not getattr(self, "_contactEmailNeeded", True):
+            # Org members already supplied a verified email at ORCID onboarding; nothing collected
+            # here, so there is nothing to submit.
+            return
         try:
             ghUser = self.logic.gh("api user --jq .login").strip()
         except Exception:
@@ -1203,8 +1213,13 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.populateOwnerSelector()
         self.createUI.createRepository.enabled = False
         self._setGoLiveZoneVisible(True)
-        # Require a conscious, valid contact-email entry before Publish enables (see
+        # Org members are already on the contact list (verified email captured at ORCID
+        # onboarding), so the contact-email field is redundant for them — hide it and drop the
+        # publish gate.  Non-members must enter a valid contact email before Publish enables (see
         # _updatePublishEnabled).  Cleared on every entry so it is never carried over.
+        self._contactEmailNeeded = not self.logic.userIsOrgMember()
+        self.createUI.goLiveEmailLabel.visible = self._contactEmailNeeded
+        self.createUI.goLiveEmail.visible = self._contactEmailNeeded
         self.createUI.goLiveEmail.text = ""
         self._updatePublishEnabled()
         self.createUI.discardButton.enabled = True
