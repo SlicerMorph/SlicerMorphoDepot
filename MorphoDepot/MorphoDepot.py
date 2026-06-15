@@ -1236,6 +1236,15 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             self.createUI.stagingStatusLabel.text = (
                 f"Staged privately as {stagedNameWithOwner} — not yet public, not discoverable.\n"
                 "Review it on GitHub, then choose a destination and Publish, or Discard.")
+        # Passive duplicate-volume note (cached from staging — no network here): a shared SHA-256
+        # means a byte-identical source volume already lives in another repo.
+        stagingCtx = getattr(self.logic, "stagingContext", None) or {}
+        dups = [r for r in (stagingCtx.get("duplicateRepos") or []) if r != stagedNameWithOwner]
+        if dups:
+            preview = ", ".join(dups[:3]) + (f" (+{len(dups) - 3} more)" if len(dups) > 3 else "")
+            self.createUI.stagingStatusLabel.text += (
+                f"\n⚠ This exact volume already exists in: {preview}. "
+                "Discard if this duplicate is unintended.")
         self.refreshStagedReposList(force=True)
 
     def onSaveEdits(self):
@@ -1278,6 +1287,19 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         ctx = getattr(self.logic, "stagingContext", None) or {}
         where = ctx.get("personalNameWithOwner", "the staged repository")
         isOrg = bool(ctx.get("isMember"))
+        # Advisory duplicate-volume gate (non-blocking): if this exact volume (identical SHA-256)
+        # is already published elsewhere, surface it before the one-way publish.  Cached from
+        # staging — no network here; skipped silently when the index was unreachable.
+        dups = [r for r in (ctx.get("duplicateRepos") or []) if r != where]
+        if dups and not self.testingMode:
+            shown = "\n".join(f"  • {r}" for r in dups[:10])
+            more = f"\n  …and {len(dups) - 10} more" if len(dups) > 10 else ""
+            if not slicer.util.confirmOkCancelDisplay(
+                    "This exact source volume (identical checksum) is already in:\n"
+                    f"{shown}{more}\n\n"
+                    "Publishing will create another public copy of the same data. Publish anyway?",
+                    windowTitle="Duplicate volume detected"):
+                return
         prompt = (f"Publish {where}?\n\nThis makes it public and discoverable"
                   + (" in the MorphoDepot organization." if isOrg else " on your account."))
         if not (self.testingMode or slicer.util.confirmOkCancelDisplay(prompt, windowTitle="Publish repository")):
@@ -3094,6 +3116,35 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
             raise RuntimeError(f"Control plane '{path}' failed ({r.status_code}): {detail}")
         return r.json()
 
+    def volumeChecksumIndexURL(self):
+        """RepoClerk's published checksum->repo index (GitHub Pages JSON)."""
+        return qt.QSettings().value(
+            "MorphoDepot/volumeChecksumIndexURL",
+            "https://MorphoDepot.github.io/RepoClerk/volume-checksums.json")
+
+    def duplicateVolumeRepos(self, checksum, exclude=None):
+        """Repos (nameWithOwner) that already hold a volume with this SHA-256, per RepoClerk's
+        published checksum->repo index.  Best-effort and ADVISORY: returns [] on any failure
+        (network down, index missing/stale) so it never blocks staging or publishing.  The index
+        lags RepoClerk's crawl (~6 h), so a very recently published duplicate may not appear yet.
+        `exclude` drops the repo being created/published (a repo never duplicates itself)."""
+        if not checksum:
+            return []
+        sha = checksum.strip()
+        if ":" in sha:  # the committed file is "SHA256:<hex>"; the index stores bare hex
+            sha = sha.split(":", 1)[1].strip()
+        sha = sha.lower()
+        if not sha:
+            return []
+        try:
+            resp = requests.get(self.volumeChecksumIndexURL(), timeout=10)
+            resp.raise_for_status()
+            index = resp.json().get("checksums", {})
+        except Exception as e:
+            logging.warning(f"Duplicate-volume check skipped ({e})")
+            return []
+        return [r for r in index.get(sha, []) if r != exclude]
+
     def localRepositoryDirectory(self):
         repoDirectory = os.path.normpath(slicer.util.settingsValue("MorphoDepot/repoDirectory", "") or "")
         if repoDirectory == "" or repoDirectory == ".":
@@ -4285,6 +4336,10 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
         repo.index.add(repoFilePaths)
         repo.index.commit("Initial commit")
 
+        # Best-effort duplicate-volume check while the staging progress is already up, so the
+        # network round-trip is hidden; surfaced passively in the Go-live status and at publish.
+        duplicateRepos = self.duplicateVolumeRepos(checksum)
+
         return {
             "repoDir": repoDir,
             "repo": repo,
@@ -4293,6 +4348,7 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
             "sourceFilePath": sourceFilePath,
             "sourceFileName": sourceFileName,
             "checksum": checksum,
+            "duplicateRepos": duplicateRepos,
             "useOrg": useOrg,
             "speciesTopicString": speciesTopicString,
             "species": speciesString,
@@ -4397,6 +4453,8 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
             "repoName": repoName,
             "curator": curator,
             "speciesTopicString": buildContext["speciesTopicString"],
+            "checksum": checksum,
+            "duplicateRepos": buildContext.get("duplicateRepos", []),
             "isMember": True,
         }
         self.localRepo = None
@@ -4483,6 +4541,8 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
             "repoName": repoName,
             "curator": curator,
             "speciesTopicString": buildContext["speciesTopicString"],
+            "checksum": checksum,
+            "duplicateRepos": buildContext.get("duplicateRepos", []),
         }
 
         # The local working copy is disposable now that the repo is fully on GitHub — remove it
@@ -4679,12 +4739,24 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
             species = (accession.get("species") or ["", ""])[1] or ""
         except Exception:
             species = ""
+        # Carry the committed checksum so the duplicate-volume warning works on reopen too
+        # (the clone persists here, unlike a fresh stage whose dir is deleted after provision).
+        checksum = None
+        checksumPath = os.path.join(repoDir, "source_volume_checksum")
+        if os.path.exists(checksumPath):
+            try:
+                with open(checksumPath) as fp:
+                    checksum = fp.read().strip()
+            except Exception as e:
+                logging.warning(f"Could not read source_volume_checksum for {nameWithOwner}: {e}")
         self.stagingContext = {
             "repoDir": repoDir,
             "personalNameWithOwner": nameWithOwner,
             "repoName": repoName,
             "curator": stagedRepo.get("curator"),
             "speciesTopicString": species.lower().replace(" ", "-") if species else "",
+            "checksum": checksum,
+            "duplicateRepos": self.duplicateVolumeRepos(checksum, exclude=nameWithOwner),
             "isMember": nameWithOwner.split("/", 1)[0] == self.morphoDepotOrg,
         }
         return accession
