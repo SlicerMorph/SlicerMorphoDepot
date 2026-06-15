@@ -2998,15 +2998,18 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
 
     def userIsOrgMember(self, org=None):
         """True if the current user is an active member of the MorphoDepot org (so they get the
-        S3 / in-org / App-mediated tier).  Cached per session."""
+        S3 / in-org / App-mediated tier).  Asks the App control plane (`/me`), which checks
+        membership with the App token — so the user's gh token needs no org scope.  Cached per
+        session (reload the module after switching gh accounts or joining the org)."""
         org = org or self.morphoDepotOrg
         cache = getattr(self, "_orgMemberCache", None)
         if cache is not None and cache[0] == org:
             return cache[1]
         try:
-            data = self.ghJSON(["api", f"/user/memberships/orgs/{org}"])
-            isMember = isinstance(data, dict) and data.get("state") == "active"
-        except Exception:
+            info = self.controlPlaneRequest("me", {})
+            isMember = bool(info.get("is_member"))
+        except Exception as e:
+            logging.warning(f"Membership check failed (assuming non-member): {e}")
             isMember = False
         self._orgMemberCache = (org, isMember)
         return isMember
