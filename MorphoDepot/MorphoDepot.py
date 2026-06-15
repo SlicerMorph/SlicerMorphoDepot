@@ -2981,6 +2981,56 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
                                f"({putResponse.status_code}): {putResponse.text}")
         return publicURL
 
+    # --- Membership tier + App control plane (member repos are born in-org, App-mediated) ---
+
+    morphoDepotOrg = "MorphoDepot"
+
+    def controlPlaneBase(self):
+        return qt.QSettings().value(
+            "MorphoDepot/controlPlaneBase", "https://join.morphodepot.org").rstrip("/")
+
+    def userIsOrgMember(self, org=None):
+        """True if the current user is an active member of the MorphoDepot org (so they get the
+        S3 / in-org / App-mediated tier).  Cached per session."""
+        org = org or self.morphoDepotOrg
+        cache = getattr(self, "_orgMemberCache", None)
+        if cache is not None and cache[0] == org:
+            return cache[1]
+        try:
+            data = self.ghJSON(["api", f"/user/memberships/orgs/{org}"])
+            isMember = isinstance(data, dict) and data.get("state") == "active"
+        except Exception:
+            isMember = False
+        self._orgMemberCache = (org, isMember)
+        return isMember
+
+    def _ghToken(self):
+        """The user's GitHub token (from gh) used to authenticate to the App control plane."""
+        import subprocess
+        try:
+            out = subprocess.run([self.ghExecutablePath, "auth", "token"],
+                                 capture_output=True, text=True, timeout=15)
+            return (out.stdout or "").strip()
+        except Exception as e:
+            raise RuntimeError(f"Could not get a GitHub token from gh: {e}")
+
+    def controlPlaneRequest(self, path, body):
+        """POST to the intake App control plane, authenticated by the user's gh token.
+        Returns the parsed JSON, or raises with the server's error detail."""
+        import requests
+        token = self._ghToken()
+        if not token:
+            raise RuntimeError("Not signed in to GitHub — run `gh auth login` first.")
+        r = requests.post(f"{self.controlPlaneBase()}/{path}", json=body,
+                          headers={"Authorization": f"Bearer {token}"}, timeout=120)
+        if r.status_code != 200:
+            try:
+                detail = r.json().get("detail", r.text)
+            except Exception:
+                detail = r.text
+            raise RuntimeError(f"Control plane '{path}' failed ({r.status_code}): {detail}")
+        return r.json()
+
     def localRepositoryDirectory(self):
         repoDirectory = os.path.normpath(slicer.util.settingsValue("MorphoDepot/repoDirectory", "") or "")
         if repoDirectory == "" or repoDirectory == ".":
@@ -4081,12 +4131,15 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
         sourceFilePath = os.path.join(repoDir, sourceFileName) + ".nrrd"
         slicer.util.saveNode(sourceVolume, sourceFilePath, properties={'useCompression': True})
 
-        # Single-PUT cap for the JS2 object store (Ceph RadosGW rgw_max_put_size, 5 GiB).
-        # Larger volumes need multipart upload (deferred); see docs/ObjectStorage-model.md.
-        objectStoreSinglePutLimit = 5 * 2**30  # 5 GiB
-        if os.path.getsize(sourceFilePath) > objectStoreSinglePutLimit:
-            raise ValueError("Volume file is too large for a single upload (limit 5 GB). "
-                             "Crop or resample the volume so the saved size is under 5 GB.")
+        # Size cap depends on tier: members upload to S3 (5 GiB single-PUT cap); non-members
+        # store the volume as a GitHub release asset (2 GiB limit). See docs/ObjectStorage-model.md.
+        if self.userIsOrgMember():
+            limit, label = 5 * 2**30, "5 GB (object-store single-PUT limit)"
+        else:
+            limit, label = 2 * 2**30 - 1, "2 GB (GitHub release-asset limit; join MorphoDepot for 5 GB)"
+        if os.path.getsize(sourceFilePath) > limit:
+            raise ValueError(f"Volume file is too large for your tier — limit {label}. "
+                             "Crop or resample the volume.")
 
         # calculate and save checksum
         checksum = slicer.util.computeChecksum('SHA256', sourceFilePath)
@@ -4183,10 +4236,15 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
         # Fail fast on a GitHub name collision (the authoritative check) BEFORE building
         # anything locally, so we never half-build for a name that is already taken.
         curator = self.whoami()
-        personalTarget = f"{curator}/{repoName}"
-        if self.repoExists(personalTarget):
+        # Members create in-org; non-members on their personal account. Collision-check the
+        # namespace the repo will actually land in.
+        if self.userIsOrgMember():
+            target, where = f"{self.morphoDepotOrg}/{repoName}", f"the {self.morphoDepotOrg} organization"
+        else:
+            target, where = f"{curator}/{repoName}", f"your account ({curator})"
+        if self.repoExists(target):
             raise ValueError(
-                f"A repository named '{repoName}' already exists on your account ({curator}). "
+                f"A repository named '{repoName}' already exists in {where}. "
                 "If it is a repo you staged earlier but never published, reopen the MorphoDepot "
                 "module to resume or discard it, or delete it on GitHub; otherwise choose a "
                 "different name.")
@@ -4202,11 +4260,81 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
                                             sourceSegmentation, screenshots)
         return self.provisionStagedRepo(buildContext)
 
+    def _provisionStagedRepoInOrg(self, buildContext):
+        """Member tier: the App creates the repo IN-ORG (private, staged topic, {handle}-team
+        Write); we push the built content and upload the source volume to S3.  No personal
+        account, no transfer.  Returns the org nameWithOwner (MorphoDepot/<name>)."""
+        repoDir = buildContext["repoDir"]
+        repo = buildContext["repo"]
+        curator = buildContext["curator"]
+        repoName = buildContext["repoName"]
+        sourceFilePath = buildContext["sourceFilePath"]
+        sourceFileName = buildContext["sourceFileName"]
+        checksum = buildContext["checksum"]
+
+        self.progressMethod(f"Creating {self.morphoDepotOrg}/{repoName} (private) via the App...")
+        info = self.controlPlaneRequest("repos/create", {"name": repoName})
+        nameWithOwner = info["full_name"]
+        cloneURL = info["clone_url"]
+
+        # Push the locally built content to the empty in-org repo (member has Write via team).
+        self.localRepo = repo
+        try:
+            repo.create_remote("origin", cloneURL)
+        except Exception:
+            repo.remote(name="origin").set_url(cloneURL)
+        branchName = repo.active_branch.name
+        lastError = None
+        for delay in (0, 2, 4, 8, 16):
+            if delay:
+                self.progressMethod(f"Push retry in {delay}s...")
+                time.sleep(delay)
+            try:
+                repo.git.push("--set-upstream", "origin", branchName)
+                lastError = None
+                break
+            except Exception as pushError:
+                lastError = pushError
+        if lastError is not None:
+            raise RuntimeError(f"Push to {nameWithOwner} failed: {lastError}")
+
+        owner, name = nameWithOwner.split("/", 1)
+        try:
+            self.gh(f"api --method PUT /repos/{owner}/{name}/subscription --field subscribed=true --field ignored=false")
+        except Exception as e:
+            logging.warning(f"Could not subscribe to {nameWithOwner}: {e}")
+
+        # v1 release (version anchor, no asset)
+        self.gh(["release", "create", "--repo", nameWithOwner, "v1", "--notes", "Initial release"])
+
+        # Upload the source volume to S3 and record the absolute public URL.
+        publicURL = self.uploadSourceVolumeToObjectStore(
+            sourceFilePath, checksum, curator, repoName, f"{sourceFileName}.nrrd")
+        with open(os.path.join(repoDir, "source_volume"), "w") as fp:
+            fp.write(publicURL)
+        repo.index.add([f"{repoDir}/source_volume"])
+        repo.index.commit("Add source file url file")
+        repo.remote(name="origin").push()
+
+        self.stagingContext = {
+            "repoDir": repoDir,
+            "personalNameWithOwner": nameWithOwner,
+            "repoName": repoName,
+            "curator": curator,
+            "speciesTopicString": buildContext["speciesTopicString"],
+            "isMember": True,
+        }
+        self.localRepo = None
+        if os.path.exists(repoDir):
+            shutil.rmtree(repoDir, ignore_errors=True)
+        return nameWithOwner
+
     def provisionStagedRepo(self, buildContext):
-        """Create the repo PRIVATE under the creator's personal account and populate it
-        (settings, notification subscription, v1 release + source-volume asset, source_volume
-        pointer).  No topics are added, so the repo is not discoverable.  Records staging
-        state for publishStagedRepo()/discardStagedRepo() and returns its nameWithOwner."""
+        """Provision the staged repo.  Members: born in-org via the App control plane
+        (_provisionStagedRepoInOrg).  Non-members: PRIVATE on the creator's personal account
+        (the path below).  Records staging state and returns the nameWithOwner."""
+        if self.userIsOrgMember():
+            return self._provisionStagedRepoInOrg(buildContext)
         repoDir = buildContext["repoDir"]
         repo = buildContext["repo"]
         curator = buildContext["curator"]
@@ -4296,14 +4424,32 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
             shutil.rmtree(repoDir, ignore_errors=True)
         return repoNameWithOwner
 
+    def _publishStagedRepoInOrg(self, ctx):
+        """Member tier: publish via the App — one-way private->public + topic swap (the App owns
+        topics; members only have Write)."""
+        repoName = ctx["repoName"]
+        species = ctx.get("speciesTopicString")
+        topics = ["morphodepot"] + ([f"md-{species}"] if species else [])
+        self.progressMethod(f"Publishing {ctx['personalNameWithOwner']} (making public)...")
+        self.controlPlaneRequest("repos/publish", {"repo": repoName, "topics": topics})
+        self.ghTopicClearCache()
+        finalNameWithOwner = ctx["personalNameWithOwner"]
+        repoDir = ctx.get("repoDir")
+        self.localRepo = None
+        if repoDir and os.path.exists(repoDir):
+            shutil.rmtree(repoDir, ignore_errors=True)
+        self.stagingContext = None
+        return finalNameWithOwner
+
     def publishStagedRepo(self, repoOwner=None):
-        """Take the staged private repo live.  Flip it public while it is still on the
-        personal account (org visibility changes are owners-only), transfer it into the
-        organization if one was chosen, then add the discoverability topics LAST.  Returns
-        the final nameWithOwner."""
+        """Publish the staged repo.  Members: one-way private->public via the App
+        (_publishStagedRepoInOrg).  Non-members: flip public on the personal account (below).
+        Returns the final nameWithOwner."""
         ctx = getattr(self, "stagingContext", None)
         if not ctx:
             raise RuntimeError("No staged repository to publish.")
+        if ctx.get("isMember"):
+            return self._publishStagedRepoInOrg(ctx)
         personal = ctx["personalNameWithOwner"]
         curator = ctx["curator"]
         repoName = ctx["repoName"]
@@ -4367,6 +4513,15 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
             return None
         personal = ctx["personalNameWithOwner"]
         repoDir = ctx.get("repoDir")
+        if ctx.get("isMember"):
+            # Member tier: the App deletes the in-org repo AND its S3 object (only while private).
+            self.progressMethod(f"Discarding {personal} (deleting repo + volume)...")
+            self.controlPlaneRequest("repos/discard", {"repo": ctx["repoName"]})
+            self.localRepo = None
+            if repoDir and os.path.exists(repoDir):
+                shutil.rmtree(repoDir, ignore_errors=True)
+            self.stagingContext = None
+            return None    # already deleted — nothing for the UI to open
         self.localRepo = None
         if repoDir and os.path.exists(repoDir):
             shutil.rmtree(repoDir, ignore_errors=True)
@@ -4385,8 +4540,10 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
         are reflected immediately, unlike the search index which lags for fresh repos), so it
         is reliable right after staging and from any machine.  Returns marker-shaped dicts."""
         me = self.whoami()
+        # Include org repos too — member-tier staged repos are born in MorphoDepot, owned by the
+        # org but accessible only to the member's {handle}-team.
         try:
-            repos = self.ghJSON(["api", "/user/repos?affiliation=owner&per_page=100", "--paginate"])
+            repos = self.ghJSON(["api", "/user/repos?affiliation=owner,organization_member&per_page=100", "--paginate"])
         except Exception as e:
             logging.warning(f"listStagedRepos: could not list repositories: {e}")
             return []
@@ -4395,7 +4552,7 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
             if not isinstance(repo, dict):
                 continue
             owner = (repo.get("owner") or {}).get("login")
-            if owner != me:
+            if owner not in (me, self.morphoDepotOrg):
                 continue
             if self.stagingTopic not in (repo.get("topics") or []):
                 continue
@@ -4459,6 +4616,7 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
             "repoName": repoName,
             "curator": stagedRepo.get("curator"),
             "speciesTopicString": species.lower().replace(" ", "-") if species else "",
+            "isMember": nameWithOwner.split("/", 1)[0] == self.morphoDepotOrg,
         }
         return accession
 
