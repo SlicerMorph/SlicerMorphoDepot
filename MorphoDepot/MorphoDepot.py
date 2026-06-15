@@ -1156,7 +1156,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         sourceVolume, colorTable, sourceSegmentation, accessionData = inputs
 
         # Destination: members choose where the repo lives; non-members always use their own
-        # account.  Org = S3, 5 GB, governed (you cannot delete a *public* org repo — owners do).
+        # account.  Org = S3, 10 GB, governed (you cannot delete a *public* org repo — owners do).
         # Personal = a GitHub release asset, 2 GB, fully yours (delete anytime) — for
         # disposable/classroom repos.
         useOrg = False
@@ -1170,7 +1170,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             who = self.logic.whoami()
             org = self.logic.morphoDepotOrg
             items = [f"My account ({who}) — personal, 2 GB, you can delete it anytime",
-                     f"{org} (organization) — S3, 5 GB, governed"]
+                     f"{org} (organization) — S3, 10 GB, governed"]
             # PythonQt's static getItem doesn't return (text, ok) like PyQt, so drive an
             # explicit dialog: exec_() gives the OK/Cancel, textValue() the selection.
             dialog = qt.QInputDialog(slicer.util.mainWindow())
@@ -4415,7 +4415,7 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
 
     def createAccessionRepo(self, sourceVolume, colorTable, accessionData, sourceSegmentation=None, screenshots=None, useOrg=None, targetOwner=None):
         """Stage a new accession repository: build it locally, then provision it.  `useOrg`
-        chooses the destination — True = born in the MorphoDepot org (members only; S3, 5 GB,
+        chooses the destination — True = born in the MorphoDepot org (members only; S3, 10 GB,
         governed); False = the creator's personal account (GitHub release asset, 2 GB, fully
         theirs).  When unspecified, defaults to the org for members.  `targetOwner` (set only by
         the developer self-test) overrides routing: provision directly into that org via the
