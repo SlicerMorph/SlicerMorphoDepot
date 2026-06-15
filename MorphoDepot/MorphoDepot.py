@@ -983,7 +983,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         for org in organizations:
             options.append((f"{org} (organization)", org))
         destination.setOptions(options)
-        destination.questionBox.setVisible(bool(organizations))
+        destination.questionBox.setVisible(False)  # destination is chosen at create now, not publish
         self.createUI.destinationPersonalLogin = personal
         self.ownerSelectorPopulated = bool(personal)
 
@@ -1252,13 +1252,13 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             slicer.util.infoDisplay(popupText, windowTitle="MorphoDepot")
 
     def onPublish(self):
-        """Take the staged repo live: make it public and, if an org was chosen, transfer it."""
-        repoOwner = self.selectedDestination()
-        isOrg = self.selectedDestinationIsOrganization()
-        destDescription = f"{repoOwner} (organization)" if isOrg else f"{repoOwner} (personal account)"
-        prompt = (f"Publish the staged repository to {destDescription}?\n\n"
-                  "This makes it public and discoverable"
-                  + (" and transfers it into the organization." if isOrg else "."))
+        """Take the staged repo live (make it public) where it already lives — the destination
+        was fixed at create, so this no longer offers an org/personal choice or any transfer."""
+        ctx = getattr(self.logic, "stagingContext", None) or {}
+        where = ctx.get("personalNameWithOwner", "the staged repository")
+        isOrg = bool(ctx.get("isMember"))
+        prompt = (f"Publish {where}?\n\nThis makes it public and discoverable"
+                  + (" in the MorphoDepot organization." if isOrg else " on your account."))
         if not (self.testingMode or slicer.util.confirmOkCancelDisplay(prompt, windowTitle="Publish repository")):
             return
         # Gather any pending edits up front so we can abort cleanly (without publishing) if the
@@ -1280,7 +1280,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                                                    sourceSegmentation=newSegmentation,
                                                    screenshots=self.screenshots)
                 slicer.util.showStatusMessage("Publishing...")
-                final = self.logic.publishStagedRepo(repoOwner=repoOwner)
+                final = self.logic.publishStagedRepo()
         except Exception as e:
             slicer.util.showStatusMessage("")
             return
