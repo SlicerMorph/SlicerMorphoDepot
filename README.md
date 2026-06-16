@@ -5,7 +5,11 @@
 # MorphoDepot
 A distributed, github based platform to share and collaborate on segmentation using open-source 3D Slicer biomedical image computing platform. 
 
+🌐 **Project website:** [morphodepot.org](https://morphodepot.org) &nbsp;·&nbsp; 📄 **Paper:** [Maga et al. 2026, *Methods in Ecology and Evolution*](https://doi.org/10.1111/2041-210x.70342)
+
 The primary goal is to use github infrastructure to manage multi-person segmentation projects, particularly in context of classroom assignments.  A repository is used to manage segmentation of a specimen (e.g. a microCT of a fish) and issues are assigned to people to work on parts of the segmentation.  Pull requests are used to manage review and integration of segmentation tasks.
+
+For background on the design and rationale, see our paper in *Methods in Ecology and Evolution*: [Forking anatomy: How MorphoDepot applies the open-source development model to 3D digital morphology](https://doi.org/10.1111/2041-210x.70342). The project website [morphodepot.org](https://morphodepot.org) collects documentation, events, and onboarding. Lab onboarding into the MorphoDepot GitHub organization ([join.morphodepot.org](https://join.morphodepot.org)) is in development and not yet open to the public; contributing segmentations to existing public repositories does not require onboarding.
 
 The Slicer extension uses git behind the scenes, but most of the project management is done from within Slicer.
 
@@ -17,6 +21,7 @@ MorphoDepot consisted of a single module with a tabbed workflow
 * **Annotate:** Primary interface the "segmentor" persona will interact with MorphoDepot. 
 * **Review:** Primary interface the "repository owner" persona will interact with MorphoDepot
 * **Create:** Interface to create a MorphoDepot repository from scratch
+* **Release:** Interface for the "repository owner" persona to cut versioned releases (`v1`, `v2`, …) of a project. The owner selects the merged baseline segmentation and a color table, optionally attaches screenshots and release notes, and publishes a tagged GitHub release whose baseline becomes the starting point contributors sync to. The tab can also announce an upcoming release with a deadline to notify contributors and close out open issues before the release is cut.
 
 <img src="./Search_MD.png" width="400">
 
@@ -37,6 +42,11 @@ MorphoDepot workflows have two separate personas: **Repository Owner**, and **In
 
 ## MorphoDepot Step-by-Step Tutorial
 For more information about how to create and operate MorphoDepot repositories, please see our [step-by-step tutorial](https://github.com/SlicerMorph/Tutorials/tree/main/MorphoDepot)
+
+## Citation
+If you use MorphoDepot in your research, please cite:
+
+> Maga, A. M., Pieper, S., Donatelli, C., Gignac, P. M., Kolmann, M., Noto, C., Summers, A., & Taft, N. (2026). Forking anatomy: How MorphoDepot applies the open-source development model to 3D digital morphology. *Methods in Ecology and Evolution.* https://doi.org/10.1111/2041-210x.70342
 
 ## Funding 
 
