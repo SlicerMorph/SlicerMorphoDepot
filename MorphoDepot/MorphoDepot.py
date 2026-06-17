@@ -1613,7 +1613,7 @@ class MorphoDepotAccessionForm():
         "species" : (
             "What is your specimen's species?",
             "",
-            "Enter a valid genus and species for your specimen and use the 'Check species' button to confirm.  If unsure, use the GBIF web page to search"
+            "Enter a valid scientific name for your specimen and use the 'Check Name' button to confirm.  If unsure, use the GBIF web page to search"
         ),
         "biologicalSex" : (
             "What is your specimen's sex?",
@@ -1882,7 +1882,6 @@ class MorphoDepotAccessionForm():
 
             # Section 3 is always required for biological
             valid = valid and self.questions["species"].answer() != ""
-            valid = valid and (len(self.questions["species"].answer().split()) == 2)
             valid = valid and self.questions["biologicalSex"].answer() != ""
             valid = valid and self.questions["developmentalStage"].answer() != ""
 
@@ -1912,6 +1911,8 @@ class MorphoDepotAccessionForm():
         data = {}
         for key in MorphoDepotAccessionForm.formQuestions.keys():
             data[key] = (self.questions[key].questionLabel.text, self.questions[key].answer())
+        if self.questions['species'].taxonomyData:
+            data['taxonomy'] = self.questions['species'].taxonomyData
         return data
 
 
@@ -1973,7 +1974,7 @@ class FormTextQuestion(FormBaseQuestion):
 class FormSpeciesQuestion(FormTextQuestion):
     def __init__(self, question, validator):
         super().__init__(question, validator)
-        self.checkSpeciesButton = qt.QPushButton("Check species")
+        self.checkSpeciesButton = qt.QPushButton("Check Name")
         self.checkSpeciesButton.connect("clicked()", self.onCheckSpecies)
         self.questionLayout.addWidget(self.checkSpeciesButton)
         self.searchButton = qt.QPushButton()
@@ -1983,18 +1984,32 @@ class FormSpeciesQuestion(FormTextQuestion):
         self.speciesInfo = qt.QLabel()
         self.questionLayout.addWidget(self.speciesInfo)
         self.searchDialog = None
+        self.taxonomyData = None
 
     def _setSpeciesInfoLabel(self, result):
-        requiredKeys = ['matchType', 'rank', 'canonicalName', 'kingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species']
-        for key in requiredKeys:
-            if key not in result:
-                result[key] = "missing"
-        if result['matchType'] == "NONE":
-            labelText = "No match"
-        elif result['rank'] != "SPECIES":
-            labelText = f"Not a species ({result['canonicalName']} is rank {result['rank']})"
+        taxonomyRanks = ['kingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species']
+        if not result or result.get('matchType') == "NONE":
+            self.speciesInfo.text = "No match found in GBIF."
+            self.taxonomyData = None
+            return
+
+        if 'canonicalName' not in result:
+            self.speciesInfo.text = "Valid name, but no taxonomic information in GBIF."
+            self.taxonomyData = None
+            return
+
+        labelText = f"Name: {result['canonicalName']} (Rank: {result.get('rank', 'N/A')})\n"
+        hierarchy_parts = []
+        for rank in taxonomyRanks:
+            if result.get(rank):
+                hierarchy_parts.append(f"{rank.capitalize()}: {result[rank]}")
+        labelText += ", ".join(hierarchy_parts)
+
+        if result.get('rank') == "SPECIES":
+            self.taxonomyData = {rank: result[rank] for rank in taxonomyRanks if result.get(rank)}
         else:
-            labelText = f"Kingdom: {result['kingdom']}, Phylum: {result['phylum']}, Class: {result['class']},\nOrder: {result['order']}, Family: {result['family']}, Genus: {result['genus']}, Species: {result['species']}"
+            self.taxonomyData = None
+
         self.speciesInfo.text = labelText
 
 
@@ -2022,21 +2037,23 @@ class FormSpeciesQuestion(FormTextQuestion):
         if len(text) < 3:
             return
         try:
-            results = pygbif.species.name_suggest(q=text, rank="species")
+            results = pygbif.species.name_suggest(q=text)
         except Exception as e:
-            slicer.util.errorDisplay(f"Error searching for species: {e}")
+            slicer.util.errorDisplay(f"Error searching for scientific name: {e}")
             return
         for result in results:
-            if result['rank'] == "SPECIES":
-                item = qt.QListWidgetItem(f"{result['canonicalName']} ({result['kingdom']})")
-                item.setData(qt.Qt.UserRole, result)
-                self.searchResults.addItem(item)
+            rank = result.get('rank', 'UNKNOWN').capitalize()
+            item = qt.QListWidgetItem(f"{result['canonicalName']} ({rank})")
+            item.setData(qt.Qt.UserRole, result)
+            self.searchResults.addItem(item)
 
     def onSearchResultClicked(self, item):
+        import pygbif
         result = item.data(qt.Qt.UserRole)
         self.answerText.text = result['canonicalName']
         self.searchDialog.hide()
-        self._setSpeciesInfoLabel(result)
+        backboneResult = pygbif.species.name_backbone(result['canonicalName'])
+        self._setSpeciesInfoLabel(backboneResult)
 
     def onCheckSpecies(self):
         import pygbif
@@ -2086,11 +2103,13 @@ class MorphoDepotSearchForm():
         repoTypeQuestionData = MorphoDepotAccessionForm.formQuestions["repoType"]
         for option in repoTypeQuestionData[1]:
             self.repoTypeComboBox.addItem(option)
+        self.repoTypeRealItemCount = len(repoTypeQuestionData[1])
         model = self.repoTypeComboBox.checkableModel()
         self.repoTypeComboBox.setCheckState(model.index(0, 0), qt.Qt.Checked) # Default to Archival
-        self.repoTypeComboBox.checkedIndexesChanged.connect(self.updateCallback)
+        self._addCheckAllItems(self.repoTypeComboBox, self.repoTypeRealItemCount)
 
         self.comboBoxesByQuestion = {}
+        self.comboBoxRealItemCounts = {}
         questions = MorphoDepotAccessionForm.formQuestions
         for question, questionData in questions.items():
             if question not in MorphoDepotSearchForm.questionsToIgnore:
@@ -2099,16 +2118,44 @@ class MorphoDepotSearchForm():
                 self.searchFormLayout.addRow(label, comboBox)
                 for option in questionData[1]:
                     comboBox.addItem(option)
+                nReal = len(questionData[1])
+                self.comboBoxRealItemCounts[question] = nReal
                 model = comboBox.checkableModel()
                 if question == "subjectType":
                     # Default to "Biological specimen" only
                     comboBox.setCheckState(model.index(0, 0), qt.Qt.Checked)
                 else:
-                    for row in range(model.rowCount()):
-                        index = model.index(row,0)
+                    for row in range(nReal):
+                        index = model.index(row, 0)
                         comboBox.setCheckState(index, qt.Qt.Checked)
-                comboBox.checkedIndexesChanged.connect(self.updateCallback)
+                self._addCheckAllItems(comboBox, nReal)
                 self.comboBoxesByQuestion[question] = comboBox
+
+    def _addCheckAllItems(self, comboBox, nReal):
+        """Append Check All / Uncheck All sentinel items and wire up their logic."""
+        comboBox.addItem("— Check All —")
+        comboBox.addItem("— Uncheck All —")
+        model = comboBox.checkableModel()
+
+        def onItemChanged(item):
+            row = item.row()
+            if row < nReal:
+                self.updateCallback()
+                return
+            if item.checkState() != qt.Qt.Checked:
+                return
+            model.blockSignals(True)
+            if row == nReal:  # Check All
+                for r in range(nReal):
+                    model.item(r).setCheckState(qt.Qt.Checked)
+            else:  # Uncheck All
+                for r in range(nReal):
+                    model.item(r).setCheckState(qt.Qt.Unchecked)
+            item.setCheckState(qt.Qt.Unchecked)
+            model.blockSignals(False)
+            self.updateCallback()
+
+        model.itemChanged.connect(onItemChanged)
 
     def criteria(self):
         criteria = {"freeText": self.searchBox.text}
@@ -2117,7 +2164,7 @@ class MorphoDepotSearchForm():
         repoTypeQuestionData = MorphoDepotAccessionForm.formQuestions["repoType"]
         criteria["repoType"] = []
         model = self.repoTypeComboBox.checkableModel()
-        for row in range(model.rowCount()):
+        for row in range(self.repoTypeRealItemCount):
             index = model.index(row, 0)
             if self.repoTypeComboBox.checkState(index) == qt.Qt.Checked:
                 criteria["repoType"].append(repoTypeQuestionData[1][row])
@@ -2128,8 +2175,8 @@ class MorphoDepotSearchForm():
                 comboBox = self.comboBoxesByQuestion[question]
                 model = comboBox.checkableModel()
                 criteria[question] = []
-                for row in range(model.rowCount()):
-                    index = model.index(row,0)
+                for row in range(self.comboBoxRealItemCounts[question]):
+                    index = model.index(row, 0)
                     if comboBox.checkState(index) == qt.Qt.Checked:
                         criteria[question].append(questionData[1][row])
         return criteria
@@ -3196,10 +3243,27 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         speciesTopicString = speciesString.lower().replace(" ", "-")
 
         # write readme file
+        if 'taxonomy' in accessionData:
+            tax = accessionData['taxonomy']
+            taxonomySection = f"""
+## Taxonomy
+| Rank | Name |
+|------|------|
+| Kingdom | {tax.get('kingdom', 'Unknown')} |
+| Phylum | {tax.get('phylum', 'Unknown')} |
+| Class | {tax.get('class', 'Unknown')} |
+| Order | {tax.get('order', 'Unknown')} |
+| Family | {tax.get('family', 'Unknown')} |
+| Genus | {tax.get('genus', 'Unknown')} |
+| Species | {tax.get('species', 'Unknown')} |
+"""
+        else:
+            taxonomySection = f"\n* Species: {speciesString}\n"
         readme_content = f"""
 ## MorphoDepot Repository
 Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepotAccession.json) for specimen details.
-* Species: {speciesString}
+{taxonomySection}
+## Scan Details
 * Modality: {accessionData['modality'][1]}
 * Contrast: {accessionData['contrastEnhancement'][1]}
 * Dimensions: {accessionData['scanDimensions']}
@@ -3429,6 +3493,11 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
                 if textField in repoData:
                     if fnmatch.fnmatch(repoData[textField][1].lower(), matchString):
                         matchingRepos.add(nameWithOwner)
+            if 'taxonomy' in repoData:
+                for taxValue in repoData['taxonomy'].values():
+                    if fnmatch.fnmatch(taxValue.lower(), matchString):
+                        matchingRepos.add(nameWithOwner)
+                        break
 
         results = {}
         for nameWithOwner in matchingRepos:
