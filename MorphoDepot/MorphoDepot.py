@@ -2296,15 +2296,23 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         isLoadedNode = (loadedBaseline is not None and baselineNode.GetID() == loadedBaseline.GetID())
         try:
             untouched = isLoadedNode and not baselineNode.GetModifiedSinceRead()
-        except Exception:
+        except Exception as e:
+            logging.warning(f"GetModifiedSinceRead unavailable on baseline node; using content hash: {e}")
             untouched = False
         baselineUnchanged = untouched
         if not untouched:
             refVolume = getattr(self.logic, 'sourceVolumeNode', None)
+            if refVolume is None:
+                logging.warning("sourceVolumeNode not set on logic; baseline content check may be unreliable")
             committedPath = os.path.join(self.logic.localRepo.working_dir, "baseline.seg.nrrd")
             committedSig = self._committedBaselineSignature(committedPath, refVolume)
-            baselineUnchanged = (committedSig is not None
-                                 and committedSig == self._segmentationContentSignature(baselineNode, refVolume))
+            if committedSig is None:
+                # Committed baseline could not be read/hashed (missing file or load error);
+                # _committedBaselineSignature already logged why.  Default to "changed" so a
+                # tooling failure never silently blocks a legitimate release.
+                baselineUnchanged = False
+            else:
+                baselineUnchanged = (committedSig == self._segmentationContentSignature(baselineNode, refVolume))
         if baselineUnchanged:
             if not (self.testingMode or slicer.util.confirmOkCancelDisplay(
                     "The selected baseline is identical to the repository's current baseline, so "
