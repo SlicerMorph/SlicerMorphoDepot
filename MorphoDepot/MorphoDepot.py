@@ -321,6 +321,9 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         # The destination dropdown is filled lazily the first time the Create tab is shown
         # (see populateOwnerSelector / onCurrentTabChanged).
         self.ownerSelectorPopulated = False
+        # Auto-assign workflow availability is also resolved lazily on first Create-tab entry.
+        self._workflowScopeChecked = False
+        self._hasWorkflowScope = False
         self._stagedNameWithOwner = None
         self._stagedReposListPopulated = False
         self._stagedReposByItem = {}
@@ -410,6 +413,20 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.createUI.saveEditsButton.visible = False
         createButtonIndex = self.createUI.verticalLayout.indexOf(self.createUI.createRepository)
         self.createUI.verticalLayout.insertWidget(createButtonIndex + 1, self.createUI.saveEditsButton)
+
+        # Opt-in: bake a GitHub Actions workflow into the new repo that auto-assigns each new
+        # issue back to its creator.  Offered only when the gh token has the `workflow` scope
+        # (checked lazily on Create-tab entry); disabled with a hint otherwise.  Off by default.
+        self.createUI.autoAssignCheckBox = qt.QCheckBox("Auto-assign new issues back to their creator")
+        self.createUI.autoAssignCheckBox.checked = False
+        self.createUI.autoAssignCheckBox.enabled = False
+        self.createUI.autoAssignCheckBox.toolTip = (
+            "Adds a small GitHub Actions workflow so that when someone opens an issue on this "
+            "repository, it is automatically assigned to them (no manual step). "
+            "Requires your GitHub login to have the 'workflow' scope.")
+        self.createUI.verticalLayout.insertWidget(
+            self.createUI.verticalLayout.indexOf(self.createUI.createRepository),
+            self.createUI.autoAssignCheckBox)
 
         # === REGION 3: Make Repository Public (shown only once a repo is staged) ===
         # Separated from the form above by a divider + bold centered header (the SAME treatment
@@ -931,7 +948,29 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         if index == self.createTabIndex:
             if not self.ownerSelectorPopulated:
                 self.populateOwnerSelector()
+            self._refreshAutoAssignAvailability()
             self.refreshStagedReposList()
+
+    def _refreshAutoAssignAvailability(self):
+        """Lazily (once) check whether the gh token has the `workflow` scope and enable the
+        auto-assign checkbox accordingly.  Without the scope, pushing a `.github/workflows/`
+        file would be rejected, so the option is disabled with a hint rather than failing the
+        whole repo creation later."""
+        if self._workflowScopeChecked:
+            return
+        self._workflowScopeChecked = True
+        try:
+            self._hasWorkflowScope = self.logic.hasWorkflowScope()
+        except Exception as e:
+            logging.warning(f"Could not check workflow scope: {e}")
+            self._hasWorkflowScope = False
+        checkBox = self.createUI.autoAssignCheckBox
+        checkBox.enabled = self._hasWorkflowScope
+        if not self._hasWorkflowScope:
+            checkBox.checked = False
+            checkBox.toolTip = (
+                "Auto-assign needs the 'workflow' scope on your GitHub login. Enable it by "
+                "running:  gh auth refresh -s workflow")
 
     def _onAccessionFormValidated(self, valid):
         """Enable the "Create (stage privately)" button when the accession form is valid — but
@@ -1189,11 +1228,15 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             self.progressMethod("Repository creation aborted")
             return
 
+        # Opt-in auto-assign workflow: only when the box is checked AND the token actually has
+        # the `workflow` scope (double-gated — the box is disabled without the scope).
+        enableAutoAssign = bool(self.createUI.autoAssignCheckBox.checked and getattr(self, "_hasWorkflowScope", False))
+
         slicer.util.showStatusMessage("Staging repository (private)...")
         staged = None
         try:
             with slicer.util.tryWithErrorDisplay(_("Trouble creating repository"), waitCursor=True):
-                staged = self.logic.createAccessionRepo(sourceVolume, colorTable, accessionData, sourceSegmentation, self.screenshots, useOrg=useOrg, targetOwner=testingOwner)
+                staged = self.logic.createAccessionRepo(sourceVolume, colorTable, accessionData, sourceSegmentation, self.screenshots, useOrg=useOrg, targetOwner=testingOwner, enableAutoAssign=enableAutoAssign)
         except Exception as e:
             slicer.util.showStatusMessage("Cleaning up...")
             repoName = accessionData['githubRepoName'][1].split("/")[-1]
@@ -3365,6 +3408,23 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
             return json.loads(jsonString)
         return []
 
+    def hasWorkflowScope(self):
+        """True if the active gh token carries the `workflow` OAuth scope, which GitHub requires
+        to push or create files under `.github/workflows/`.  Used to gate the optional auto-assign
+        workflow at repo creation: without it, a push that includes a workflow file is rejected,
+        so the option is offered only when the scope is present.  Reads GitHub's authoritative
+        `X-Oauth-Scopes` response header via `gh api -i`."""
+        try:
+            output = self.gh("api -i user")
+        except Exception as e:
+            logging.warning(f"Could not determine gh token scopes: {e}")
+            return False
+        for line in output.splitlines():
+            if line.lower().startswith("x-oauth-scopes:"):
+                scopes = [s.strip() for s in line.split(":", 1)[1].split(",")]
+                return "workflow" in scopes
+        return False
+
     def ghTopicClearCache(self):
         self.gh("config clear-cache")
 
@@ -4282,11 +4342,47 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
             pass
         return ""
 
-    def _stageRepoFiles(self, repoDir, sourceVolume, colorTable, accessionData, sourceSegmentation=None, screenshots=None, useOrg=False, targetOwner=None):
+    # Optional, opt-in at Create (gated on the `workflow` token scope): a GitHub Actions
+    # workflow that assigns each newly opened issue back to whoever opened it.  Uses the
+    # auto-provisioned GITHUB_TOKEN — no secrets to configure.  Verified to assign even
+    # non-collaborator authors on public repos.
+    autoAssignWorkflow = """name: Auto-assign issue to creator
+
+# When a new issue is opened, assign it to the person who opened it.
+# Uses the built-in GITHUB_TOKEN (auto-provisioned per run) — no secrets to configure.
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  assign:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Assign the new issue to its author
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const author = context.payload.issue.user.login;
+            const res = await github.rest.issues.addAssignees({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              assignees: [author],
+            });
+            const assigned = (res.data.assignees || []).map(a => a.login);
+            if (!assigned.includes(author)) {
+              core.warning(`'${author}' was not assigned (likely not an assignable user on this repo).`);
+            }
+"""
+
+    def _stageRepoFiles(self, repoDir, sourceVolume, colorTable, accessionData, sourceSegmentation=None, screenshots=None, useOrg=False, targetOwner=None, enableAutoAssign=False):
         """Build the repository content on disk: save every file (including the CURATOR
         file), `git init`, and make the initial commit.  No GitHub interaction beyond the
-        non-GitHub license/iDigBio lookups.  Returns a build context dict consumed by
-        provisionStagedRepo()."""
+        non-GitHub license/iDigBio lookups.  `enableAutoAssign` additionally writes a GitHub
+        Actions workflow that assigns new issues back to their creator (opt-in, scope-gated in
+        the UI).  Returns a build context dict consumed by provisionStagedRepo()."""
 
         # The CURATOR is the person creating the repo and is responsible for reviewing its
         # segmentation PRs.  It is always the creator, regardless of where the repo ends up.
@@ -4388,6 +4484,16 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
             with open(captionsPath, "w") as f:
                 json.dump(captions, f, indent=2)
             repoFileNames.append(os.path.join("screenshots", "captions.json"))
+        # Optional auto-assign workflow (opt-in at Create, only when the token has `workflow`
+        # scope — gated in the UI).  Committed like any other file so it survives the staged
+        # flow's history rewrites and ships with the published repo.
+        if enableAutoAssign:
+            workflowDir = os.path.join(repoDir, ".github", "workflows")
+            os.makedirs(workflowDir, exist_ok=True)
+            with open(os.path.join(workflowDir, "auto-assign.yml"), "w") as fp:
+                fp.write(MorphoDepotLogic.autoAssignWorkflow)
+            repoFileNames.append(os.path.join(".github", "workflows", "auto-assign.yml"))
+
         repoFilePaths = [os.path.join(repoDir, fileName) for fileName in repoFileNames]
         repo.index.add(repoFilePaths)
         repo.index.commit("Initial commit")
@@ -4413,7 +4519,7 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
             "committedFiles": repoFileNames,
         }
 
-    def createAccessionRepo(self, sourceVolume, colorTable, accessionData, sourceSegmentation=None, screenshots=None, useOrg=None, targetOwner=None):
+    def createAccessionRepo(self, sourceVolume, colorTable, accessionData, sourceSegmentation=None, screenshots=None, useOrg=None, targetOwner=None, enableAutoAssign=False):
         """Stage a new accession repository: build it locally, then provision it.  `useOrg`
         chooses the destination — True = born in the MorphoDepot org (members only; S3, 10 GB,
         governed); False = the creator's personal account (GitHub release asset, 2 GB, fully
@@ -4453,7 +4559,7 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
 
         buildContext = self._stageRepoFiles(repoDir, sourceVolume, colorTable, accessionData,
                                             sourceSegmentation, screenshots, useOrg=useOrg,
-                                            targetOwner=targetOwner)
+                                            targetOwner=targetOwner, enableAutoAssign=enableAutoAssign)
         return self.provisionStagedRepo(buildContext)
 
     def _provisionStagedRepoInOrg(self, buildContext):
