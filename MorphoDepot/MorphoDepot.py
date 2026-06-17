@@ -3794,15 +3794,38 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
 
         self.cacheOldVersion(localDirectory)
 
-        if repositoryName not in self.repositoryList():
+        forkExists = repositoryName in self.repositoryList()
+        if not forkExists:
             self.gh(f"repo fork {sourceRepository} --clone=false")
         self.gh(f"repo clone {repositoryName} {localDirectory}")
         self.localRepo = git.Repo(localDirectory)
         self.ensureUpstreamExists()
 
+        # D2: keep the fork's default branch current with upstream.  GitHub forks do not
+        # auto-sync, so a pre-existing fork drifts behind every merge/release.  This is a
+        # best-effort, server-side fast-forward (no --force, so it cannot clobber a diverged
+        # fork) — only meaningful for a genuine fork (origin != upstream); the owner case and a
+        # freshly created fork are already current.  A failure here never aborts: D1 below
+        # guarantees the new branch starts from the latest upstream regardless.
+        if forkExists:
+            forkNameWithOwner = self.nameWithOwner("origin")
+            upstreamNameWithOwner = self.nameWithOwner("upstream")
+            if forkNameWithOwner and upstreamNameWithOwner and forkNameWithOwner != upstreamNameWithOwner:
+                try:
+                    self.gh(["repo", "sync", forkNameWithOwner, "--source", upstreamNameWithOwner])
+                except Exception as e:
+                    logging.warning(f"Could not sync fork {forkNameWithOwner} from {upstreamNameWithOwner}: {e}")
+
         originBranches = self.localRepo.remotes.origin.fetch()
         originBranchIDs = [ob.name for ob in originBranches]
         originBranchID = f"origin/{branchName}"
+
+        # D1: fetch upstream so a new issue branch can be cut from the current upstream default
+        # branch (the latest published baseline), not the fork's possibly-stale main.
+        try:
+            self.localRepo.remote("upstream").fetch()
+        except Exception as e:
+            logging.warning(f"Could not fetch upstream: {e}")
 
         localIssueBranch = None
         for branch in self.localRepo.branches:
@@ -3815,8 +3838,15 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
             logging.debug("Checking out existing from origin")
             self.localRepo.git.execute(f"git checkout --track {originBranchID}".split())
         else:
-            logging.debug("Nothing local or remote, nothing in origin so make new branch %s", branchName)
-            self.localRepo.git.checkout("origin/main")
+            # D1: branch off upstream/main (latest published state).  Fall back to origin/main
+            # only if upstream/main is somehow unavailable, preserving the prior behavior.
+            base = "upstream/main"
+            try:
+                self.localRepo.git.rev_parse("--verify", base)
+            except Exception:
+                base = "origin/main"
+            logging.debug("Nothing in origin for %s; creating it from %s", branchName, base)
+            self.localRepo.git.checkout(base)
             self.localRepo.git.branch(branchName)
             self.localRepo.git.checkout(branchName)
 
