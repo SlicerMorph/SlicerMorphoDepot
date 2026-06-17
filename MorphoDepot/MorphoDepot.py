@@ -2645,6 +2645,8 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
             if branchName in segmentationNodesByName.keys():
                 self.segmentationNode = segmentationNodesByName[branchName]
                 self.segmentationNode.GetDisplayNode().SetVisibility(True)
+                if configuration == "reviewer":
+                    self.segmentationNode.CreateClosedSurfaceRepresentation()
             else:
                 self.segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
                 self.segmentationNode.CreateDefaultDisplayNodes()
