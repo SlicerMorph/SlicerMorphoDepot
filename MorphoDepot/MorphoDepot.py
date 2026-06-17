@@ -4239,7 +4239,7 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         tagNames = [r['tagName'] for r in releases if r['tagName'].startswith('v')]
         versions = [int(t[1:]) for t in tagNames if t[1:].isdigit()]
         if versions:
-            nextVersion = max(versions) + 1
+            nextVersion = max(versions)
         return f"v{nextVersion}"
 
     def previousReleaseTag(self):
