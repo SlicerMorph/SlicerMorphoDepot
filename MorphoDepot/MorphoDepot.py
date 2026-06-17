@@ -2500,6 +2500,35 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         nameWithOwner = self.logic.nameWithOwner("origin")
         deadlineISO = self.releaseUI.announcementDeadline.date.toString(qt.Qt.ISODate)
         message = self.releaseUI.announcementMessageEdit.plainText
+
+        # Only one active pre-release announcement per repo: it is a repo-state signal (the
+        # pinned, release-pending issue), not a fire-and-forget post.  If one already exists,
+        # offer to REPLACE it rather than silently creating a duplicate.
+        # (findReleaseAnnouncement already swallows its own errors and returns None.)
+        existing = self.logic.findReleaseAnnouncement(nameWithOwner)
+        if existing:
+            n = existing["number"]
+            existingDeadline = existing.get("deadline") or "unknown"
+            if not (self.testingMode or slicer.util.confirmOkCancelDisplay(
+                    f"This repository already has an active release announcement "
+                    f"(issue #{n}, deadline {existingDeadline}).\n\n"
+                    f"Replace it with a new announcement (deadline {deadlineISO})? "
+                    "The existing one will be closed first.",
+                    windowTitle="Announcement already exists")):
+                return
+            self.logic.clearReleaseAnnouncement(
+                nameWithOwner,
+                message=f"Superseded by a new announcement (deadline {deadlineISO}); closing this one.")
+            # clearReleaseAnnouncement swallows its own gh errors, so verify the old announcement
+            # is actually gone before posting — otherwise a failed close would leave a duplicate
+            # (the very thing this guard exists to prevent).
+            if not self.testingMode and self.logic.findReleaseAnnouncement(nameWithOwner) is not None:
+                slicer.util.errorDisplay(
+                    f"Could not close the existing announcement (issue #{n}). Not posting a new "
+                    "one, to avoid duplicates — close it manually and try again.",
+                    windowTitle="Announcement not replaced")
+                return
+
         with slicer.util.tryWithErrorDisplay("Failed to query open items", waitCursor=True):
             issues, prs = self.logic.openIssuesAndPRs(nameWithOwner)
         if not issues and not prs:
@@ -4529,15 +4558,18 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
                         "deadline": deadlineMatch.group(1) if deadlineMatch else None}
         return None
 
-    def clearReleaseAnnouncement(self, nameWithOwner, tag=None):
-        """Retire the pre-release announcement after a release: unpin it, remove the
-        release-pending label, comment, and close it.  Best-effort and idempotent."""
+    def clearReleaseAnnouncement(self, nameWithOwner, tag=None, message=None):
+        """Retire the pre-release announcement: unpin it, remove the release-pending label,
+        comment, and close it.  Used both after a release (default message) and when an
+        announcement is superseded by a new one (caller passes `message`).  Best-effort and
+        idempotent."""
         announcement = self.findReleaseAnnouncement(nameWithOwner)
         if not announcement:
             return
         n = str(announcement["number"])
-        message = (f"Release {tag} has been published; closing this announcement." if tag
-                   else "The release has been published; closing this announcement.")
+        if message is None:
+            message = (f"Release {tag} has been published; closing this announcement." if tag
+                       else "The release has been published; closing this announcement.")
         for command in (
             ["issue", "unpin", n, "--repo", nameWithOwner],
             ["issue", "edit", n, "--repo", nameWithOwner, "--remove-label", self.releasePendingLabel],
