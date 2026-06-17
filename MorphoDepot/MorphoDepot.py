@@ -2461,6 +2461,30 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         nameWithOwner = self.logic.nameWithOwner("origin")
         deadlineISO = self.releaseUI.announcementDeadline.date.toString(qt.Qt.ISODate)
         message = self.releaseUI.announcementMessageEdit.plainText
+
+        # Only one active pre-release announcement per repo: it is a repo-state signal (the
+        # pinned, release-pending issue), not a fire-and-forget post.  If one already exists,
+        # offer to REPLACE it rather than silently creating a duplicate.
+        existing = None
+        try:
+            existing = self.logic.findReleaseAnnouncement(nameWithOwner)
+        except Exception as e:
+            logging.warning(f"Could not check for an existing announcement: {e}")
+        if existing:
+            n = existing["number"]
+            existingDeadline = existing.get("deadline") or "unknown"
+            if not (self.testingMode or slicer.util.confirmOkCancelDisplay(
+                    f"This repository already has an active release announcement "
+                    f"(issue #{n}, deadline {existingDeadline}).\n\n"
+                    f"Replace it with a new announcement (deadline {deadlineISO})? "
+                    "The existing one will be closed first.",
+                    windowTitle="Announcement already exists")):
+                return
+            with slicer.util.tryWithErrorDisplay("Failed to retire the existing announcement", waitCursor=True):
+                self.logic.clearReleaseAnnouncement(
+                    nameWithOwner,
+                    message=f"Superseded by a new announcement (deadline {deadlineISO}); closing this one.")
+
         with slicer.util.tryWithErrorDisplay("Failed to query open items", waitCursor=True):
             issues, prs = self.logic.openIssuesAndPRs(nameWithOwner)
         if not issues and not prs:
@@ -4487,15 +4511,18 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
                         "deadline": deadlineMatch.group(1) if deadlineMatch else None}
         return None
 
-    def clearReleaseAnnouncement(self, nameWithOwner, tag=None):
-        """Retire the pre-release announcement after a release: unpin it, remove the
-        release-pending label, comment, and close it.  Best-effort and idempotent."""
+    def clearReleaseAnnouncement(self, nameWithOwner, tag=None, message=None):
+        """Retire the pre-release announcement: unpin it, remove the release-pending label,
+        comment, and close it.  Used both after a release (default message) and when an
+        announcement is superseded by a new one (caller passes `message`).  Best-effort and
+        idempotent."""
         announcement = self.findReleaseAnnouncement(nameWithOwner)
         if not announcement:
             return
         n = str(announcement["number"])
-        message = (f"Release {tag} has been published; closing this announcement." if tag
-                   else "The release has been published; closing this announcement.")
+        if message is None:
+            message = (f"Release {tag} has been published; closing this announcement." if tag
+                       else "The release has been published; closing this announcement.")
         for command in (
             ["issue", "unpin", n, "--repo", nameWithOwner],
             ["issue", "edit", n, "--repo", nameWithOwner, "--remove-label", self.releasePendingLabel],
