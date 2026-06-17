@@ -1962,9 +1962,12 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                     self.releaseUI.sourceVolumeLabel.text = getattr(self.logic, 'sourceVolumeName', '') or ""
                     self.releaseUI.releasesCollapsibleButton.enabled = True
                     self.releaseUI.announcementCollapsibleButton.enabled = True
-                    # Auto-select what the loader pulled out of the repo so the user has a
-                    # working default for both required fields (still editable by the user).
-                    self.releaseUI.newBaselineSelector.setCurrentNode(getattr(self.logic, 'baselineSegmentationNode', None))
+                    # Auto-select the color table (safe to default), but DELIBERATELY do NOT
+                    # auto-populate the baseline picker: defaulting it to the repo's existing
+                    # baseline made it too easy to release without merging in the new
+                    # contribution, silently re-publishing the old baseline (see issue #123).
+                    # Force a conscious selection of the new baseline instead.
+                    self.releaseUI.newBaselineSelector.setCurrentNode(None)
                     self.releaseUI.newColorSelector.setCurrentNode(getattr(self.logic, 'colorTableNode', None))
                     self.updateAnnouncementCounts(repoData)
                     self.updateReleaseNotesTemplate(repoData)
@@ -2266,6 +2269,26 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         if plan is None:
             return
 
+        # #123: guard against releasing the existing baseline unchanged (which discards any
+        # merged contribution).  If the picked baseline is the very node loaded from the repo as
+        # the current baseline, this release would carry no new segmentation work.
+        loadedBaseline = getattr(self.logic, 'baselineSegmentationNode', None)
+        if (loadedBaseline is not None and baselineNode is not None
+                and baselineNode.GetID() == loadedBaseline.GetID()):
+            if not (self.testingMode or slicer.util.confirmOkCancelDisplay(
+                    "The selected baseline is the repository's current baseline, so this release "
+                    "would incorporate no new segmentation work.\n\n"
+                    "If you meant to publish merged contributions, click Cancel and select (or "
+                    "build) the updated segmentation as the new baseline first.\n\n"
+                    "Release with the unchanged baseline anyway?",
+                    windowTitle="Baseline unchanged")):
+                return
+
+        # #124: non-blocking reminder if no pre-release announcement was made (or its deadline
+        # has not passed). Never enforces — every path can proceed.
+        if not self._confirmReleaseAnnouncement(nameWithOwner):
+            return
+
         prompt = self.buildReleaseConfirmation(plan, baselineNode, colorTableNode)
         if not (self.testingMode or slicer.util.confirmOkCancelDisplay(prompt, windowTitle=f"Make release {newTag}")):
             return
@@ -2288,6 +2311,10 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.releaseUI.releaseCommentsEdit.plainText = ""
         self.updateCurrentVersionLabel()
         if createdTag:
+            # #124: retire the pre-release announcement (unpin, unlabel, close) now that the
+            # release exists — done unconditionally, independent of the optional item-close step
+            # below, so the next cycle's announcement detection starts clean.
+            self.logic.clearReleaseAnnouncement(nameWithOwner, createdTag)
             self.maybeCloseOpenItemsForRelease(nameWithOwner, createdTag)
             # Reset the in-session screenshots so the next release starts clean.
             self.screenshots = []
@@ -2375,6 +2402,58 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         with slicer.util.tryWithErrorDisplay("Failed to close open items", waitCursor=True):
             ni, np = self.logic.closeOpenItemsForRelease(nameWithOwner, version)
             slicer.util.showStatusMessage(f"Closed {ni} issues and {np} PRs for release {version}.")
+
+    def _confirmReleaseAnnouncement(self, nameWithOwner):
+        """Return True to proceed with the release, False to abort.
+
+        Non-blocking reminder (#124): if collaborators have open items that a release would
+        close but no pre-release announcement was made, prompt the user.  If an announcement
+        exists but its deadline has not passed, prompt more softly.  Detection reads repo state
+        only (the pinned, `release-pending`-labelled announcement issue) — no local flag.  Any
+        detection failure proceeds silently so it can never block a release."""
+        if self.testingMode:
+            return True
+        try:
+            issues, prs = self.logic.openIssuesAndPRs(nameWithOwner)
+            announcement = self.logic.findReleaseAnnouncement(nameWithOwner)
+        except Exception as e:
+            logging.warning(f"Release-announcement check skipped: {e}")
+            return True
+        annNumber = announcement["number"] if announcement else None
+        openCount = len([i for i in (issues or []) if i.get("number") != annNumber]) + len(prs or [])
+        if openCount == 0:
+            return True
+        if announcement is None:
+            msgBox = qt.QMessageBox()
+            msgBox.setWindowTitle("No pre-release announcement")
+            msgBox.setIcon(qt.QMessageBox.Warning)
+            msgBox.setText("No pre-release announcement has been made for this release.")
+            msgBox.setInformativeText(
+                f"{openCount} open issue(s)/PR(s) will be closed by this release, and the "
+                "contributors have not been notified to finish their work before it is cut.\n\n"
+                "Announce now to give them a deadline, proceed anyway, or cancel.")
+            announceButton = msgBox.addButton("Announce now...", qt.QMessageBox.ActionRole)
+            proceedButton = msgBox.addButton("Proceed anyway", qt.QMessageBox.AcceptRole)
+            msgBox.addButton("Cancel", qt.QMessageBox.RejectRole)
+            msgBox.exec_()
+            clicked = msgBox.clickedButton()
+            if clicked == announceButton:
+                self.releaseUI.announcementCollapsibleButton.collapsed = False
+                slicer.util.infoDisplay(
+                    "Set a deadline and message above, then click 'Notify contributors'. "
+                    "Re-run Make Release when you are ready.",
+                    windowTitle="Announce upcoming release")
+                return False
+            return clicked == proceedButton
+        # An announcement exists — remind only if its deadline has not yet passed.
+        deadline = announcement.get("deadline")
+        todayISO = qt.QDate.currentDate().toString(qt.Qt.ISODate)
+        if deadline and todayISO < deadline:
+            return slicer.util.confirmOkCancelDisplay(
+                f"You announced a release deadline of {deadline}, which has not passed yet.\n\n"
+                "Cutting the release now will close contributors' open work early. Continue?",
+                windowTitle="Announced deadline not reached")
+        return True
 
     def onAnnounceUpcomingRelease(self):
         if not self.logic.localRepo:
@@ -3068,6 +3147,12 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
     """
 
     accessionFileFormatVersion = 2
+
+    # Pre-release announcement (#124): a dedicated, pinned, labelled issue is the repo-state
+    # signal that contributors have been warned of an upcoming release.  An invisible HTML-comment
+    # marker in its body carries the machine-readable deadline/tag.
+    releasePendingLabel = "release-pending"
+    releaseAnnounceMarkerName = "morphodepot:release-announce"
 
     def __init__(self, progressMethod = None) -> None:
         """Called when the logic class is instantiated. Can be used for initializing member variables."""
@@ -4301,8 +4386,12 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         return issues, prs
 
     def announceUpcomingRelease(self, nameWithOwner, deadlineISO, message):
-        """Post a release-announcement comment on every open issue and PR.
-        Substitutes {deadline} in the message body. Returns (issueCount, prCount)."""
+        """Announce an upcoming release.  Posts a comment on every open issue and PR (so people
+        who watch notifications are pinged) AND creates a dedicated, pinned, `release-pending`
+        announcement issue (so people who only visit the repo see it).  The announcement issue
+        body carries an invisible marker encoding the target tag and deadline, which is the
+        repo-state signal `findReleaseAnnouncement` later reads.  Substitutes {deadline} in the
+        message body. Returns (issueCount, prCount)."""
         issues, prs = self.openIssuesAndPRs(nameWithOwner)
         body = message.replace("{deadline}", deadlineISO)
         for issue in issues:
@@ -4313,7 +4402,80 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
             n = str(pr['number'])
             self.progressMethod(f"Announcement on PR #{n}: {pr['title']}")
             self.gh(["pr", "comment", n, "--repo", nameWithOwner, "--body", body])
+        self._createReleaseAnnouncementIssue(nameWithOwner, deadlineISO, body)
         return len(issues), len(prs)
+
+    def _releaseAnnounceMarker(self, tag, deadlineISO):
+        """Invisible HTML-comment marker embedded in the announcement issue body."""
+        return f"<!-- {self.releaseAnnounceMarkerName} tag={tag} deadline={deadlineISO} -->"
+
+    def _ensureReleasePendingLabel(self, nameWithOwner):
+        """Create (or update) the release-pending label; idempotent via --force."""
+        try:
+            self.gh(["label", "create", self.releasePendingLabel, "--repo", nameWithOwner,
+                     "--color", "FBCA04",
+                     "--description", "An upcoming release has been announced but not yet cut",
+                     "--force"])
+        except Exception as e:
+            logging.warning(f"Could not ensure '{self.releasePendingLabel}' label: {e}")
+
+    def _createReleaseAnnouncementIssue(self, nameWithOwner, deadlineISO, body):
+        """Create a pinned, release-pending announcement issue carrying the deadline marker.
+        Best-effort: a failure here must not abort the announcement comments above."""
+        tag = self.nextReleaseTag() or ""
+        self._ensureReleasePendingLabel(nameWithOwner)
+        marker = self._releaseAnnounceMarker(tag, deadlineISO)
+        title = f"Upcoming release {tag} - finish by {deadlineISO}".strip()
+        try:
+            url = self.gh(["issue", "create", "--repo", nameWithOwner,
+                           "--title", title, "--body", f"{body}\n\n{marker}",
+                           "--label", self.releasePendingLabel])
+        except Exception as e:
+            logging.warning(f"Could not create announcement issue: {e}")
+            return None
+        number = url.strip().rstrip("/").split("/")[-1]
+        try:
+            self.gh(["issue", "pin", number, "--repo", nameWithOwner])
+        except Exception as e:
+            logging.warning(f"Could not pin announcement issue #{number}: {e}")
+        return number
+
+    def findReleaseAnnouncement(self, nameWithOwner):
+        """Return {'number', 'deadline'} for the open release-pending announcement issue, or None.
+        Reads repo state only; returns None on any error (e.g. the label does not exist yet)."""
+        try:
+            items = self.ghJSON(["issue", "list", "--repo", nameWithOwner, "--state", "open",
+                                 "--label", self.releasePendingLabel, "--json", "number,body"])
+        except Exception:
+            return None
+        for item in items or []:
+            body = item.get("body", "") or ""
+            match = re.search(re.escape(self.releaseAnnounceMarkerName) + r"\b([^>]*)", body)
+            if match:
+                deadlineMatch = re.search(r"deadline=(\S+)", match.group(1))
+                return {"number": item["number"],
+                        "deadline": deadlineMatch.group(1) if deadlineMatch else None}
+        return None
+
+    def clearReleaseAnnouncement(self, nameWithOwner, tag=None):
+        """Retire the pre-release announcement after a release: unpin it, remove the
+        release-pending label, comment, and close it.  Best-effort and idempotent."""
+        announcement = self.findReleaseAnnouncement(nameWithOwner)
+        if not announcement:
+            return
+        n = str(announcement["number"])
+        message = (f"Release {tag} has been published; closing this announcement." if tag
+                   else "The release has been published; closing this announcement.")
+        for command in (
+            ["issue", "unpin", n, "--repo", nameWithOwner],
+            ["issue", "edit", n, "--repo", nameWithOwner, "--remove-label", self.releasePendingLabel],
+            ["issue", "comment", n, "--repo", nameWithOwner, "--body", message],
+            ["issue", "close", n, "--repo", nameWithOwner],
+        ):
+            try:
+                self.gh(command)
+            except Exception as e:
+                logging.warning(f"Announcement cleanup step failed ({command[1]}): {e}")
 
     def closeOpenItemsForRelease(self, nameWithOwner, version, message=None):
         """Comment on and close every open issue and PR. PRs are closed without merging.
@@ -5751,6 +5913,15 @@ class MorphoDepotTest(ScriptedLoadableModuleTest):
                           f"Tooltip should mention the open issue. Tooltip was: {repoItem.toolTip()}")
 
             widget.onReleaseRepoDoubleClicked(repoItem)
+            slicer.app.processEvents()
+
+            # The baseline picker is no longer auto-populated (issue #123) - the releaser must
+            # consciously pick the new baseline. Emulate that: prefer a merged contribution
+            # segmentation over the repo's existing baseline so this exercises the normal path.
+            existingBaseline = widget.logic.baselineSegmentationNode
+            segNodes = slicer.util.getNodesByClass("vtkMRMLSegmentationNode")
+            newBaseline = next((n for n in segNodes if n is not existingBaseline), existingBaseline)
+            widget.releaseUI.newBaselineSelector.setCurrentNode(newBaseline)
             slicer.app.processEvents()
 
             # Auto-generated change-log should list the two issues closed via merged PRs
