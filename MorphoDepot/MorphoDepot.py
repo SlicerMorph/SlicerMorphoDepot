@@ -417,16 +417,28 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         # Opt-in: bake a GitHub Actions workflow into the new repo that auto-assigns each new
         # issue back to its creator.  Offered only when the gh token has the `workflow` scope
         # (checked lazily on Create-tab entry); disabled with a hint otherwise.  Off by default.
-        self.createUI.autoAssignCheckBox = qt.QCheckBox("Auto-assign new issues back to their creator")
+        # The checkbox sits next to a "?" button that opens a fuller explanation, since the label
+        # alone doesn't convey what the option actually does.
+        self.createUI.autoAssignCheckBox = qt.QCheckBox(
+            "Set the GitHub workflow to auto-assign new issues to their creators")
         self.createUI.autoAssignCheckBox.checked = False
         self.createUI.autoAssignCheckBox.enabled = False
         self.createUI.autoAssignCheckBox.toolTip = (
             "Adds a small GitHub Actions workflow so that when someone opens an issue on this "
             "repository, it is automatically assigned to them (no manual step). "
-            "Requires your GitHub login to have the 'workflow' scope.")
-        self.createUI.verticalLayout.insertWidget(
+            "Requires your GitHub login to have the 'workflow' scope. "
+            "Click the '?' for details.")
+        self.createUI.autoAssignHelpButton = qt.QToolButton()
+        self.createUI.autoAssignHelpButton.text = "?"
+        self.createUI.autoAssignHelpButton.toolTip = "What does this do?"
+        self.createUI.autoAssignHelpButton.clicked.connect(self.onAutoAssignHelp)
+        autoAssignLayout = qt.QHBoxLayout()
+        autoAssignLayout.addWidget(self.createUI.autoAssignCheckBox)
+        autoAssignLayout.addWidget(self.createUI.autoAssignHelpButton)
+        autoAssignLayout.addStretch(1)
+        self.createUI.verticalLayout.insertLayout(
             self.createUI.verticalLayout.indexOf(self.createUI.createRepository),
-            self.createUI.autoAssignCheckBox)
+            autoAssignLayout)
 
         # === REGION 3: Make Repository Public (shown only once a repo is staged) ===
         # Separated from the form above by a divider + bold centered header (the SAME treatment
@@ -1102,6 +1114,28 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             self.configureUI.userNameStatusLabel.visible = False
             self.configureUI.userEmailStatusLabel.text = "Git must be correctly installed in order to enable configuration"
             self.configureUI.userEmailStatusLabel.visible = True
+
+    def onAutoAssignHelp(self):
+        """Explain the auto-assign option in a popup.  Kept as a popup for now; the
+        'Open Documentation' button is where a proper docs page will be linked later."""
+        msgBox = qt.QMessageBox()
+        msgBox.setWindowTitle("Auto-assign new issues to their creators")
+        msgBox.setIcon(qt.QMessageBox.Information)
+        msgBox.setText("Automatically assign each new issue to the person who opened it.")
+        msgBox.setInformativeText(
+            "When enabled, MorphoDepot adds a small GitHub Actions workflow to this repository. "
+            "From then on, whenever someone opens an issue, GitHub assigns that issue to them "
+            "automatically.\n\n"
+            "That way you don't have to manually assign every task your students create back to "
+            "them — the person who reports or requests something is already the assignee.\n\n"
+            "This requires your GitHub login to have the 'workflow' scope. The option is left "
+            "disabled until that scope is present.")
+        openDocsButton = msgBox.addButton("Open Documentation", qt.QMessageBox.ActionRole)
+        msgBox.addButton(qt.QMessageBox.Ok)
+        msgBox.exec_()
+        if msgBox.clickedButton() == openDocsButton:
+            qt.QDesktopServices.openUrl(qt.QUrl(
+                "https://github.com/MorphoCloud/SlicerMorphoDepot?tab=readme-ov-file#morphodepot"))
 
     def onUserNameChanged(self, userName):
         if userName:
