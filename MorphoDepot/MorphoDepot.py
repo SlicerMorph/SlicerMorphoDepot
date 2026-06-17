@@ -840,6 +840,23 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                 logging.warning(f"Could not load staged screenshots: {e}")
         self.updateScreenshotCount()
 
+    def _committedBaselineSignature(self, path, referenceVolume):
+        """Content signature of the baseline currently committed on disk (baseline.seg.nrrd),
+        loaded into a temporary node so it can be compared by CONTENT against the
+        about-to-be-released segmentation.  Returns None if there is no committed baseline."""
+        if not path or not os.path.exists(path):
+            return None
+        tmpNode = None
+        try:
+            tmpNode = slicer.util.loadSegmentation(path)
+            return self._segmentationContentSignature(tmpNode, referenceVolume)
+        except Exception as e:
+            logging.warning(f"Could not compute committed-baseline signature: {e}")
+            return None
+        finally:
+            if tmpNode is not None:
+                slicer.mrmlScene.RemoveNode(tmpNode)
+
     def _segmentationContentSignature(self, segNode, referenceVolume=None):
         """A content signature of a segmentation (segment ids + binary-labelmap voxels), used
         to detect whether the loaded baseline was edited in the scene.  Hashes content, not
@@ -2269,15 +2286,37 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         if plan is None:
             return
 
-        # #123: guard against releasing the existing baseline unchanged (which discards any
-        # merged contribution).  If the picked baseline is the very node loaded from the repo as
-        # the current baseline, this release would carry no new segmentation work.
+        # #123: guard against a release that carries no new segmentation work — decided by
+        # CONTENT, not node identity, so editing the loaded baseline in place is recognized.
+        #   Stage 1 (cheap): the picked node is the loaded baseline AND untouched since read →
+        #     certainly identical to the committed file; no hashing needed.
+        #   Stage 2 (precise, only otherwise): hash the picked segmentation's voxels and compare
+        #     to the committed baseline.seg.nrrd on disk.
         loadedBaseline = getattr(self.logic, 'baselineSegmentationNode', None)
-        if (loadedBaseline is not None and baselineNode is not None
-                and baselineNode.GetID() == loadedBaseline.GetID()):
+        isLoadedNode = (loadedBaseline is not None and baselineNode.GetID() == loadedBaseline.GetID())
+        try:
+            untouched = isLoadedNode and not baselineNode.GetModifiedSinceRead()
+        except Exception as e:
+            logging.warning(f"GetModifiedSinceRead unavailable on baseline node; using content hash: {e}")
+            untouched = False
+        baselineUnchanged = untouched
+        if not untouched:
+            refVolume = getattr(self.logic, 'sourceVolumeNode', None)
+            if refVolume is None:
+                logging.warning("sourceVolumeNode not set on logic; baseline content check may be unreliable")
+            committedPath = os.path.join(self.logic.localRepo.working_dir, "baseline.seg.nrrd")
+            committedSig = self._committedBaselineSignature(committedPath, refVolume)
+            if committedSig is None:
+                # Committed baseline could not be read/hashed (missing file or load error);
+                # _committedBaselineSignature already logged why.  Default to "changed" so a
+                # tooling failure never silently blocks a legitimate release.
+                baselineUnchanged = False
+            else:
+                baselineUnchanged = (committedSig == self._segmentationContentSignature(baselineNode, refVolume))
+        if baselineUnchanged:
             if not (self.testingMode or slicer.util.confirmOkCancelDisplay(
-                    "The selected baseline is the repository's current baseline, so this release "
-                    "would incorporate no new segmentation work.\n\n"
+                    "The selected baseline is identical to the repository's current baseline, so "
+                    "this release would incorporate no new segmentation work.\n\n"
                     "If you meant to publish merged contributions, click Cancel and select (or "
                     "build) the updated segmentation as the new baseline first.\n\n"
                     "Release with the unchanged baseline anyway?",
@@ -3935,6 +3974,9 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         if not os.path.exists(nrrdPath):
             slicer.util.downloadFile(volumeURL, nrrdPath, checksum=checksum)
         volumeNode = slicer.util.loadVolume(nrrdPath)
+        # Keep a handle to the source volume: it is the reference geometry used to hash a
+        # baseline segmentation's voxels (release "baseline unchanged" check).
+        self.sourceVolumeNode = volumeNode
 
         # Load all segmentations
         segmentationNodesByName = {}
