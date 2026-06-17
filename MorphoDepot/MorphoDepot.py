@@ -449,9 +449,10 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         goLiveLayout.addWidget(self.createUI.stagingStatusLabel)
         # Contact email — required to publish, submitted to the MorphoDepot contact list at
         # publish time (never for staged-only repos).
-        emailTooltip = ("Your email is added to the MorphoDepot contact list so you can be "
-                        "notified about new features and updates. It is submitted only when you "
-                        "publish, and is not stored in the repository.")
+        emailTooltip = ("This is the email address we will use to contact you about MorphoDepot "
+                        "updates. If you prefer a different one, you can update it. It is added to "
+                        "the MorphoDepot contact list, submitted only when you publish, and is not "
+                        "stored in the repository.")
         self.createUI.goLiveEmailLabel = qt.QLabel("Contact email (required to publish):")
         self.createUI.goLiveEmailLabel.toolTip = emailTooltip
         goLiveLayout.addWidget(self.createUI.goLiveEmailLabel)
@@ -1073,6 +1074,23 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             userName = self.logic.getGitConfig("user.name")
             userEmail = self.logic.getGitConfig("user.email")
 
+            # `gh auth login` configures the credential helper but never sets git's commit
+            # identity, so on a fresh instance these are empty.  Seed them from the GitHub
+            # profile (gh) instead of forcing the user to type them, writing back to the global
+            # git config so commits work.  We only fill *empty* fields — a value the user has
+            # already set is never overwritten.  The email comes from the public GitHub profile;
+            # when the user keeps it private it is empty, so the field stays blank and the
+            # "Required for commits" prompt remains (it is mandatory and must be entered).
+            if not userName or not userEmail:
+                profile = self.logic.ghUserProfile()
+                if not userName:
+                    userName = profile["name"] or profile["login"]
+                    if userName:
+                        self.logic.setGitConfig("user.name", userName)
+                if not userEmail and profile["email"]:
+                    userEmail = profile["email"]
+                    self.logic.setGitConfig("user.email", userEmail)
+
             self.configureUI.userNameLineEdit.text = userName
             self.configureUI.userNameStatusLabel.visible = not bool(userName)
 
@@ -1266,7 +1284,10 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self._contactEmailNeeded = not self.logic.userIsOrgMember()
         self.createUI.goLiveEmailLabel.visible = self._contactEmailNeeded
         self.createUI.goLiveEmail.visible = self._contactEmailNeeded
-        self.createUI.goLiveEmail.text = ""
+        # Pre-fill with the GitHub public profile email (gh) so non-members don't have to type
+        # it; they can still edit it.  Empty when the profile email is private, in which case it
+        # remains a mandatory entry gated by _updatePublishEnabled.
+        self.createUI.goLiveEmail.text = self.logic.ghUserProfile()["email"] if self._contactEmailNeeded else ""
         self._updatePublishEnabled()
         self.createUI.discardButton.enabled = True
         self.createUI.openRepository.enabled = True
@@ -3508,6 +3529,27 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
     def whoami(self):
         """ Get the active gh account """
         return(self.gh("auth status --active").split()[7])
+
+    def ghUserProfile(self):
+        """Return {login, name, email} for the active gh account from `gh api user`.
+
+        Uses only the default `gh auth login` scopes (no `user`/`user:email` needed): `login`
+        is always present; `name` (display name) and `email` are the *public* profile values and
+        may be empty when the user keeps them private.  Returns empty strings on any error so
+        callers can fall back to asking the user.  We deliberately do NOT read `user/emails`
+        (the verified-primary endpoint) because that requires broadening the requested scopes."""
+        try:
+            data = self.ghJSON(["api", "user"])
+        except Exception as e:
+            logging.warning(f"Could not fetch gh user profile: {e}")
+            return {"login": "", "name": "", "email": ""}
+        if not isinstance(data, dict):
+            return {"login": "", "name": "", "email": ""}
+        return {
+            "login": data.get("login") or "",
+            "name": data.get("name") or "",
+            "email": data.get("email") or "",
+        }
 
     def userOrganizations(self):
         """Return the list of GitHub organization logins the active gh user belongs to.
