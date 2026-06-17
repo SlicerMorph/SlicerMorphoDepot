@@ -2465,11 +2465,8 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         # Only one active pre-release announcement per repo: it is a repo-state signal (the
         # pinned, release-pending issue), not a fire-and-forget post.  If one already exists,
         # offer to REPLACE it rather than silently creating a duplicate.
-        existing = None
-        try:
-            existing = self.logic.findReleaseAnnouncement(nameWithOwner)
-        except Exception as e:
-            logging.warning(f"Could not check for an existing announcement: {e}")
+        # (findReleaseAnnouncement already swallows its own errors and returns None.)
+        existing = self.logic.findReleaseAnnouncement(nameWithOwner)
         if existing:
             n = existing["number"]
             existingDeadline = existing.get("deadline") or "unknown"
@@ -2480,10 +2477,18 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                     "The existing one will be closed first.",
                     windowTitle="Announcement already exists")):
                 return
-            with slicer.util.tryWithErrorDisplay("Failed to retire the existing announcement", waitCursor=True):
-                self.logic.clearReleaseAnnouncement(
-                    nameWithOwner,
-                    message=f"Superseded by a new announcement (deadline {deadlineISO}); closing this one.")
+            self.logic.clearReleaseAnnouncement(
+                nameWithOwner,
+                message=f"Superseded by a new announcement (deadline {deadlineISO}); closing this one.")
+            # clearReleaseAnnouncement swallows its own gh errors, so verify the old announcement
+            # is actually gone before posting — otherwise a failed close would leave a duplicate
+            # (the very thing this guard exists to prevent).
+            if not self.testingMode and self.logic.findReleaseAnnouncement(nameWithOwner) is not None:
+                slicer.util.errorDisplay(
+                    f"Could not close the existing announcement (issue #{n}). Not posting a new "
+                    "one, to avoid duplicates — close it manually and try again.",
+                    windowTitle="Announcement not replaced")
+                return
 
         with slicer.util.tryWithErrorDisplay("Failed to query open items", waitCursor=True):
             issues, prs = self.logic.openIssuesAndPRs(nameWithOwner)
