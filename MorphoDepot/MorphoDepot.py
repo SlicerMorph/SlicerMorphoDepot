@@ -1442,6 +1442,12 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.createUI.openRepository.enabled = True
         self.createUI.stagingStatusLabel.text = f"Published: {final} is now public and discoverable."
         self.refreshStagedReposList(force=True)
+        # Publishing fully succeeded: open the now-public repository in the browser, and clear the
+        # scene so the (potentially multi-GB) source volume and segmentation do not linger in the
+        # session.  The browser is skipped under automated testing.
+        if not self.testingMode:
+            qt.QDesktopServices.openUrl(qt.QUrl(f"https://github.com/{final}"))
+        slicer.mrmlScene.Clear()
 
     def onDiscard(self):
         """Abandon the staged repo.  Deleting a repo needs the `delete_repo` token scope,
