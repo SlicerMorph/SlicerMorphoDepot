@@ -18,18 +18,18 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
+    <widget class="QPushButton" name="refreshButton">
+     <property name="text">
+      <string>Refresh Github</string>
+     </property>
+    </widget>
+   </item>
+   <item>
     <widget class="ctkCollapsibleButton" name="prsCollapsibleButton">
      <property name="text">
       <string>Pending pull requests</string>
      </property>
      <layout class="QVBoxLayout" name="verticalLayout_2">
-      <item>
-       <widget class="QPushButton" name="refreshButton">
-        <property name="text">
-         <string>Refresh Github</string>
-        </property>
-       </widget>
-      </item>
       <item>
        <widget class="QCheckBox" name="hideDraftsCheckBox">
         <property name="text">

@@ -644,6 +644,19 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.searchUI.refreshButton.clicked.connect(self.onRefreshSearch)
         self.searchUI.saveSearchResultsButton.clicked.connect(self.onSaveSearchResults)
 
+        # Add hidden RepoClerk status labels below each refresh button
+        for ui, btnName in [
+            (self.annotateUI, "refreshButton"),
+            (self.reviewUI, "refreshButton"),
+            (self.searchUI, "refreshButton"),
+        ]:
+            btn = getattr(ui, btnName)
+            label = qt.QLabel("")
+            label.hide()
+            layout = btn.parent().layout()
+            layout.insertWidget(layout.indexOf(btn) + 1, label)
+            ui.repoClerkStatusLabel = label
+
         # set initial visibility of admin tab
         self.onAdminModeChanged(self.configureUI.adminModeCheckBox.checkState())
         self.reviewUI.hideDraftsCheckBox.checked = self.hidePRDrafts
@@ -1690,14 +1703,50 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             json.dump(captions, f, indent=2)
         slicer.util.showStatusMessage(f"Screenshot captions saved to {captionsPath}", 3000)
 
+    def _waitForRepoClerkUpdate(self, statusLabel):
+        """If there are open RepoClerk update-request issues, switch the label to
+        'Github update pending...' and wait up to 2 minutes for them to clear.
+        The label is assumed to already be visible (showing 'Updating...').
+        Returns True if issues cleared (caller should reload data), False otherwise.
+        Fails gracefully if the user navigates away or exits Slicer."""
+        if not self.logic.hasRepoClerkUpdatePending():
+            return False
+        MAX_WAIT = 120
+        statusLabel.text = "Github update pending..."
+        try:
+            for _ in range(MAX_WAIT):
+                slicer.app.processEvents()
+                time.sleep(1)
+                if not self.logic.hasRepoClerkUpdatePending():
+                    return True
+            slicer.util.showStatusMessage(
+                "RepoClerk journal update has been running for over 2 minutes — something may be wrong.", 10000)
+            return False
+        except Exception:
+            return False
+        finally:
+            try:
+                statusLabel.hide()
+            except Exception:
+                pass
+
     # Annotate
     def onRefresh(self):
+        self.annotateUI.repoClerkStatusLabel.text = "Updating..."
+        self.annotateUI.repoClerkStatusLabel.show()
+        slicer.app.processEvents()
         with slicer.util.tryWithErrorDisplay("Failed to refresh from GitHub", waitCursor=True):
-            self.logic.ghTopicClearCache()
             self.annotateUI.issueList.clear()
             self.annotateUI.prList.clear()
             self.updateIssueList()
             self.updateAnnotatePRList()
+        if self._waitForRepoClerkUpdate(self.annotateUI.repoClerkStatusLabel):
+            with slicer.util.tryWithErrorDisplay("Failed to refresh from GitHub", waitCursor=True):
+                self.annotateUI.issueList.clear()
+                self.annotateUI.prList.clear()
+                self.updateIssueList()
+                self.updateAnnotatePRList()
+        self.annotateUI.repoClerkStatusLabel.hide()
 
     def updateScreenshotCount(self):
         count = len(self.screenshots)
@@ -1890,9 +1939,15 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
 
     # Review
     def onReviewRefresh(self):
+        self.reviewUI.repoClerkStatusLabel.text = "Updating..."
+        self.reviewUI.repoClerkStatusLabel.show()
+        slicer.app.processEvents()
         with slicer.util.tryWithErrorDisplay("Failed to update PR list", waitCursor=True):
-            self.logic.ghTopicClearCache()
             self.updateReviewPRList()
+        if self._waitForRepoClerkUpdate(self.reviewUI.repoClerkStatusLabel):
+            with slicer.util.tryWithErrorDisplay("Failed to update PR list", waitCursor=True):
+                self.updateReviewPRList()
+        self.reviewUI.repoClerkStatusLabel.hide()
 
     def updateReviewPRList(self):
         with slicer.util.tryWithErrorDisplay("Failed to update PR list", waitCursor=True):
@@ -2103,6 +2158,9 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
 
     # Search
     def onRefreshSearch(self):
+        self.searchUI.repoClerkStatusLabel.text = "Updating..."
+        self.searchUI.repoClerkStatusLabel.show()
+        slicer.app.processEvents()
         with slicer.util.tryWithErrorDisplay("Failed to refresh search cache", waitCursor=True):
             slicer.util.showStatusMessage("Refreshing search cache...")
             self.logic.refreshSearchCache()
@@ -2110,6 +2168,12 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             self.searchUI.searchForm.topWidget.enabled = True
             self.searchUI.searchCollapsibleButton.collapsed = False
             self.doSearch()
+        if self._waitForRepoClerkUpdate(self.searchUI.repoClerkStatusLabel):
+            with slicer.util.tryWithErrorDisplay("Failed to refresh search cache", waitCursor=True):
+                slicer.util.showStatusMessage("Reloading search cache with updated journals...")
+                self.logic.refreshSearchCache()
+                self.doSearch()
+        self.searchUI.repoClerkStatusLabel.hide()
 
     def doSearch(self):
         criteria = self.searchUI.searchForm.criteria()
@@ -2118,8 +2182,8 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
 
     def repoDataKetToRepoNameAndOwner(self, repoDataKey):
         nameWithOwnerSplit = repoDataKey.split('^')
-        repoName = nameWithOwnerSplit[0]
-        owner = nameWithOwnerSplit[1]
+        owner = nameWithOwnerSplit[0]
+        repoName = nameWithOwnerSplit[1]
         return repoName,owner
 
     def updateSearchResults(self, results):
@@ -3654,82 +3718,141 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
     def ghTopicClearCache(self):
         self.gh("config clear-cache")
 
-    def ghTopicData(self, topic="MorphoDepot"):
-        query="""
-            query($params: String!, $endCursor: String) {
-                search(query: $params, type: REPOSITORY, first: 100, after: $endCursor) {
-                    nodes {
-                        ... on Repository {
-                            nameWithOwner
-                            pullRequests(states: [OPEN], first: 100) {
-                                nodes {
-                                    number title isDraft url
-                                    author { login }
-                                    closingIssuesReferences(first: 1) {
-                                      nodes { title author {login} repository { name owner {login} } }
-                                    }
-                                }
-                            }
-                            issues(states: [OPEN], first: 100) {
-                                totalCount
-                                nodes {
-                                    number title url author { login }
-                                    assignees(first: 5) { nodes { login } }
-                                }
-                            }
-                        }
-                    }
-                    pageInfo { endCursor hasNextPage }
+    REPOCLERK_URL = "https://github.com/MorphoDepot/RepoClerk"
+    REPOCLERK_SIZE_LIMIT_MB = 100
+
+    def refreshRepoClerk(self):
+        """Maintain a shallow clone of RepoClerk and pull latest journals.
+        Returns the clone path on success, or None on failure (triggers fallback to direct API)."""
+        clonePath = os.path.join(self.localRepositoryDirectory(), "MorphoDepotCaches", "RepoClerk")
+        try:
+            if os.path.exists(clonePath):
+                total = sum(
+                    os.path.getsize(os.path.join(root, f))
+                    for root, _, files in os.walk(clonePath)
+                    for f in files
+                )
+                if total / 1e6 > self.REPOCLERK_SIZE_LIMIT_MB:
+                    shutil.rmtree(clonePath)
+            if not os.path.exists(clonePath):
+                subprocess.run(
+                    [self.gitExecutablePath, 'clone', '--depth', '1', self.REPOCLERK_URL, clonePath],
+                    check=True, capture_output=True
+                )
+            else:
+                subprocess.run(
+                    [self.gitExecutablePath, 'pull'],
+                    cwd=clonePath, check=True, capture_output=True
+                )
+            return clonePath
+        except Exception as e:
+            logging.warning(f"RepoClerk refresh failed: {e}")
+            return None
+
+    def repoClerkJournals(self, clonePath):
+        """Read all journal JSON files from a RepoClerk clone. Returns list of journal dicts."""
+        journals = []
+        journalsDir = os.path.join(clonePath, "journals")
+        if not os.path.exists(journalsDir):
+            return journals
+        for entry in os.scandir(journalsDir):
+            if entry.name.endswith(".json"):
+                try:
+                    with open(entry.path) as f:
+                        journals.append(json.load(f))
+                except Exception as e:
+                    logging.warning(f"Failed to read journal {entry.path}: {e}")
+        return journals
+
+    def notifyRepoClerk(self, nameWithOwner):
+        """Request a RepoClerk journal update by opening an update-request issue.
+        Issue creation works for any authenticated GitHub user (no write access to RepoClerk needed).
+        The drain loop picks up and closes these issues as it processes them."""
+        self.gh([
+            "issue", "create",
+            "--repo", "MorphoDepot/RepoClerk",
+            "--title", f"update {nameWithOwner}",
+            "--label", "update-request",
+            "--body", "",
+        ])
+
+    def hasRepoClerkUpdatePending(self):
+        """Returns True if there are open update-request issues in RepoClerk.
+        Issues are only closed once the drain loop has finished processing them,
+        so this covers the full window from queuing through page rebuild completion."""
+        result = self.gh("issue list --repo MorphoDepot/RepoClerk --state open --label update-request --json number")
+        if result:
+            try:
+                return len(json.loads(result)) > 0
+            except Exception:
+                pass
+        return False
+
+    def _journalsToTopicData(self, journals):
+        """Convert RepoClerk journal list to the dict shape that ghTopicData() returned."""
+        result = []
+        for j in journals:
+            issues_nodes = [
+                {
+                    "number": issue["number"],
+                    "title": issue["title"],
+                    "url": issue["url"],
+                    "author": {"login": issue["author"]} if issue.get("author") else None,
+                    "assignees": {"nodes": [{"login": a} for a in issue.get("assignees", [])]},
                 }
-            }
-        """
-        params = f"topic:{topic} fork:true"
-        command = ['api', 'graphql', "--cache", "10m", '--paginate', '--slurp',
-                   '-f', f'query={query}', '-f', f'params={params}']
-        searchData = self.ghJSON(command)
-        return searchData[0]['data']['search']['nodes']
+                for issue in j.get("openIssues", [])
+            ]
+            prs_nodes = [
+                {
+                    "number": pr["number"],
+                    "title": pr["title"],
+                    "isDraft": pr["isDraft"],
+                    "url": pr["url"],
+                    "author": {"login": pr["author"]} if pr.get("author") else None,
+                    "closingIssuesReferences": {
+                        "nodes": [
+                            {
+                                "number": pr["closingIssue"]["number"],
+                                "title": pr["closingIssue"]["title"],
+                                "repository": {"owner": {"login": pr["closingIssue"]["repoOwner"]}},
+                            }
+                        ] if pr.get("closingIssue") else []
+                    },
+                }
+                for pr in j.get("openPRs", [])
+            ]
+            result.append({
+                "nameWithOwner": j["nameWithOwner"],
+                "pullRequests": {"nodes": prs_nodes},
+                "issues": {"nodes": issues_nodes},
+            })
+        return result
+
+    def ghTopicData(self, topic="MorphoDepot"):
+        clonePath = self.refreshRepoClerk()
+        if clonePath:
+            journals = self.repoClerkJournals(clonePath)
+            if journals:
+                return self._journalsToTopicData(journals)
+        logging.warning("RepoClerk journals unavailable — returning empty topic data")
+        return []
 
     def morphoRepos(self):
-        # TODO: generalize for other topics
-        query = """
-            query($searchQuery: String!, $endCursor: String) {
-              search(query: $searchQuery, type: REPOSITORY, first: 100, after: $endCursor) {
-                nodes {
-                  ... on Repository {
-                    name
-                    owner {
-                      login
+        clonePath = self.refreshRepoClerk()
+        if clonePath:
+            journals = self.repoClerkJournals(clonePath)
+            if journals:
+                return [
+                    {
+                        "name": j["nameWithOwner"].split("/")[1],
+                        "owner": {"login": j["nameWithOwner"].split("/")[0]},
+                        "pushedAt": j.get("pushedAt", ""),
+                        "curator": j.get("curator"),
                     }
-                    viewerPermission
-                    pushedAt
-                    issues(states: [OPEN], first: 100) {
-                      totalCount
-                      nodes {
-                        number title
-                        author { login }
-                        assignees(first: 5) { nodes { login } }
-                      }
-                    }
-                    pullRequests(states: [OPEN], first: 100) {
-                      totalCount
-                      nodes {
-                        number title isDraft
-                        author { login }
-                      }
-                    }
-                  }
-                }
-                pageInfo { endCursor hasNextPage }
-              }
-            }
-        """
-        search_query_string = "topic:morphodepot fork:true"
-        command = ['api', 'graphql', '--paginate', '--slurp',
-                   '-f', f'query={query}', '-f', f'searchQuery={search_query_string}']
-        pages = self.ghJSON(command)
-        all_repos = [repo for page in pages for repo in page['data']['search']['nodes'] if repo]
-
-        return all_repos
+                    for j in journals
+                ]
+        logging.warning("RepoClerk journals unavailable — returning empty repo list")
+        return []
 
     def whoami(self):
         """ Get the active gh account """
@@ -3831,9 +3954,16 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         return issueList
 
     def administratedRepoList(self):
+        me = self.whoami()
         returnRepos = []
         for repo in self.morphoRepos():
-            if repo['viewerPermission'] == 'ADMIN':
+            # A repo is "mine to administer" if I own it (personal tier) OR I'm its CURATOR.
+            # The org tier matters here: a member's repo is owned by the MorphoDepot org, not the
+            # member, so owner != me — the journaled CURATOR (RepoClerk schema v3) is the
+            # authoritative signal. viewerPermission can't be used: it's per-viewer and a shared
+            # cache cannot carry it. curator is None on pre-v3 journals, so org repos simply light
+            # up once RepoClerk re-drains with the field (personal repos work meanwhile).
+            if repo['owner']['login'] == me or repo.get('curator') == me:
                 repo['nameWithOwner'] = f"{repo['owner']['login']}/{repo['name']}"
                 returnRepos.append(repo)
         return returnRepos
@@ -4175,7 +4305,7 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
             """.replace("\n"," ").split()
             commandList += ["--body", prBody]
             self.gh(commandList)
-            self.ghTopicClearCache()
+            self.notifyRepoClerk(upstreamNameWithOwner)
         return True
 
     def requestReview(self):
@@ -4189,7 +4319,7 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
             pr ready {pr['number']}
                 --repo {upstreamNameWithOwner}
             """)
-        self.ghTopicClearCache()
+        self.notifyRepoClerk(upstreamNameWithOwner)
 
     def requestChanges(self, message=""):
         pr = self.issuePR(role="reviewer")
@@ -4207,7 +4337,7 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
                 --undo
                 --repo {upstreamNameWithOwner}
             """)
-        self.ghTopicClearCache()
+        self.notifyRepoClerk(upstreamNameWithOwner)
 
     def approvePR(self, message=""):
         pr = self.issuePR(role="reviewer")
@@ -4232,7 +4362,7 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         """.replace("\n"," ").split()
         commandList += ["--body", "Merging and closing"]
         self.gh(commandList)
-        self.ghTopicClearCache()
+        self.notifyRepoClerk(upstreamNameWithOwner)
 
     def getReleases(self):
         """Get list of releases for the current repository (latest first)."""
@@ -5136,6 +5266,13 @@ jobs:
         self.localRepo = None
         if repoDir and os.path.exists(repoDir):
             shutil.rmtree(repoDir, ignore_errors=True)
+        # The repo is now public + topic:morphodepot, so RepoClerk will crawl it — nudge it to
+        # journal the new repo promptly instead of waiting for the next scheduled sweep.
+        # Best-effort: the publish already succeeded, so a notify failure must not surface here.
+        try:
+            self.notifyRepoClerk(finalNameWithOwner)
+        except Exception as e:
+            logging.warning(f"Could not notify RepoClerk of publish: {e}")
         self.stagingContext = None
         return finalNameWithOwner
 
@@ -5164,6 +5301,11 @@ jobs:
         self.localRepo = None
         if repoDir and os.path.exists(repoDir):
             shutil.rmtree(repoDir, ignore_errors=True)
+        # Now public + discoverable — nudge RepoClerk to journal it (best-effort, see above).
+        try:
+            self.notifyRepoClerk(personal)
+        except Exception as e:
+            logging.warning(f"Could not notify RepoClerk of publish: {e}")
         self.stagingContext = None
         return personal
 
@@ -5384,77 +5526,28 @@ jobs:
     #
 
     def refreshSearchCache(self):
-        """Gets accession data from all repositories"""
-        repos = self.morphoRepos()
-
-        searchDirectory = os.path.join(self.localRepositoryDirectory(), "MorphoDepotCaches", "SearchData")
-        os.makedirs(searchDirectory, exist_ok=True)
-
-        self.repoDataByNameWithOwner = {}
-
-        for repo in repos:
-            try:
-                repoName = repo['name']
-                ownerLogin = repo['owner']['login']
-                nameWithOwner = f"{repoName}^{ownerLogin}"
-                filePath = f"{searchDirectory}/{nameWithOwner}-repoData.json"
-
-                self.progressMethod(f"Refreshing {nameWithOwner}")
-
-                repoData = None
-                if os.path.exists(filePath):
-                    with open(filePath) as fp:
-                        repoData = json.load(fp)
-
-                urlPrefix = "https://raw.githubusercontent.com"
-                if not repoData:
-                    accessionURL = f"{urlPrefix}/{ownerLogin}/{repoName}/main/MorphoDepotAccession.json"
-                    request = requests.get(accessionURL)
-                    if request.status_code == 200:
-                        repoData = json.loads(request.text)
-                    else:
-                        self.progressMethod(f"Failed to load {accessionURL}")
-
-                if repoData:
-                    repoData['pushedAt'] = repo['pushedAt']
-                    # Also fetch screenshot captions if they exist
-                    if 'screenshotCount' not in repoData:
-                        captionsURL = f"{urlPrefix}/{ownerLogin}/{repoName}/main/screenshots/captions.json"
-                        captions_request = requests.get(captionsURL)
-                        if captions_request.status_code == 200:
-                            captionsData = captions_request.json()
-                            repoData['screenshotCount'] = len(captionsData)
-                            repoData['screenshotCaptions'] = captionsData
-                        else:
-                            repoData['screenshotCount'] = 0
-                            repoData['screenshotCaptions'] = {}
-
-                    # Fetch volume size if not already cached in the repoData
-                    if 'volumeSize' not in repoData:
-                        sourceVolumeURL_path = f"{urlPrefix}/{ownerLogin}/{repoName}/main/source_volume"
-                        self.progressMethod(f"Getting {sourceVolumeURL_path}")
-                        sourceVolumeURL_req = requests.get(sourceVolumeURL_path)
-                        if sourceVolumeURL_req.status_code == 200:
-                            volumeRef = sourceVolumeURL_req.text.strip()
-                            volumeURL = self.resolveVolumeURL(volumeRef, f"{ownerLogin}/{repoName}")
-                            self.progressMethod(f"Getting head of {volumeURL}")
-                            head_req = requests.head(volumeURL, allow_redirects=True)
-                            if head_req.status_code == 200 and 'Content-Length' in head_req.headers:
-                                repoData['volumeSize'] = int(head_req.headers['Content-Length'])
-                            else:
-                                repoData['volumeSize'] = None # Explicitly mark as checked but not found
-                            self.progressMethod(f"Volume size {repoData['volumeSize']}")
-
-                    self.repoDataByNameWithOwner[nameWithOwner] = repoData
-                    with open(filePath, "w") as fp:
-                        fp.write(json.dumps(repoData))
-
-            except Exception as e:
-                # Use a more specific name here since repo is a dict
-                repoIdentifier = f"{repo.get('owner', {}).get('login', 'N/A')}/{repo.get('name', 'N/A')}"
-                logging.warning(f"Could not process repo {repoIdentifier}: {e}")
-
-        self.progressMethod(f"Finished refreshing caches")
+        """Gets accession data from all repositories via RepoClerk journals."""
+        clonePath = self.refreshRepoClerk()
+        if clonePath:
+            journals = self.repoClerkJournals(clonePath)
+            if journals:
+                self.repoDataByNameWithOwner = {}
+                for j in journals:
+                    try:
+                        owner, repo = j["nameWithOwner"].split("/", 1)
+                        key = f"{owner}^{repo}"
+                        repoData = dict(j.get("accession", {}))
+                        repoData["pushedAt"] = j.get("pushedAt", "")
+                        repoData["screenshotCount"] = j.get("screenshotCount", 0)
+                        repoData["screenshotCaptions"] = j.get("screenshotCaptions", [])
+                        repoData["volumeSize"] = j.get("volumeSize")
+                        self.repoDataByNameWithOwner[key] = repoData
+                        self.progressMethod(f"Loaded {key} from RepoClerk")
+                    except Exception as e:
+                        logging.warning(f"Could not process journal {j.get('nameWithOwner', '?')}: {e}")
+                self.progressMethod("Finished loading from RepoClerk")
+                return
+        logging.warning("RepoClerk journals unavailable — search cache not populated")
 
 
     def search(self, criteria):
