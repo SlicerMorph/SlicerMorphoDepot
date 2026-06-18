@@ -4305,7 +4305,10 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
             """.replace("\n"," ").split()
             commandList += ["--body", prBody]
             self.gh(commandList)
-            self.notifyRepoClerk(upstreamNameWithOwner)
+            try:
+                self.notifyRepoClerk(upstreamNameWithOwner)
+            except Exception as e:
+                logging.warning(f"Could not notify RepoClerk: {e}")
         return True
 
     def requestReview(self):
@@ -4319,7 +4322,10 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
             pr ready {pr['number']}
                 --repo {upstreamNameWithOwner}
             """)
-        self.notifyRepoClerk(upstreamNameWithOwner)
+        try:
+            self.notifyRepoClerk(upstreamNameWithOwner)
+        except Exception as e:
+            logging.warning(f"Could not notify RepoClerk: {e}")
 
     def requestChanges(self, message=""):
         pr = self.issuePR(role="reviewer")
@@ -4337,7 +4343,10 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
                 --undo
                 --repo {upstreamNameWithOwner}
             """)
-        self.notifyRepoClerk(upstreamNameWithOwner)
+        try:
+            self.notifyRepoClerk(upstreamNameWithOwner)
+        except Exception as e:
+            logging.warning(f"Could not notify RepoClerk: {e}")
 
     def approvePR(self, message=""):
         pr = self.issuePR(role="reviewer")
@@ -4362,7 +4371,10 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         """.replace("\n"," ").split()
         commandList += ["--body", "Merging and closing"]
         self.gh(commandList)
-        self.notifyRepoClerk(upstreamNameWithOwner)
+        try:
+            self.notifyRepoClerk(upstreamNameWithOwner)
+        except Exception as e:
+            logging.warning(f"Could not notify RepoClerk: {e}")
 
     def getReleases(self):
         """Get list of releases for the current repository (latest first)."""
@@ -5527,11 +5539,13 @@ jobs:
 
     def refreshSearchCache(self):
         """Gets accession data from all repositories via RepoClerk journals."""
+        # Reset up front so a failed refresh yields an empty cache (search then returns nothing)
+        # rather than silently serving stale results from a previous successful run.
+        self.repoDataByNameWithOwner = {}
         clonePath = self.refreshRepoClerk()
         if clonePath:
             journals = self.repoClerkJournals(clonePath)
             if journals:
-                self.repoDataByNameWithOwner = {}
                 for j in journals:
                     try:
                         owner, repo = j["nameWithOwner"].split("/", 1)
