@@ -3736,13 +3736,14 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         return(self.gh("auth status --active").split()[7])
 
     def ghUserProfile(self):
-        """Return {login, name, email} for the active gh account from `gh api user`.
+        """Return {login, name, email} for the active gh account.
 
-        Uses only the default `gh auth login` scopes (no `user`/`user:email` needed): `login`
-        is always present; `name` (display name) and `email` are the *public* profile values and
-        may be empty when the user keeps them private.  Returns empty strings on any error so
-        callers can fall back to asking the user.  We deliberately do NOT read `user/emails`
-        (the verified-primary endpoint) because that requires broadening the requested scopes."""
+        `email` is the account's verified **primary** email from `user/emails`, so it is
+        available even when the user keeps their profile email private — this needs the
+        `user:email` scope, which the prerequisites instruct everyone to grant
+        (`gh auth login -s user:email`).  Falls back to the public profile email (`gh api user`)
+        if `user/emails` is unavailable (e.g. the scope was not granted), then to empty.
+        Returns empty strings on any error so callers can fall back to asking the user."""
         try:
             data = self.ghJSON(["api", "user"])
         except Exception as e:
@@ -3750,10 +3751,22 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
             return {"login": "", "name": "", "email": ""}
         if not isinstance(data, dict):
             return {"login": "", "name": "", "email": ""}
+        # Verified primary email (works for private emails) via the user:email scope.
+        email = ""
+        try:
+            emails = self.ghJSON(["api", "user/emails"])
+            if isinstance(emails, list):
+                primary = next((e for e in emails if isinstance(e, dict) and e.get("primary")), None)
+                if primary:
+                    email = primary.get("email") or ""
+        except Exception as e:
+            logging.warning(f"Could not read user/emails — is the 'user:email' scope granted? ({e})")
+        if not email:
+            email = data.get("email") or ""  # fall back to the public profile email
         return {
             "login": data.get("login") or "",
             "name": data.get("name") or "",
-            "email": data.get("email") or "",
+            "email": email,
         }
 
     def userOrganizations(self):
