@@ -3429,7 +3429,10 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         expectedMd5 = hashlib.md5(chunk).hexdigest()
         lastError = None
         for _attempt in range(4):
-            signed = post("sign", {"key": key, "upload_id": uploadId, "part_number": partNumber})
+            # Send the exact chunk length so the signing service binds it into the part URL
+            # (S3 then rejects a mismatched body) — part of the server-side per-file size cap.
+            signed = post("sign", {"key": key, "upload_id": uploadId, "part_number": partNumber,
+                                   "content_length": len(chunk)})
             try:
                 resp = requests.put(signed["url"], data=chunk, timeout=None)
             except Exception as e:
