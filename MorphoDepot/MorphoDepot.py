@@ -2014,16 +2014,13 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.releaseUI.announcementCounts.text = f"Will post to {issues} open issues and {prs} open PRs."
 
     def updateAnnouncementState(self, nameWithOwner):
-        """Reflect any EXISTING pre-release announcement in the UI when a repo is loaded — so a
-        user returning in a fresh session sees it without having to click anything. Reads live
-        repo state (the pinned release-pending issue(s)), so it is correct across sessions and
-        machines. Surfaces it in three places: the collapsible header (visible even collapsed),
-        a status line, and the button label; auto-expands the section when one exists."""
+        """Show whether a pre-release announcement already exists for the loaded repo, so the
+        user sees it on load without clicking anything. Reads live repo state. There is at most
+        one (the dedup guard prevents more); 'Notify contributors' becomes 'Replace announcement'
+        when one exists, and that edits the existing announcement in place."""
         announcements = self.logic.listReleaseAnnouncements(nameWithOwner)
         if announcements is None:
-            # The check itself failed (e.g. a transient gh/network error). Leave the indicator
-            # as-is rather than falsely resetting it to "no announcement" and hiding a real one.
-            return
+            return  # the check itself failed (transient gh error) — leave the indicator unchanged
         header = self.releaseUI.announcementCollapsibleButton
         label = self.releaseUI.announcementStateLabel
         button = self.releaseUI.announceButton
@@ -2033,19 +2030,12 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             label.setStyleSheet("")
             button.text = "Notify contributors"
             return
-        nums = ", ".join(f"#{a['number']}" for a in announcements)
-        deadlines = ", ".join(sorted({a['deadline'] for a in announcements if a['deadline']})) or "unknown"
-        if len(announcements) == 1:
-            header.text = f"Pre-release Announcement — ⚠ already announced (deadline {deadlines}, {nums})"
-            label.text = (f"An upcoming release is already announced ({nums}, deadline {deadlines}). "
-                          "Posting again will replace it.")
-        else:
-            header.text = f"Pre-release Announcement — ⚠ {len(announcements)} announcements exist ({nums})"
-            label.text = (f"⚠ {len(announcements)} active announcements exist ({nums}; deadlines "
-                          f"{deadlines}) — these are duplicates. Posting replaces the oldest; close the "
-                          "extras on GitHub.")
-        label.setStyleSheet("color: #b35900; font-weight: bold;")  # amber, draws attention
-        button.text = "Replace announcement…"
+        deadline = announcements[0].get("deadline") or "unknown"
+        header.text = f"Pre-release Announcement — already announced (deadline {deadline})"
+        label.text = (f"There is already a published release announcement (deadline {deadline}). "
+                      "To modify it, edit the fields below and click “Replace announcement”.")
+        label.setStyleSheet("color: #1a4d7a;")  # informational, not a warning
+        button.text = "Replace announcement"
         header.collapsed = False  # auto-expand so it is noticed
 
     def repoTooltip(self, repo):
@@ -2545,43 +2535,20 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         deadlineISO = self.releaseUI.announcementDeadline.date.toString(qt.Qt.ISODate)
         message = self.releaseUI.announcementMessageEdit.plainText
 
-        # Only one active pre-release announcement per repo: it is a repo-state signal (the
-        # pinned, release-pending issue), not a fire-and-forget post.  If one already exists,
-        # offer to REPLACE it rather than silently creating a duplicate.
-        # (findReleaseAnnouncement already swallows its own errors and returns None.)
+        # If an announcement already exists, this updates it IN PLACE (same issue, new
+        # deadline/message) and re-notifies — it does not close it and create a new one.
         existing = self.logic.findReleaseAnnouncement(nameWithOwner)
-        if existing:
-            n = existing["number"]
-            existingDeadline = existing.get("deadline") or "unknown"
-            if not (self.testingMode or slicer.util.confirmOkCancelDisplay(
-                    f"This repository already has an active release announcement "
-                    f"(issue #{n}, deadline {existingDeadline}).\n\n"
-                    f"Replace it with a new announcement (deadline {deadlineISO})? "
-                    "The existing one will be closed first.",
-                    windowTitle="Announcement already exists")):
-                return
-            self.logic.clearReleaseAnnouncement(
-                nameWithOwner,
-                message=f"Superseded by a new announcement (deadline {deadlineISO}); closing this one.")
-            # clearReleaseAnnouncement swallows its own gh errors, so verify the old announcement
-            # is actually gone before posting — otherwise a failed close would leave a duplicate
-            # (the very thing this guard exists to prevent).
-            if not self.testingMode and self.logic.findReleaseAnnouncement(nameWithOwner) is not None:
-                slicer.util.errorDisplay(
-                    f"Could not close the existing announcement (issue #{n}). Not posting a new "
-                    "one, to avoid duplicates — close it manually and try again.",
-                    windowTitle="Announcement not replaced")
-                return
-
         with slicer.util.tryWithErrorDisplay("Failed to query open items", waitCursor=True):
             issues, prs = self.logic.openIssuesAndPRs(nameWithOwner)
-        if not issues and not prs:
+        if not issues and not prs and not existing:
             slicer.util.infoDisplay(f"{nameWithOwner} has no open issues or PRs to notify.")
             return
-        prompt = (
-            f"Post announcement to {len(issues)} open issues and {len(prs)} open PRs in {nameWithOwner}?\n"
-            f"Deadline: {deadlineISO}"
-        )
+        if existing:
+            prompt = (f"There is already a published release announcement. Update it (and re-notify "
+                      f"{len(issues)} open issues and {len(prs)} open PRs) with deadline {deadlineISO}?")
+        else:
+            prompt = (f"Post announcement to {len(issues)} open issues and {len(prs)} open PRs in "
+                      f"{nameWithOwner}?\nDeadline: {deadlineISO}")
         if not (self.testingMode or slicer.util.confirmOkCancelDisplay(prompt)):
             return
         with slicer.util.tryWithErrorDisplay("Failed to post announcement", waitCursor=True):
@@ -4548,7 +4515,7 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
             n = str(pr['number'])
             self.progressMethod(f"Announcement on PR #{n}: {pr['title']}")
             self.gh(["pr", "comment", n, "--repo", nameWithOwner, "--body", body])
-        self._createReleaseAnnouncementIssue(nameWithOwner, deadlineISO, body)
+        self._upsertReleaseAnnouncementIssue(nameWithOwner, deadlineISO, body)
         return len(issues), len(prs)
 
     def _releaseAnnounceMarker(self, tag, deadlineISO):
@@ -4565,16 +4532,27 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         except Exception as e:
             logging.warning(f"Could not ensure '{self.releasePendingLabel}' label: {e}")
 
-    def _createReleaseAnnouncementIssue(self, nameWithOwner, deadlineISO, body):
-        """Create a pinned, release-pending announcement issue carrying the deadline marker.
-        Best-effort: a failure here must not abort the announcement comments above."""
+    def _upsertReleaseAnnouncementIssue(self, nameWithOwner, deadlineISO, body):
+        """Update the existing release-pending announcement issue in place (new title/body/
+        deadline), or create+pin one if none exists. Editing in place — rather than close +
+        recreate — keeps a single, stable announcement issue. Best-effort: a failure here must
+        not abort the announcement comments above."""
         tag = self.nextReleaseTag() or ""
         self._ensureReleasePendingLabel(nameWithOwner)
         marker = self._releaseAnnounceMarker(tag, deadlineISO)
         title = f"Upcoming release {tag} - finish by {deadlineISO}".strip()
+        fullBody = f"{body}\n\n{marker}"
+        existing = self.findReleaseAnnouncement(nameWithOwner)
+        if existing:
+            n = str(existing["number"])
+            try:
+                self.gh(["issue", "edit", n, "--repo", nameWithOwner, "--title", title, "--body", fullBody])
+            except Exception as e:
+                logging.warning(f"Could not update announcement issue #{n}: {e}")
+            return n
         try:
             url = self.gh(["issue", "create", "--repo", nameWithOwner,
-                           "--title", title, "--body", f"{body}\n\n{marker}",
+                           "--title", title, "--body", fullBody,
                            "--label", self.releasePendingLabel])
         except Exception as e:
             logging.warning(f"Could not create announcement issue: {e}")
