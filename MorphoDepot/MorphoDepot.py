@@ -2019,11 +2019,11 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         repo state (the pinned release-pending issue(s)), so it is correct across sessions and
         machines. Surfaces it in three places: the collapsible header (visible even collapsed),
         a status line, and the button label; auto-expands the section when one exists."""
-        try:
-            announcements = self.logic.listReleaseAnnouncements(nameWithOwner)
-        except Exception as e:
-            logging.warning(f"Could not check existing release announcements: {e}")
-            announcements = []
+        announcements = self.logic.listReleaseAnnouncements(nameWithOwner)
+        if announcements is None:
+            # The check itself failed (e.g. a transient gh/network error). Leave the indicator
+            # as-is rather than falsely resetting it to "no announcement" and hiding a real one.
+            return
         header = self.releaseUI.announcementCollapsibleButton
         label = self.releaseUI.announcementStateLabel
         button = self.releaseUI.announceButton
@@ -4588,13 +4588,16 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
 
     def listReleaseAnnouncements(self, nameWithOwner):
         """All open release-pending announcement issues as [{'number','deadline'}], oldest first.
-        Reads repo state only; returns [] on any error (e.g. the label does not exist yet).
-        Normally 0 or 1, but a repo can carry duplicates from before the dedup guard."""
+        Returns **None** if the check itself FAILED (e.g. transient gh/network error) vs **[]**
+        when there genuinely are none — so callers can tell "couldn't check" from "none exist"
+        and avoid falsely clearing UI state.  Normally 0 or 1, but a repo can carry duplicates
+        from before the dedup guard."""
         try:
             items = self.ghJSON(["issue", "list", "--repo", nameWithOwner, "--state", "open",
                                  "--label", self.releasePendingLabel, "--json", "number,body"])
-        except Exception:
-            return []
+        except Exception as e:
+            logging.warning(f"Could not list release announcements: {e}")
+            return None
         found = []
         for item in items or []:
             body = item.get("body", "") or ""
@@ -4612,27 +4615,26 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         return announcements[0] if announcements else None
 
     def clearReleaseAnnouncement(self, nameWithOwner, tag=None, message=None):
-        """Retire the pre-release announcement: unpin it, remove the release-pending label,
-        comment, and close it.  Used both after a release (default message) and when an
-        announcement is superseded by a new one (caller passes `message`).  Best-effort and
-        idempotent."""
-        announcement = self.findReleaseAnnouncement(nameWithOwner)
-        if not announcement:
-            return
-        n = str(announcement["number"])
+        """Retire EVERY open pre-release announcement: unpin, remove the release-pending label,
+        comment, and close each.  Used both after a release (default message) and when an
+        announcement is superseded by a new one (caller passes `message`).  Clears ALL of them
+        (not just the oldest) so a repo carrying duplicates is fully cleaned up.  Best-effort
+        and idempotent."""
         if message is None:
             message = (f"Release {tag} has been published; closing this announcement." if tag
                        else "The release has been published; closing this announcement.")
-        for command in (
-            ["issue", "unpin", n, "--repo", nameWithOwner],
-            ["issue", "edit", n, "--repo", nameWithOwner, "--remove-label", self.releasePendingLabel],
-            ["issue", "comment", n, "--repo", nameWithOwner, "--body", message],
-            ["issue", "close", n, "--repo", nameWithOwner],
-        ):
-            try:
-                self.gh(command)
-            except Exception as e:
-                logging.warning(f"Announcement cleanup step failed ({command[1]}): {e}")
+        for announcement in (self.listReleaseAnnouncements(nameWithOwner) or []):
+            n = str(announcement["number"])
+            for command in (
+                ["issue", "unpin", n, "--repo", nameWithOwner],
+                ["issue", "edit", n, "--repo", nameWithOwner, "--remove-label", self.releasePendingLabel],
+                ["issue", "comment", n, "--repo", nameWithOwner, "--body", message],
+                ["issue", "close", n, "--repo", nameWithOwner],
+            ):
+                try:
+                    self.gh(command)
+                except Exception as e:
+                    logging.warning(f"Announcement cleanup step failed (#{n} {command[1]}): {e}")
 
     def closeOpenItemsForRelease(self, nameWithOwner, version, message=None):
         """Comment on and close every open issue and PR. PRs are closed without merging.
