@@ -544,6 +544,13 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.releaseUI.announcementCounts = qt.QLabel("Targets: (load a repository)")
         announcementLayout.addRow(self.releaseUI.announcementCounts)
 
+        # Ambient state: shows whether a pre-release announcement already exists for the loaded
+        # repo (filled by updateAnnouncementState on load). The collapsible header also reflects
+        # it, so it is visible even when this section is collapsed.
+        self.releaseUI.announcementStateLabel = qt.QLabel("")
+        self.releaseUI.announcementStateLabel.setWordWrap(True)
+        announcementLayout.addRow(self.releaseUI.announcementStateLabel)
+
         self.releaseUI.announcementDeadline = qt.QDateEdit()
         self.releaseUI.announcementDeadline.calendarPopup = True
         self.releaseUI.announcementDeadline.displayFormat = "yyyy-MM-dd"
@@ -1987,6 +1994,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                     self.releaseUI.newBaselineSelector.setCurrentNode(None)
                     self.releaseUI.newColorSelector.setCurrentNode(getattr(self.logic, 'colorTableNode', None))
                     self.updateAnnouncementCounts(repoData)
+                    self.updateAnnouncementState(repoData['nameWithOwner'])
                     self.updateReleaseNotesTemplate(repoData)
                     self.updateCurrentVersionLabel()
                     self.updateMakeReleaseEnabled()
@@ -2004,6 +2012,41 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         issues = repoData.get('issues', {}).get('totalCount', 0)
         prs = repoData.get('pullRequests', {}).get('totalCount', 0)
         self.releaseUI.announcementCounts.text = f"Will post to {issues} open issues and {prs} open PRs."
+
+    def updateAnnouncementState(self, nameWithOwner):
+        """Reflect any EXISTING pre-release announcement in the UI when a repo is loaded — so a
+        user returning in a fresh session sees it without having to click anything. Reads live
+        repo state (the pinned release-pending issue(s)), so it is correct across sessions and
+        machines. Surfaces it in three places: the collapsible header (visible even collapsed),
+        a status line, and the button label; auto-expands the section when one exists."""
+        try:
+            announcements = self.logic.listReleaseAnnouncements(nameWithOwner)
+        except Exception as e:
+            logging.warning(f"Could not check existing release announcements: {e}")
+            announcements = []
+        header = self.releaseUI.announcementCollapsibleButton
+        label = self.releaseUI.announcementStateLabel
+        button = self.releaseUI.announceButton
+        if not announcements:
+            header.text = "Pre-release Announcement"
+            label.text = ""
+            label.setStyleSheet("")
+            button.text = "Notify contributors"
+            return
+        nums = ", ".join(f"#{a['number']}" for a in announcements)
+        deadlines = ", ".join(sorted({a['deadline'] for a in announcements if a['deadline']})) or "unknown"
+        if len(announcements) == 1:
+            header.text = f"Pre-release Announcement — ⚠ already announced (deadline {deadlines}, {nums})"
+            label.text = (f"An upcoming release is already announced ({nums}, deadline {deadlines}). "
+                          "Posting again will replace it.")
+        else:
+            header.text = f"Pre-release Announcement — ⚠ {len(announcements)} announcements exist ({nums})"
+            label.text = (f"⚠ {len(announcements)} active announcements exist ({nums}; deadlines "
+                          f"{deadlines}) — these are duplicates. Posting replaces the oldest; close the "
+                          "extras on GitHub.")
+        label.setStyleSheet("color: #b35900; font-weight: bold;")  # amber, draws attention
+        button.text = "Replace announcement…"
+        header.collapsed = False  # auto-expand so it is noticed
 
     def repoTooltip(self, repo):
         """Build a multiline tooltip listing open issues and PRs for a repo."""
@@ -2354,6 +2397,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             # release exists — done unconditionally, independent of the optional item-close step
             # below, so the next cycle's announcement detection starts clean.
             self.logic.clearReleaseAnnouncement(nameWithOwner, createdTag)
+            self.updateAnnouncementState(nameWithOwner)  # announcement retired -> clear the indicator
             self.maybeCloseOpenItemsForRelease(nameWithOwner, createdTag)
             # Reset the in-session screenshots so the next release starts clean.
             self.screenshots = []
@@ -2543,6 +2587,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         with slicer.util.tryWithErrorDisplay("Failed to post announcement", waitCursor=True):
             ni, np = self.logic.announceUpcomingRelease(nameWithOwner, deadlineISO, message)
             slicer.util.showStatusMessage(f"Posted announcement to {ni} issues and {np} PRs.")
+        self.updateAnnouncementState(nameWithOwner)  # reflect the just-posted announcement
 
     def previewRepository(self, repoNameWithOwner):
         """Clones a repository and loads its data for previewing."""
@@ -4541,22 +4586,30 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
             logging.warning(f"Could not pin announcement issue #{number}: {e}")
         return number
 
-    def findReleaseAnnouncement(self, nameWithOwner):
-        """Return {'number', 'deadline'} for the open release-pending announcement issue, or None.
-        Reads repo state only; returns None on any error (e.g. the label does not exist yet)."""
+    def listReleaseAnnouncements(self, nameWithOwner):
+        """All open release-pending announcement issues as [{'number','deadline'}], oldest first.
+        Reads repo state only; returns [] on any error (e.g. the label does not exist yet).
+        Normally 0 or 1, but a repo can carry duplicates from before the dedup guard."""
         try:
             items = self.ghJSON(["issue", "list", "--repo", nameWithOwner, "--state", "open",
                                  "--label", self.releasePendingLabel, "--json", "number,body"])
         except Exception:
-            return None
+            return []
+        found = []
         for item in items or []:
             body = item.get("body", "") or ""
             match = re.search(re.escape(self.releaseAnnounceMarkerName) + r"\b([^>]*)", body)
             if match:
                 deadlineMatch = re.search(r"deadline=(\S+)", match.group(1))
-                return {"number": item["number"],
-                        "deadline": deadlineMatch.group(1) if deadlineMatch else None}
-        return None
+                found.append({"number": item["number"],
+                              "deadline": deadlineMatch.group(1) if deadlineMatch else None})
+        return sorted(found, key=lambda a: a["number"])
+
+    def findReleaseAnnouncement(self, nameWithOwner):
+        """The open release-pending announcement {'number','deadline'}, or None (the first, if
+        several exist).  Reads repo state only."""
+        announcements = self.listReleaseAnnouncements(nameWithOwner)
+        return announcements[0] if announcements else None
 
     def clearReleaseAnnouncement(self, nameWithOwner, tag=None, message=None):
         """Retire the pre-release announcement: unpin it, remove the release-pending label,
