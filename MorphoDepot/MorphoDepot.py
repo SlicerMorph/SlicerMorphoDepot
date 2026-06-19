@@ -1509,9 +1509,12 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                 rec = json.loads(text)
             except Exception:
                 rec = {}
+            recName = rec.get("name", github)
             orcid = (rec.get("orcid") or "").strip()
-            given, family = MDC.orcid_name(orcid) if orcid else (None, None)
-            person["name"] = MDC.zenodo_name(rec.get("name", github), given, family)
+            # Skip the blocking ORCID lookup (10s timeout, called in a loop over all people before
+            # the dialog opens) when the onboarding name is already in "Family, Given" form.
+            given, family = MDC.orcid_name(orcid) if (orcid and "," not in recName) else (None, None)
+            person["name"] = MDC.zenodo_name(recName, given, family)
             if orcid and not person.get("orcid"):
                 person["orcid"] = orcid
             if rec.get("institution") and not person.get("affiliation"):
@@ -1553,7 +1556,11 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         import base64
         import MorphoDepotContributors as MDC
         text, existingSha = self._readRepoFileViaApi(nameWithOwner, "CONTRIBUTORS.json")
-        data = json.loads(text) if text else MDC.new_record(nameWithOwner)
+        try:
+            data = json.loads(text) if text else MDC.new_record(nameWithOwner)
+        except (ValueError, json.JSONDecodeError):
+            logging.warning("CONTRIBUTORS.json is not valid JSON; starting from a fresh record")
+            data = MDC.new_record(nameWithOwner)
         curatorText, _ = self._readRepoFileViaApi(nameWithOwner, "CURATOR")
         curator = (curatorText or "").strip() or self.logic.whoami()
         MDC.ensure_person(data, github=curator, author=True, source="member")["curator"] = True
@@ -2704,7 +2711,11 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         import MorphoDepotContributors as MDC
         repoDir = self.logic.localRepo.working_dir
         contribPath = os.path.join(repoDir, "CONTRIBUTORS.json")
-        data = MDC.load(contribPath) if os.path.exists(contribPath) else MDC.new_record(nameWithOwner)
+        try:
+            data = MDC.load(contribPath) if os.path.exists(contribPath) else MDC.new_record(nameWithOwner)
+        except (ValueError, json.JSONDecodeError):
+            logging.warning("CONTRIBUTORS.json is not valid JSON; starting from a fresh record")
+            data = MDC.new_record(nameWithOwner)
 
         # Ensure the curator (CURATOR file, else the signed-in user) is a cited author.
         curator = None
@@ -2755,14 +2766,20 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
     def _gatherMergedContributions(self, nameWithOwner, data, releaseTag):
         """Collect merged issue-N segmentation PRs into `data` (people + contributions), mirroring the
         release-time sync_contributors Action so the Release dialog shows live credit even when that
-        Action is not installed.  issue-N branch convention; MDC.add_contribution dedups, so gathering
-        the full cumulative set each release is idempotent and stamps the release on first sight."""
+        Action is not installed.  issue-N branch convention; MDC.add_contribution dedups.
+
+        Only PRs merged *since the last release* are stamped with `releaseTag` — they genuinely belong
+        to this release.  Older PRs (first seen now because the gather never ran before) are recorded
+        with `release=None` rather than being mis-attributed to the current tag."""
         import re
         import MorphoDepotContributors as MDC
         issueBranch = re.compile(r"^issue-(\d+)$")
+        releases = self.logic.ghJSON(
+            ["release", "list", "--repo", nameWithOwner, "--json", "publishedAt"]) or []
+        since = max((r.get("publishedAt") or "" for r in releases), default="")
         prs = self.logic.ghJSON([
             "pr", "list", "--repo", nameWithOwner, "--state", "merged", "--base", "main",
-            "--limit", "500", "--json", "number,headRefName,author"]) or []
+            "--limit", "500", "--json", "number,headRefName,author,mergedAt"]) or []
         for pr in prs:
             match = issueBranch.match(pr.get("headRefName", "") or "")
             if not match:
@@ -2771,8 +2788,10 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             login = author.get("login")
             if not login:
                 continue
+            mergedAt = pr.get("mergedAt") or ""
+            stampRelease = releaseTag if (not since or mergedAt > since) else None
             MDC.ensure_person(data, github=login, github_id=author.get("id"), source="non-member")
-            MDC.add_contribution(data, issue=int(match.group(1)), by=login, release=releaseTag)
+            MDC.add_contribution(data, issue=int(match.group(1)), by=login, release=stampRelease)
 
     def buildReleaseConfirmation(self, plan, baselineNode, colorTableNode):
         """Compose the OK/Cancel summary describing every action that will run during release."""
