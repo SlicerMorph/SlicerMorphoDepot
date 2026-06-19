@@ -1061,10 +1061,11 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             pass
 
     def _refreshAutoAssignAvailability(self):
-        """Lazily (once) check whether the gh token has the `workflow` scope and enable the
-        auto-assign checkbox accordingly.  Without the scope, pushing a `.github/workflows/`
-        file would be rejected, so the option is disabled with a hint rather than failing the
-        whole repo creation later."""
+        """Check whether the gh token has the `workflow` scope and enable the auto-assign checkbox
+        accordingly.  A positive result is cached; a negative/errored result is re-checked on each
+        Create-tab entry so granting the scope takes effect without a reload.  Without the scope,
+        pushing a `.github/workflows/` file would be rejected, so the option is disabled with a hint
+        rather than failing the whole repo creation later."""
         if self._workflowScopeChecked:
             return
         try:
@@ -2513,7 +2514,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             if screenshotCount > 0 and 'screenshotCaptions' in repoData:
                 tooltipParts.append("<hr><b>Screenshots:</b><br>")
                 screenshotCacheDir = os.path.join(self.logic.localRepositoryDirectory(), "MorphoDepotCaches", "Screenshots")
-                screenshotCaptions = repoData.get('screenshotCaptions', {})
+                screenshotCaptions = repoData.get('screenshotCaptions') or {}  # `or {}`: key may be null
                 if isinstance(screenshotCaptions, list):
                     # Some journals store captions as a list; .items() would crash. Normalize to
                     # {filename: caption} best-effort (defensive — such repos currently carry 0
