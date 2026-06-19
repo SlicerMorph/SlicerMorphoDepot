@@ -1511,10 +1511,14 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                 rec = {}
             recName = rec.get("name", github)
             orcid = (rec.get("orcid") or "").strip()
-            # Skip the blocking ORCID lookup (10s timeout, called in a loop over all people before
-            # the dialog opens) when the onboarding name is already in "Family, Given" form.
-            given, family = MDC.orcid_name(orcid) if (orcid and "," not in recName) else (None, None)
-            person["name"] = MDC.zenodo_name(recName, given, family)
+            if "," in recName:
+                # Already "Family, Given": use verbatim — must NOT pass through zenodo_name (its
+                # whitespace-split fallback would reorder it), and skip the blocking ORCID lookup
+                # (10s timeout, called in a loop over all people before the dialog opens).
+                person["name"] = recName
+            else:
+                given, family = MDC.orcid_name(orcid) if orcid else (None, None)
+                person["name"] = MDC.zenodo_name(recName, given, family)
             if orcid and not person.get("orcid"):
                 person["orcid"] = orcid
             if rec.get("institution") and not person.get("affiliation"):
