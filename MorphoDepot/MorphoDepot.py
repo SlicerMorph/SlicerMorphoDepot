@@ -1040,6 +1040,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             if not self.ownerSelectorPopulated:
                 self.populateOwnerSelector()
             self._refreshAutoAssignAvailability()
+            self._refreshArchivalAvailability()
             self.refreshStagedReposList()
 
     def _onRepoTypeChanged(self, _checked=False):
@@ -1083,6 +1084,49 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             checkBox.toolTip = (
                 "Auto-assign needs the 'workflow' scope on your GitHub login. Enable it by "
                 "running:  gh auth refresh -s workflow")
+
+    def _refreshArchivalAvailability(self):
+        """Disable the Archival option for users we can CONFIRM are not MorphoDepot org members, so
+        they are guided to Short-term instead of filling the whole form only to be rejected at
+        submit.  On 'unknown' (control plane unreachable) leave it enabled — the submit-time guard
+        and message handle that, so a transient blip never locks out a real member."""
+        radio = getattr(self.createUI, "archivalRadio", None)
+        if radio is None:
+            return
+        if getattr(self, "_resumedForEdit", False):
+            return  # editing a staged repo: the type is fixed (repoTypeGroup is hidden), and the
+                    # radio reflects the repo's type — gating here would wrongly flip an archival
+                    # edit to Short-term.
+        isNonMember = (self.logic.orgMembershipStatus() == "non_member")
+        radio.enabled = not isNonMember
+        if isNonMember:
+            radio.toolTip = _(
+                "Archival repositories are created in the MorphoDepot organization and are limited "
+                "to members. Join at join.morphodepot.org, or choose Short-term to create on your "
+                "own account.")
+            if radio.checked:
+                self.createUI.shortTermRadio.checked = True
+        else:
+            radio.toolTip = ""
+
+    def _showArchivalMembershipRequired(self):
+        """Warning-styled dialog (not an error/crash style) explaining the membership requirement,
+        with a button that opens the join site — mirrors the checkModuleEnabled dialog pattern."""
+        msgBox = qt.QMessageBox()
+        msgBox.setIcon(qt.QMessageBox.Warning)
+        msgBox.setWindowTitle(_("Membership required"))
+        msgBox.setText(_("You are not a member of the MorphoDepot organization, so you cannot "
+                         "create an archival repository."))
+        msgBox.setInformativeText(_(
+            "Archival repositories are long-term, citable, and live in the MorphoDepot organization "
+            "(members only). Short-term repositories are created on your own account and are open to "
+            "anyone.\n\nTo create this now, set the Repository Type to Short-term. To create archival "
+            "datasets, join the organization."))
+        joinButton = msgBox.addButton(_("Open join.morphodepot.org"), qt.QMessageBox.ActionRole)
+        msgBox.addButton(qt.QMessageBox.Ok)
+        msgBox.exec_()
+        if msgBox.clickedButton() == joinButton:
+            qt.QDesktopServices.openUrl(qt.QUrl("https://join.morphodepot.org"))
 
     def _onAccessionFormValidated(self, valid):
         """Enable the "Create (stage privately)" button when the accession form is valid — but
@@ -1372,15 +1416,20 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             # Developer self-test: provision into the throwaway testing org (release asset, no App/S3).
             testingOwner = self.logic.morphoDepotTestingOrg
         elif isArchival:
-            if not self.logic.userIsOrgMember():
-                slicer.util.errorDisplay(
-                    "Archival datasets are created in the MorphoDepot organization and require "
-                    "membership.\n\nEither join the organization (join.morphodepot.org), or set the "
-                    "Repository Type to Short-term to create this on your own account.",
-                    windowTitle="Archival requires membership")
+            status = self.logic.orgMembershipStatus()
+            if status == "non_member":
+                self._showArchivalMembershipRequired()
                 self.progressMethod("Repository creation aborted: archival requires membership")
                 return
-            useOrg = True  # archival -> the org
+            if status == "unknown":
+                slicer.util.messageBox(_(
+                    "We couldn't verify your MorphoDepot membership right now. This is a temporary "
+                    "connection issue, not a problem with your account.\n\nPlease try again in a "
+                    "moment, or set the Repository Type to Short-term to create on your own account."),
+                    windowTitle=_("Couldn't verify membership"))
+                self.progressMethod("Repository creation aborted: membership could not be verified")
+                return
+            useOrg = True  # confirmed member -> the org
         # else: short-term -> personal account (useOrg stays False)
 
         if not self.showConfirmationDialog(sourceVolume, colorTable, accessionData, sourceSegmentation, self.screenshots, useOrg=useOrg):
@@ -3852,23 +3901,34 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         return qt.QSettings().value(
             "MorphoDepot/controlPlaneBase", "https://join.morphodepot.org").rstrip("/")
 
-    def userIsOrgMember(self, org=None):
-        """True if the current user is an active member of the MorphoDepot org (so they get the
-        S3 / in-org / App-mediated tier).  Asks the App control plane (`/me`), which checks
-        membership with the App token — so the user's gh token needs no org scope.  Cached per
-        session (reload the module after switching gh accounts or joining the org)."""
+    def orgMembershipStatus(self, org=None):
+        """Tri-state membership against the MorphoDepot org via the App control plane (`/me`):
+        'member' | 'non_member' | 'unknown' (could not determine — App unreachable / invalid token).
+        The App verifies membership with its OWN token, so the user's gh token needs no org scope.
+        Caches only a CONFIRMED result; 'unknown' is never trusted from cache, so a transient failure
+        re-checks (and never reports a real member's outage as a membership problem)."""
         org = org or self.morphoDepotOrg
         cache = getattr(self, "_orgMemberCache", None)
-        if cache is not None and cache[0] == org:
+        if cache is not None and cache[0] == org and cache[1] in ("member", "non_member"):
             return cache[1]
         try:
             info = self.controlPlaneRequest("me", {})
-            isMember = bool(info.get("is_member"))
+            status = "member" if bool(info.get("is_member")) else "non_member"
         except Exception as e:
-            logging.warning(f"Membership check failed (assuming non-member): {e}")
-            isMember = False
-        self._orgMemberCache = (org, isMember)
-        return isMember
+            # Do NOT cache 'unknown' (it would also evict a prior confirmed result) — a transient
+            # failure must re-check on the next call rather than stick.
+            logging.warning(f"Membership check failed (status unknown): {e}")
+            return "unknown"
+        self._orgMemberCache = (org, status)
+        return status
+
+    def userIsOrgMember(self, org=None):
+        """True only when membership is CONFIRMED.  Boolean callers treat 'unknown' as non-member;
+        the create path uses orgMembershipStatus() directly to distinguish 'not a member' from
+        'could not verify' so a transient outage is never reported as a membership problem.  (Asks
+        the App `/me`, which checks membership with the App token — the user's gh token needs no
+        org scope.  Reload the module after switching gh accounts or joining the org.)"""
+        return self.orgMembershipStatus(org) == "member"
 
     def _ghToken(self):
         """The user's GitHub token (from gh) used to authenticate to the App control plane."""
