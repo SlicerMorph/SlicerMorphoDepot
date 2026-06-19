@@ -1520,7 +1520,12 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                 person["name"] = recName
             else:
                 given, family = MDC.orcid_name(orcid) if orcid else (None, None)
-                person["name"] = MDC.zenodo_name(recName, given, family)
+                if given and family:
+                    person["name"] = f"{family}, {given}"  # authoritative "Family, Given" from ORCID
+                else:
+                    # R-9: ORCID unavailable -> use the onboarding name VERBATIM; never heuristically
+                    # reorder (it would mangle "Maria de la Cruz" -> "Cruz, Maria de la" permanently).
+                    person["name"] = recName
             if orcid and not person.get("orcid"):
                 person["orcid"] = orcid
             if rec.get("institution") and not person.get("affiliation"):
