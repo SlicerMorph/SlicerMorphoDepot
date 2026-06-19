@@ -4377,10 +4377,36 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         repositoryList = [r['name'] for r in repositories]
         return repositoryList
 
-    def ensureUpstreamExists(self):
-        if not "upstream" in self.localRepo.remotes:
-            # no upstream, so this is an issue assigned to the owner of the repo
-            self.localRepo.create_remote("upstream", list(self.localRepo.remotes[0].urls)[0])
+    def _ensureUpstream(self, canonicalNameWithOwner):
+        """Point the 'upstream' remote at the canonical repo (not the fork) — set explicitly rather
+        than inferred from origin, so reviewer/release actions always resolve the right base repo."""
+        url = f"https://github.com/{canonicalNameWithOwner}.git"
+        if "upstream" in [remote.name for remote in self.localRepo.remotes]:
+            self.localRepo.git.remote("set-url", "upstream", url)
+        else:
+            self.localRepo.create_remote("upstream", url)
+
+    def _userForkOf(self, sourceRepository):
+        """The active user's fork of sourceRepository as 'owner/name', or None.  Identifies the fork
+        by its PARENT (GitHub's fork list), so a suffixed fork (e.g. name-1, created when the user
+        already owned an unrelated repo of that name) is found, and an unrelated same-named repo is
+        never mistaken for the fork.  (R-1/R-2)"""
+        me = self.whoami()
+        name = sourceRepository.split("/")[1]
+        try:  # fast path: the usual case is a same-named fork at {me}/{name}
+            info = self.ghJSON(["repo", "view", f"{me}/{name}", "--json", "parent"])
+        except Exception:
+            info = None
+        parent = (info or {}).get("parent") or {}
+        parentLogin = (parent.get("owner") or {}).get("login")
+        # `gh repo view --json parent` gives parent.{name, owner.login} (no nameWithOwner), so build it.
+        if parentLogin and parent.get("name") and f"{parentLogin}/{parent['name']}" == sourceRepository:
+            return f"{me}/{name}"
+        # slow path: a differently-named (suffixed) fork — ask the source's fork list directly
+        out = self.gh(["api", f"repos/{sourceRepository}/forks", "--paginate",
+                       "--jq", f'.[] | select(.owner.login=="{me}") | .full_name']) or ""
+        forks = [line.strip() for line in out.splitlines() if line.strip()]
+        return forks[0] if forks else None
 
     def loadIssue(self, issue, repoDirectory):
         self.currentIssue = issue
@@ -4393,27 +4419,33 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
 
         self.cacheOldVersion(localDirectory)
 
-        forkExists = repositoryName in self.repositoryList()
-        if not forkExists:
-            self.gh(f"repo fork {sourceRepository} --clone=false")
-        self.gh(f"repo clone {repositoryName} {localDirectory}")
+        # Resolve where to clone from.  The contributor works in their FORK of the canonical repo;
+        # the fork is identified by its parent (not its name), so an unrelated same-named repo, or a
+        # suffixed fork (name-1) from a prior name collision / a deleted+recreated source, is never
+        # mistaken for it.  The owner of the canonical repo clones it directly (no fork).  (R-1)
+        me = self.whoami()
+        if sourceRepository.split("/")[0] == me:
+            cloneTarget = sourceRepository
+            isFork = False
+        else:
+            cloneTarget = self._userForkOf(sourceRepository)
+            if not cloneTarget:
+                self.gh(f"repo fork {sourceRepository} --clone=false")
+                cloneTarget = self._userForkOf(sourceRepository) or f"{me}/{repositoryName}"
+            isFork = True
+        self.gh(["repo", "clone", cloneTarget, localDirectory])
         self.localRepo = git.Repo(localDirectory)
-        self.ensureUpstreamExists()
+        self._ensureUpstream(sourceRepository)
 
-        # D2: keep the fork's default branch current with upstream.  GitHub forks do not
-        # auto-sync, so a pre-existing fork drifts behind every merge/release.  This is a
-        # best-effort, server-side fast-forward (no --force, so it cannot clobber a diverged
-        # fork) — only meaningful for a genuine fork (origin != upstream); the owner case and a
-        # freshly created fork are already current.  A failure here never aborts: D1 below
-        # guarantees the new branch starts from the latest upstream regardless.
-        if forkExists:
-            forkNameWithOwner = self.nameWithOwner("origin")
-            upstreamNameWithOwner = self.nameWithOwner("upstream")
-            if forkNameWithOwner and upstreamNameWithOwner and forkNameWithOwner != upstreamNameWithOwner:
-                try:
-                    self.gh(["repo", "sync", forkNameWithOwner, "--source", upstreamNameWithOwner])
-                except Exception as e:
-                    logging.warning(f"Could not sync fork {forkNameWithOwner} from {upstreamNameWithOwner}: {e}")
+        # D2: keep a genuine fork's default branch current with upstream (GitHub forks do not
+        # auto-sync, so a pre-existing fork drifts behind every merge/release).  Best-effort
+        # server-side fast-forward (no --force, so it cannot clobber a diverged fork); a failure
+        # never aborts — D1 below cuts the new branch from upstream/main regardless.
+        if isFork and cloneTarget != sourceRepository:
+            try:
+                self.gh(["repo", "sync", cloneTarget, "--source", sourceRepository])
+            except Exception as e:
+                logging.warning(f"Could not sync fork {cloneTarget} from {sourceRepository}: {e}")
 
         originBranches = self.localRepo.remotes.origin.fetch()
         originBranchIDs = [ob.name for ob in originBranches]
@@ -4452,16 +4484,38 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         self.loadFromLocalRepository()
 
     def loadPR(self, pr, repoDirectory):
+        baseRepo = pr['repository']['nameWithOwner']
+        baseName = pr['repository']['name']
         branchName = pr['title']
-        repoNameWithOwner = f"{pr['author']['login']}/{pr['repository']['name']}"
-        localDirectory = os.path.join(repoDirectory, f"{pr['repository']['name']}-{branchName}")
-        self.progressMethod(f"Loading PR from {repoNameWithOwner} into {localDirectory}")
+        # Resolve the ACTUAL head repo + branch from GitHub — never construct {author}/{name}: a
+        # contributor's fork may be suffixed (name-1) after a name collision, and an in-repo-branch
+        # PR has head == base.  Fall back to the constructed name if the query is unavailable.  (R-2)
+        headNameWithOwner = None
+        number = pr.get('number')
+        if number is not None:
+            head = None
+            try:
+                head = self.ghJSON(["pr", "view", str(number), "--repo", baseRepo,
+                                    "--json", "headRepository,headRepositoryOwner,headRefName"])
+            except Exception as e:
+                logging.warning(f"Could not resolve PR #{number} head repo: {e}")
+            if head:
+                headOwner = (head.get("headRepositoryOwner") or {}).get("login")
+                headName = (head.get("headRepository") or {}).get("name")
+                if headOwner and headName:
+                    headNameWithOwner = f"{headOwner}/{headName}"
+                if head.get("headRefName"):
+                    branchName = head["headRefName"]
+        if not headNameWithOwner:
+            headNameWithOwner = f"{pr['author']['login']}/{baseName}"  # legacy fallback
+        localDirectory = os.path.join(repoDirectory, f"{baseName}-{branchName}")
+        self.progressMethod(f"Loading PR from {headNameWithOwner} into {localDirectory}")
 
         self.cacheOldVersion(localDirectory)
 
-        self.gh(f"repo clone {repoNameWithOwner} {localDirectory}")
+        self.gh(["repo", "clone", headNameWithOwner, localDirectory])
         self.localRepo = git.Repo(localDirectory)
-        self.ensureUpstreamExists()
+        self._ensureUpstream(baseRepo)
         self.localRepo.remotes.origin.fetch()
         self.localRepo.git.checkout(branchName)
 
