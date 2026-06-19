@@ -1093,6 +1093,10 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         radio = getattr(self.createUI, "archivalRadio", None)
         if radio is None:
             return
+        if getattr(self, "_resumedForEdit", False):
+            return  # editing a staged repo: the type is fixed (repoTypeGroup is hidden), and the
+                    # radio reflects the repo's type — gating here would wrongly flip an archival
+                    # edit to Short-term.
         isNonMember = (self.logic.orgMembershipStatus() == "non_member")
         radio.enabled = not isNonMember
         if isNonMember:
@@ -3911,8 +3915,9 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
             info = self.controlPlaneRequest("me", {})
             status = "member" if bool(info.get("is_member")) else "non_member"
         except Exception as e:
+            # Do NOT cache 'unknown' (it would also evict a prior confirmed result) — a transient
+            # failure must re-check on the next call rather than stick.
             logging.warning(f"Membership check failed (status unknown): {e}")
-            self._orgMemberCache = (org, "unknown")
             return "unknown"
         self._orgMemberCache = (org, status)
         return status
