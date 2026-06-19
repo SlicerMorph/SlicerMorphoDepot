@@ -4,6 +4,7 @@ set(MODULE_NAME MorphoDepot)
 #-----------------------------------------------------------------------------
 set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}.py
+  ${MODULE_NAME}Contributors.py
   )
 
 set(MODULE_PYTHON_RESOURCES
