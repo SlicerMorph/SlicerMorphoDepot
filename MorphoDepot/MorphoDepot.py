@@ -1067,12 +1067,14 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         whole repo creation later."""
         if self._workflowScopeChecked:
             return
-        self._workflowScopeChecked = True
         try:
             self._hasWorkflowScope = self.logic.hasWorkflowScope()
         except Exception as e:
             logging.warning(f"Could not check workflow scope: {e}")
             self._hasWorkflowScope = False
+        # Cache only a POSITIVE result; if the scope is absent or the probe failed, re-check on the
+        # next Create-tab entry so `gh auth refresh -s workflow` takes effect without a module reload.
+        self._workflowScopeChecked = bool(self._hasWorkflowScope)
         checkBox = self.createUI.autoAssignCheckBox
         checkBox.enabled = self._hasWorkflowScope
         if not self._hasWorkflowScope:
@@ -2507,6 +2509,18 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                 tooltipParts.append("<hr><b>Screenshots:</b><br>")
                 screenshotCacheDir = os.path.join(self.logic.localRepositoryDirectory(), "MorphoDepotCaches", "Screenshots")
                 screenshotCaptions = repoData.get('screenshotCaptions', {})
+                if isinstance(screenshotCaptions, list):
+                    # Some journals store captions as a list; .items() would crash. Normalize to
+                    # {filename: caption} best-effort (defensive — such repos currently carry 0
+                    # screenshots, so this branch isn't actually reached today).
+                    normalized = {}
+                    for n, entry in enumerate(screenshotCaptions, 1):
+                        if isinstance(entry, dict):
+                            key = entry.get("name") or entry.get("filename") or f"screenshot-{n}.png"
+                            normalized[key] = entry.get("caption", "")
+                        else:
+                            normalized[f"screenshot-{n}.png"] = entry
+                    screenshotCaptions = normalized
                 # Limit to 5 thumbnails to avoid overly large tooltips
                 for i, (filename, caption) in enumerate(screenshotCaptions.items()):
                     if i >= 5:
@@ -2698,12 +2712,19 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
 
     def _isArchivalRepo(self, nameWithOwner):
         """True if the repo is owned by an organization (archival). Release credit/DOI are
-        archival-only (org-design Sec.9.6); personal short-term repos get no contributor record."""
+        archival-only (org-design Sec.9.6); personal short-term repos get no contributor record.
+        On a transient lookup failure (or empty response) default to True and curate: the Release
+        tab only ever lists archival/org repos, so 'unknown' must not silently drop the credit
+        record.  A definitive User owner still returns False."""
         try:
             info = self.logic.ghJSON(["api", f"/repos/{nameWithOwner}"])
-            return (info or {}).get("owner", {}).get("type") == "Organization"
-        except Exception:
-            return False
+        except Exception as e:
+            logging.warning(f"Could not determine owner type of {nameWithOwner}; assuming archival: {e}")
+            return True
+        if not info:
+            logging.warning(f"Empty owner-type lookup for {nameWithOwner}; assuming archival.")
+            return True
+        return (info.get("owner") or {}).get("type") == "Organization"
 
     def _curateContributorsForRelease(self, nameWithOwner):
         """Show the contributor-credit grid for this release and stage CONTRIBUTORS.json into the
@@ -4203,15 +4224,33 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         if clonePath:
             journals = self.repoClerkJournals(clonePath)
             if journals:
-                return [
-                    {
+                result = []
+                for j in journals:
+                    openIssues = j.get("openIssues", []) or []
+                    openPRs = j.get("openPRs", []) or []
+                    # Carry issue/PR totalCount + nodes from the journal so the Release tab's counts,
+                    # announcement targets, and tooltip are accurate (they previously read 0 / empty).
+                    issueNodes = [
+                        {"number": i.get("number"), "title": i.get("title"),
+                         "author": {"login": i.get("author")} if i.get("author") else None,
+                         "assignees": {"nodes": [{"login": a} for a in (i.get("assignees") or [])]}}
+                        for i in openIssues
+                    ]
+                    prNodes = [
+                        {"number": p.get("number"), "title": p.get("title"),
+                         "isDraft": p.get("isDraft"),
+                         "author": {"login": p.get("author")} if p.get("author") else None}
+                        for p in openPRs
+                    ]
+                    result.append({
                         "name": j["nameWithOwner"].split("/")[1],
                         "owner": {"login": j["nameWithOwner"].split("/")[0]},
                         "pushedAt": j.get("pushedAt", ""),
                         "curator": j.get("curator"),
-                    }
-                    for j in journals
-                ]
+                        "issues": {"totalCount": len(openIssues), "nodes": issueNodes},
+                        "pullRequests": {"totalCount": len(openPRs), "nodes": prNodes},
+                    })
+                return result
         logging.warning("RepoClerk journals unavailable — returning empty repo list")
         return []
 
@@ -6055,13 +6094,13 @@ jobs:
                 # Handle other criteria
                 if question in repoData:
                     repoValue = repoData[question][1]
-                    if repoValue.__class__() == []:
-                        valueInCriterion = False
-                        for value in repoValue:
-                            if value in criteria[question]:
-                                valueInCriterion = True
-                            if not valueInCriterion:
-                                excludedRepos.add(nameWithOwner)
+                    if isinstance(repoValue, list):
+                        # Exclude only if NONE of the repo's values matches the criteria — decided
+                        # AFTER scanning all values.  (The old in-loop check excluded on the first
+                        # non-match, and a set can't un-exclude a later match.)  An empty list matches
+                        # nothing the user selected, so it is excluded.
+                        if not any(value in criteria[question] for value in repoValue):
+                            excludedRepos.add(nameWithOwner)
                     else:
                         if repoValue != "" and repoValue not in criteria[question]:
                             excludedRepos.add(nameWithOwner)
