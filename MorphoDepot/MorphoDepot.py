@@ -4402,9 +4402,15 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         # `gh repo view --json parent` gives parent.{name, owner.login} (no nameWithOwner), so build it.
         if parentLogin and parent.get("name") and f"{parentLogin}/{parent['name']}" == sourceRepository:
             return f"{me}/{name}"
-        # slow path: a differently-named (suffixed) fork — ask the source's fork list directly
-        out = self.gh(["api", f"repos/{sourceRepository}/forks", "--paginate",
-                       "--jq", f'.[] | select(.owner.login=="{me}") | .full_name']) or ""
+        # slow path: a differently-named (suffixed) fork — ask the source's fork list directly.
+        # Guarded like the fast path: on a gh/network error return None so loadIssue falls through to
+        # fork creation rather than aborting.
+        try:
+            out = self.gh(["api", f"repos/{sourceRepository}/forks", "--paginate",
+                           "--jq", f'.[] | select(.owner.login=="{me}") | .full_name']) or ""
+        except Exception as e:
+            logging.warning(f"Could not list forks of {sourceRepository}: {e}")
+            return None
         forks = [line.strip() for line in out.splitlines() if line.strip()]
         return forks[0] if forks else None
 
