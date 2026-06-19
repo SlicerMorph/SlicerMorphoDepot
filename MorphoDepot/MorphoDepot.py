@@ -414,14 +414,14 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         createButtonIndex = self.createUI.verticalLayout.indexOf(self.createUI.createRepository)
         self.createUI.verticalLayout.insertWidget(createButtonIndex + 1, self.createUI.saveEditsButton)
 
-        # Opt-in: bake a GitHub Actions workflow into the new repo that auto-assigns each new
-        # issue back to its creator.  Offered only when the gh token has the `workflow` scope
-        # (checked lazily on Create-tab entry); disabled with a hint otherwise.  Off by default.
-        # The checkbox sits next to a "?" button that opens a fuller explanation, since the label
-        # alone doesn't convey what the option actually does.
+        # On by default (opt-out), for ALL repo types: bake a GitHub Actions workflow into the new
+        # repo that auto-assigns each new issue back to its creator.  Requires the gh token's
+        # `workflow` scope (checked lazily on Create-tab entry); without it the box is unchecked +
+        # disabled with a hint.  The checkbox sits next to a "?" button that opens a fuller
+        # explanation, since the label alone doesn't convey what the option actually does.
         self.createUI.autoAssignCheckBox = qt.QCheckBox(
             "Set the GitHub workflow to auto-assign new issues to their creators")
-        self.createUI.autoAssignCheckBox.checked = False
+        self.createUI.autoAssignCheckBox.checked = True
         self.createUI.autoAssignCheckBox.enabled = False
         self.createUI.autoAssignCheckBox.toolTip = (
             "Adds a small GitHub Actions workflow so that when someone opens an issue on this "
@@ -439,6 +439,29 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.createUI.verticalLayout.insertLayout(
             self.createUI.verticalLayout.indexOf(self.createUI.createRepository),
             autoAssignLayout)
+
+        # === Q0: repository TYPE is the FIRST choice (org-design Sec.1.0/9.7).  It determines where
+        # the repo lives (archival -> MorphoDepot org, members-only, DOI; short-term -> personal
+        # account, no DOI) and the org-only behaviors below.  This selector sits at the very top of the
+        # create form and drives the (now hidden) duplicate repoType question in the accession form. ===
+        self.createUI.repoTypeGroup = qt.QGroupBox("Repository type")
+        repoTypeGroupLayout = qt.QVBoxLayout(self.createUI.repoTypeGroup)
+        self.createUI.archivalRadio = qt.QRadioButton(
+            "Archival - maintained and citable; created in the MorphoDepot organization "
+            "(members only) and gets a DOI")
+        self.createUI.shortTermRadio = qt.QRadioButton(
+            "Short-term - disposable / classroom; created on your own account, no DOI")
+        repoTypeGroupLayout.addWidget(self.createUI.archivalRadio)
+        repoTypeGroupLayout.addWidget(self.createUI.shortTermRadio)
+        headerIndex = self.createUI.verticalLayout.indexOf(self.createUI.createSectionHeader)
+        self.createUI.verticalLayout.insertWidget(headerIndex + 1, self.createUI.repoTypeGroup)
+        self.createUI.archivalRadio.toggled.connect(self._onRepoTypeChanged)
+        self.createUI.shortTermRadio.toggled.connect(self._onRepoTypeChanged)
+        # Hide the duplicate repoType question buried in the accession form; this selector drives it.
+        try:
+            self.createUI.accessionForm.questions["repoType"].questionBox.hide()
+        except Exception:
+            pass
 
         # === REGION 3: Make Repository Public (shown only once a repo is staged) ===
         # Separated from the form above by a divider + bold centered header (the SAME treatment
@@ -475,13 +498,13 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         # in at least one organization (populateOwnerSelector decides).
         self.createUI.destinationQuestion = FormComboBoxQuestion("Publish destination:")
         self.createUI.destinationQuestion.questionBox.toolTip = (
-            "When you click 'Publish / Go live', the repository is made public under this owner. "
+            "When you click 'Make Public', the repository is made public under this owner. "
             "Choose your personal account or an organization you belong to.")
         self.createUI.destinationQuestion.questionBox.setVisible(False)
         self.createUI.destinationPersonalLogin = ""
         goLiveLayout.addWidget(self.createUI.destinationQuestion.questionBox)
         goLiveButtonsLayout = qt.QHBoxLayout()
-        self.createUI.publishButton = qt.QPushButton("Publish / Go live")
+        self.createUI.publishButton = qt.QPushButton("Make Public")
         self.createUI.publishButton.enabled = False
         self.createUI.discardButton = qt.QPushButton("Discard")
         self.createUI.discardButton.enabled = False
@@ -987,10 +1010,28 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
     def _updateCreateSectionHeader(self):
         """The section header below the staged-repos list reflects what the form is doing:
         creating a new repository, or editing a reopened staged one."""
-        if self._resumedForEdit and self._stagedNameWithOwner:
+        editing = bool(self._resumedForEdit and self._stagedNameWithOwner)
+        if editing:
             self.createUI.createSectionHeader.text = f"Editing staged repository: {self._stagedNameWithOwner}"
         else:
             self.createUI.createSectionHeader.text = "Create a new repository"
+        # The repository TYPE is the irreversible Q0 decision (org-design Sec.1.0): archival<->short-term
+        # cannot change once staged (it would mean moving between the org and a personal account).  So
+        # the selector is editable only while CREATING; when editing a reopened staged repo it is hidden
+        # (to change type, discard and start over).  Reflect the staged repo's fixed type on it anyway,
+        # so accessionData['repoType'] stays correct for the re-save.
+        if hasattr(self.createUI, "repoTypeGroup"):
+            self.createUI.repoTypeGroup.visible = not editing
+            if editing:
+                owner = self._stagedNameWithOwner.split("/")[0]
+                try:
+                    orgs = (self.logic.morphoDepotOrg, self.logic.morphoDepotTestingOrg)
+                except Exception:
+                    orgs = ("MorphoDepot", "MorphoDepotTesting")
+                if owner in orgs:
+                    self.createUI.archivalRadio.checked = True
+                else:
+                    self.createUI.shortTermRadio.checked = True
 
     def onCurrentTabChanged(self,index):
         qt.QSettings().setValue("MorphoDepot/tabIndex", index)
@@ -1000,6 +1041,24 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                 self.populateOwnerSelector()
             self._refreshAutoAssignAvailability()
             self.refreshStagedReposList()
+
+    def _onRepoTypeChanged(self, _checked=False):
+        """Q0 fork (org-design Sec.1.0/9.7): the top-level repository-type selector drives the
+        (hidden) accession-form repoType question.  Auto-assign is independent of repo type now
+        (on by default / opt-out for ALL types, scope-gated), so this no longer touches it."""
+        archival = self.createUI.archivalRadio
+        shortTerm = self.createUI.shortTermRadio
+        if not archival.checked and not shortTerm.checked:
+            return  # neither chosen yet
+        isArchival = archival.checked
+        # keep accessionData['repoType'] populated by driving the hidden form question
+        try:
+            label = ("Archival (intended for long-term maintenance)" if isArchival
+                     else "Short-term (e.g. repositories for classroom exercises, "
+                          "that are not meant to be maintained for long-term)")
+            self.createUI.accessionForm.questions["repoType"].optionButtons[label].click()
+        except Exception:
+            pass
 
     def _refreshAutoAssignAvailability(self):
         """Lazily (once) check whether the gh token has the `workflow` scope and enable the
@@ -1031,6 +1090,21 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         goLiveGroup = getattr(self.createUI, "goLiveGroup", None)
         gateVisible = goLiveGroup is not None and goLiveGroup.visible
         self.createUI.createRepository.enabled = valid and not gateVisible
+        # In edit mode the Update button must also reflect form validity — which includes the
+        # Section-6 redistribution acknowledgement (validateForm) — so unticking that box disables
+        # Update, not just Create.
+        saveEdits = getattr(self.createUI, "saveEditsButton", None)
+        if saveEdits is not None and getattr(self, "_resumedForEdit", False):
+            saveEdits.enabled = valid
+
+    def _redistributionAcknowledged(self):
+        """True if the Section-6 'I have the right to allow redistribution of this data' box is
+        ticked.  Required to stage (validateForm), and enforced again at Update and Publish so the
+        attestation cannot be revoked while still proceeding."""
+        try:
+            return self.createUI.accessionForm.questions["redistributionAcknowledgement"].answer() != []
+        except Exception:
+            return False
 
     def _setGoLiveZoneVisible(self, visible):
         """Show/hide the entire 'Make Repository Public' zone — divider + bold header + box —
@@ -1283,43 +1357,38 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             return
         sourceVolume, colorTable, sourceSegmentation, accessionData = inputs
 
-        # Destination: members choose where the repo lives; non-members always use their own
-        # account.  Org = S3, 10 GB, governed (you cannot delete a *public* org repo — owners do).
-        # Personal = a GitHub release asset, 2 GB, fully yours (delete anytime) — for
-        # disposable/classroom repos.
+        # Q0 fork (org-design Sec.1.0 / 9.7): the repository TYPE determines where it lives — the two
+        # never cross.  ARCHIVAL = born in the MorphoDepot org (S3, 10 GB, governed, DOI-minted) and
+        # is members-only.  SHORT-TERM = the creator's personal account (release asset, 2 GB,
+        # deletable anytime), available to anyone.  There is no separate destination prompt.
         useOrg = False
         testingOwner = None
+        repoTypeAnswer = accessionData.get("repoType") or ["", ""]
+        isArchival = str(repoTypeAnswer[1]).startswith("Archival")
         if self.testingMode:
-            # Developer self-test: provision directly into the throwaway testing org using the
-            # creator's own gh rights (release asset, no App, no S3) — never the personal account
-            # or the production MorphoDepot org.  No destination prompt.
+            # Developer self-test: provision into the throwaway testing org (release asset, no App/S3).
             testingOwner = self.logic.morphoDepotTestingOrg
-        elif self.logic.userIsOrgMember():
-            who = self.logic.whoami()
-            org = self.logic.morphoDepotOrg
-            items = [f"My account ({who}) — personal, 2 GB, you can delete it anytime",
-                     f"{org} (organization) — S3, 10 GB, governed"]
-            # PythonQt's static getItem doesn't return (text, ok) like PyQt, so drive an
-            # explicit dialog: exec_() gives the OK/Cancel, textValue() the selection.
-            dialog = qt.QInputDialog(slicer.util.mainWindow())
-            dialog.setWindowTitle("Where should this repository live?")
-            dialog.setLabelText("Create this repository under:")
-            dialog.setComboBoxItems(items)
-            dialog.setComboBoxEditable(False)
-            dialog.setTextValue(items[0])
-            if not dialog.exec_():
-                self.progressMethod("Repository creation aborted")
+        elif isArchival:
+            if not self.logic.userIsOrgMember():
+                slicer.util.errorDisplay(
+                    "Archival datasets are created in the MorphoDepot organization and require "
+                    "membership.\n\nEither join the organization (join.morphodepot.org), or set the "
+                    "Repository Type to Short-term to create this on your own account.",
+                    windowTitle="Archival requires membership")
+                self.progressMethod("Repository creation aborted: archival requires membership")
                 return
-            choice = dialog.textValue()
-            useOrg = (choice == items[1])
+            useOrg = True  # archival -> the org
+        # else: short-term -> personal account (useOrg stays False)
 
         if not self.showConfirmationDialog(sourceVolume, colorTable, accessionData, sourceSegmentation, self.screenshots, useOrg=useOrg):
             self.progressMethod("Repository creation aborted")
             return
 
-        # Opt-in auto-assign workflow: only when the box is checked AND the token actually has
-        # the `workflow` scope (double-gated — the box is disabled without the scope).
-        enableAutoAssign = bool(self.createUI.autoAssignCheckBox.checked and getattr(self, "_hasWorkflowScope", False))
+        # Auto-assign workflow: ON by default for ALL repo types (opt-out via the checkbox).
+        # Still scope-gated — without the `workflow` scope the box is unchecked + disabled, so
+        # `checked` is already False there and we never try to push a workflow we cannot.
+        enableAutoAssign = bool(self.createUI.autoAssignCheckBox.checked
+                                and getattr(self, "_hasWorkflowScope", False))
 
         slicer.util.showStatusMessage("Staging repository (private)...")
         staged = None
@@ -1390,6 +1459,12 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         repeatedly before going live."""
         if not self._resumedForEdit:
             return
+        if not self._redistributionAcknowledged():
+            slicer.util.errorDisplay(
+                "Please confirm you have the right to allow redistribution of this data "
+                "(Section 6: Licensing) before updating the repository.",
+                windowTitle="Redistribution acknowledgement required")
+            return
         gathered = self._gatherStagedEdits()
         if gathered is None:
             return  # aborted: the loaded segmentation was edited in place (user was warned)
@@ -1419,9 +1494,126 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         if not self.testingMode:
             slicer.util.infoDisplay(popupText, windowTitle="MorphoDepot")
 
+    def _enrichMemberPerson(self, person):
+        """Pre-fill a member's name/ORCID/affiliation from their onboarding record so the curator never
+        re-types info we already have (every archival creator is a member).  Org owners can read the
+        owners-only onboarding-records repo; for others this 404s and we fall back to the GitHub
+        profile name.  The App authoritatively re-enriches every member at mint."""
+        import MorphoDepotContributors as MDC
+        github = person.get("github")
+        if not github or person.get("name"):
+            return
+        text, _ = self._readRepoFileViaApi("MorphoDepot/onboarding-records", f"records/{github}.json")
+        if text:
+            try:
+                rec = json.loads(text)
+            except Exception:
+                rec = {}
+            orcid = (rec.get("orcid") or "").strip()
+            given, family = MDC.orcid_name(orcid) if orcid else (None, None)
+            person["name"] = MDC.zenodo_name(rec.get("name", github), given, family)
+            if orcid and not person.get("orcid"):
+                person["orcid"] = orcid
+            if rec.get("institution") and not person.get("affiliation"):
+                person["affiliation"] = rec["institution"]
+            person["source"] = "member"
+            return
+        try:  # fallback: GitHub profile display name (no ORCID)
+            profile = self.logic.ghJSON(["api", f"/users/{github}"])
+            if isinstance(profile, dict) and profile.get("name"):
+                person["name"] = profile["name"]
+        except Exception:
+            pass
+
+    def _repoHasBaseline(self, nameWithOwner):
+        """True if the staged repo carries a baseline.seg.nrrd (it shipped a baseline -> atlas case).
+        A from-scratch archival repo has no baseline file and skips the credit gate at go-live."""
+        try:
+            info = self.logic.ghJSON(["api", f"/repos/{nameWithOwner}/contents/baseline.seg.nrrd"])
+            return isinstance(info, dict) and bool(info.get("sha"))
+        except Exception:
+            return False
+
+    def _readRepoFileViaApi(self, nameWithOwner, path):
+        """Return (text, sha) for a repo file via the GitHub API, or (None, None) if absent."""
+        import base64
+        try:
+            info = self.logic.ghJSON(["api", f"/repos/{nameWithOwner}/contents/{path}"])
+            if isinstance(info, dict) and info.get("content"):
+                return base64.b64decode(info["content"]).decode(), info.get("sha")
+        except Exception:
+            pass
+        return None, None
+
+    def _curateBaselineCreditViaApi(self, nameWithOwner):
+        """Atlas case at go-live: collect/confirm who made the baseline and write CONTRIBUTORS.json to
+        the staged repo via the GitHub API (no local clone exists at publish; the repo is private but
+        the curator has write).  Returns False to abort the publish.  Loads any existing
+        CONTRIBUTORS.json so names are never re-entered (org-design Sec.9.6/9.7)."""
+        import base64
+        import MorphoDepotContributors as MDC
+        text, existingSha = self._readRepoFileViaApi(nameWithOwner, "CONTRIBUTORS.json")
+        data = json.loads(text) if text else MDC.new_record(nameWithOwner)
+        curatorText, _ = self._readRepoFileViaApi(nameWithOwner, "CURATOR")
+        curator = (curatorText or "").strip() or self.logic.whoami()
+        MDC.ensure_person(data, github=curator, author=True, source="member")["curator"] = True
+        for member in data["people"]:   # pre-fill any rows we already have info for (the curator etc.)
+            self._enrichMemberPerson(member)
+
+        panel = MDC.make_contributor_panel(data, title="Who made the baseline segmentation?",
+                                           show_header=False, show_contributions=False)
+        dialog = qt.QDialog(slicer.util.mainWindow())
+        dialog.setWindowTitle("Baseline contributors")
+        dialog.setMinimumWidth(560)
+        dialog.setMaximumWidth(760)
+        dialogLayout = qt.QVBoxLayout(dialog)
+        message = qt.QLabel(
+            "<b>Who made the baseline segmentation?</b><br><br>"
+            "Is there anyone other than yourself you would like to acknowledge for contributing to this "
+            "existing segmentation? If you want, you can elevate them to co-author status; otherwise they "
+            "are listed as contributors. Your information is automatically added as the lead author to "
+            "the citation.<br><br>"
+            "When you are done &mdash; or if you don't have anyone to add &mdash; click <b>Done</b>. "
+            "&nbsp;<a href=\"%s\">Documentation</a>" % MDC.DOC_URL)
+        message.setWordWrap(True)
+        message.setOpenExternalLinks(True)
+        dialogLayout.addWidget(message)
+        dialogLayout.addWidget(panel.widget)
+        # NOTE: build buttons with addButton(text, role) — PythonQt does NOT honor the
+        # QDialogButtonBox(Ok | Cancel) flags constructor (it yields an empty, button-less box).
+        buttonBox = qt.QDialogButtonBox()
+        buttonBox.addButton("Done", qt.QDialogButtonBox.AcceptRole)
+        buttonBox.addButton("Cancel", qt.QDialogButtonBox.RejectRole)
+        buttonBox.accepted.connect(dialog.accept)
+        buttonBox.rejected.connect(dialog.reject)
+        dialogLayout.addWidget(buttonBox)
+        while True:
+            if not dialog.exec_():
+                return False  # cancelled -> caller blocks the publish
+            panel.syncFromTable()
+            if panel.isReady():
+                break
+            slicer.util.warningDisplay("Each cited author needs a real name (Family, Given).",
+                                       windowTitle="Author name required")
+
+        content = base64.b64encode(MDC.dumps(panel.data).encode()).decode()
+        command = ["api", f"/repos/{nameWithOwner}/contents/CONTRIBUTORS.json", "-X", "PUT",
+                   "-f", "message=Add CONTRIBUTORS.json (baseline credit at go-live)",
+                   "-f", f"content={content}"]
+        if existingSha:
+            command += ["-f", f"sha={existingSha}"]
+        self.logic.gh(command)
+        return True
+
     def onPublish(self):
         """Take the staged repo live (make it public) where it already lives — the destination
         was fixed at create, so this no longer offers an org/personal choice or any transfer."""
+        if not self._redistributionAcknowledged():
+            slicer.util.errorDisplay(
+                "Please confirm you have the right to allow redistribution of this data "
+                "(Section 6: Licensing) before publishing.",
+                windowTitle="Redistribution acknowledgement required")
+            return
         ctx = getattr(self.logic, "stagingContext", None) or {}
         where = ctx.get("personalNameWithOwner", "the staged repository")
         isOrg = bool(ctx.get("isMember"))
@@ -1460,6 +1652,30 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                     self.logic.saveStagedRepoEdits(editedData, colorTable=newColorTable,
                                                    sourceSegmentation=newSegmentation,
                                                    screenshots=self.screenshots)
+        except Exception as e:
+            slicer.util.showStatusMessage("")
+            return
+
+        # Contributor-credit gate (archival + baseline): an archival repo that ships a baseline at
+        # go-live (= v1) must declare who made that baseline before it can be made public.  No local
+        # clone exists at publish, so this reads/writes CONTRIBUTORS.json on GitHub directly (the repo
+        # is private but the curator has write).  Cancelling here blocks the publish.  (org-design 9.6/9.7)
+        nameWithOwner = ctx.get("personalNameWithOwner")
+        if isOrg and nameWithOwner and self._repoHasBaseline(nameWithOwner):
+            try:
+                creditOk = self._curateBaselineCreditViaApi(nameWithOwner)
+            except Exception as exc:
+                slicer.util.showStatusMessage("")
+                slicer.util.errorDisplay(
+                    f"Could not record the baseline contributors on GitHub:\n{exc}\n\nPublish aborted.",
+                    windowTitle="Baseline credit failed")
+                return  # writing CONTRIBUTORS.json failed -> do NOT make public
+            if not creditOk:
+                slicer.util.showStatusMessage("")
+                return  # curator cancelled the credit step -> do NOT make public
+
+        try:
+            with slicer.util.tryWithErrorDisplay(_("Trouble publishing repository"), waitCursor=True):
                 slicer.util.showStatusMessage("Publishing...")
                 final = self.logic.publishStagedRepo()
         except Exception as e:
@@ -1678,7 +1894,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         form.questions["imageContents"].optionButtons["Whole specimen"].click()
         form.questions["githubRepoName"].answerText.text = repoName
         form.questions["redistributionAcknowledgement"].optionButtons["I have the right to allow redistribution of this data."].click()
-        form.questions["repoType"].optionButtons["Short-term (e.g. repositories for classroom exercises, that are not meant to be maintained for long-term)"].click()
+        self.createUI.shortTermRadio.checked = True  # top-level Q0 selector -> drives the hidden repoType question
         # Contact email is no longer part of the accession form; it is entered in the widget's
         # Go-live section and submitted at publish.
 
@@ -1792,8 +2008,10 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         selectedItems = self.annotateUI.prList.selectedItems()
         if selectedItems:
             item = selectedItems[0]
-            self.selectedPR = self.prsByItem[item]
-            self.annotateUI.openPRPageButton.enabled = True
+            # prsByItem is shared between the Annotate and Review tabs; a stale item from the other
+            # tab's still-populated list won't be present, so guard the lookup.
+            self.selectedPR = self.prsByItem.get(item)
+            self.annotateUI.openPRPageButton.enabled = self.selectedPR is not None
 
     def onOpenPRPageButtonClicked(self):
         """Open the currently selected PR in the browser."""
@@ -1969,7 +2187,9 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
 
     def onPRDoubleClicked(self, item):
         repoDirectory = self.logic.localRepositoryDirectory()
-        pr = self.prsByItem[item]
+        pr = self.prsByItem.get(item)  # shared dict; ignore a stale item from the other tab
+        if pr is None:
+            return
         if self.testingMode or slicer.util.confirmOkCancelDisplay("Close scene and load PR?"):
             with slicer.util.tryWithErrorDisplay("Failed to load PR", waitCursor=True):
                 slicer.util.showStatusMessage(f"Loading {item.text()}")
@@ -2425,6 +2645,13 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         if not self._confirmReleaseAnnouncement(nameWithOwner):
             return
 
+        # Contributor credit (archival/org repos only): curate CONTRIBUTORS.json and stage it into the
+        # working tree so prepareReleaseSnapshot's `git add --all` commits it in the release commit
+        # (the shared-file invariant — all shared files change only at release; org-design Sec.9.6).
+        if self._isArchivalRepo(nameWithOwner):
+            if not self._curateContributorsForRelease(nameWithOwner):
+                return
+
         prompt = self.buildReleaseConfirmation(plan, baselineNode, colorTableNode)
         if not (self.testingMode or slicer.util.confirmOkCancelDisplay(prompt, windowTitle=f"Make release {newTag}")):
             return
@@ -2457,6 +2684,95 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             self.screenshots = []
             self.updateScreenshotCount()
         slicer.util.showStatusMessage("New release created. You can add more comments on the GitHub release page.")
+
+    def _isArchivalRepo(self, nameWithOwner):
+        """True if the repo is owned by an organization (archival). Release credit/DOI are
+        archival-only (org-design Sec.9.6); personal short-term repos get no contributor record."""
+        try:
+            info = self.logic.ghJSON(["api", f"/repos/{nameWithOwner}"])
+            return (info or {}).get("owner", {}).get("type") == "Organization"
+        except Exception:
+            return False
+
+    def _curateContributorsForRelease(self, nameWithOwner):
+        """Show the contributor-credit grid for this release and stage CONTRIBUTORS.json into the
+        working tree (so prepareReleaseSnapshot commits it in the release). Returns False to abort.
+
+        Blocks only when a cited author has no real name; contributors with no name are credited by
+        handle. See org-design Sec.9.6 / 9.7.
+        """
+        import MorphoDepotContributors as MDC
+        repoDir = self.logic.localRepo.working_dir
+        contribPath = os.path.join(repoDir, "CONTRIBUTORS.json")
+        data = MDC.load(contribPath) if os.path.exists(contribPath) else MDC.new_record(nameWithOwner)
+
+        # Ensure the curator (CURATOR file, else the signed-in user) is a cited author.
+        curator = None
+        curatorPath = os.path.join(repoDir, "CURATOR")
+        if os.path.exists(curatorPath):
+            with open(curatorPath) as f:
+                curator = f.read().strip() or None
+        curator = curator or self.logic.whoami()
+        MDC.ensure_person(data, github=curator, author=True, source="member")["curator"] = True
+        for member in data["people"]:   # pre-fill rows we already have info for (curator + members)
+            self._enrichMemberPerson(member)
+
+        tag = self.logic.nextReleaseTag() or ""
+        # Gather segmentation contributions (merged issue-N PRs) so the dialog shows live credit even
+        # when the release-time sync_contributors Action is not installed on the repo.  Best-effort —
+        # a gh failure here must never block the release.
+        try:
+            self._gatherMergedContributions(nameWithOwner, data, tag)
+        except Exception as e:
+            logging.warning(f"Could not gather merged-PR contributions: {e}")
+        panel = MDC.make_contributor_panel(data, title=f"Release {tag} - confirm contributors")
+        dialog = qt.QDialog(slicer.util.mainWindow())
+        dialog.setWindowTitle("Contributors & credit")
+        dialog.setMinimumSize(640, 480)
+        dialogLayout = qt.QVBoxLayout(dialog)
+        dialogLayout.addWidget(panel.widget)
+        # addButton(text, role) — PythonQt does NOT honor the QDialogButtonBox(Ok | Cancel) flags
+        # constructor (it yields a button-less box).
+        buttonBox = qt.QDialogButtonBox()
+        buttonBox.addButton("Confirm", qt.QDialogButtonBox.AcceptRole)
+        buttonBox.addButton("Cancel", qt.QDialogButtonBox.RejectRole)
+        buttonBox.accepted.connect(dialog.accept)
+        buttonBox.rejected.connect(dialog.reject)
+        dialogLayout.addWidget(buttonBox)
+
+        while True:
+            if not dialog.exec_():
+                return False  # curator cancelled -> abort the release
+            panel.syncFromTable()
+            if panel.isReady():
+                break
+            slicer.util.warningDisplay(
+                "Each cited author needs a real name (Family, Given). Fill the missing name(s), "
+                "or untick Author for those rows.", windowTitle="Author name required")
+        panel.saveTo(contribPath)
+        return True
+
+    def _gatherMergedContributions(self, nameWithOwner, data, releaseTag):
+        """Collect merged issue-N segmentation PRs into `data` (people + contributions), mirroring the
+        release-time sync_contributors Action so the Release dialog shows live credit even when that
+        Action is not installed.  issue-N branch convention; MDC.add_contribution dedups, so gathering
+        the full cumulative set each release is idempotent and stamps the release on first sight."""
+        import re
+        import MorphoDepotContributors as MDC
+        issueBranch = re.compile(r"^issue-(\d+)$")
+        prs = self.logic.ghJSON([
+            "pr", "list", "--repo", nameWithOwner, "--state", "merged", "--base", "main",
+            "--limit", "500", "--json", "number,headRefName,author"]) or []
+        for pr in prs:
+            match = issueBranch.match(pr.get("headRefName", "") or "")
+            if not match:
+                continue  # not a segmentation PR (issue-N branch convention)
+            author = pr.get("author") or {}
+            login = author.get("login")
+            if not login:
+                continue
+            MDC.ensure_person(data, github=login, github_id=author.get("id"), source="non-member")
+            MDC.add_contribution(data, issue=int(match.group(1)), by=login, release=releaseTag)
 
     def buildReleaseConfirmation(self, plan, baselineNode, colorTableNode):
         """Compose the OK/Cancel summary describing every action that will run during release."""
@@ -2558,10 +2874,32 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             return True
         annNumber = announcement["number"] if announcement else None
         openCount = len([i for i in (issues or []) if i.get("number") != annNumber]) + len(prs or [])
-        if openCount == 0:
+        if announcement is not None:
+            # An announcement exists — remind only if its deadline has not yet passed.
+            deadline = announcement.get("deadline")
+            todayISO = qt.QDate.currentDate().toString(qt.Qt.ISODate)
+            if deadline and todayISO < deadline:
+                return slicer.util.confirmOkCancelDisplay(
+                    f"You announced a release deadline of {deadline}, which has not passed yet.\n\n"
+                    "Cutting the release now will close contributors' open work early. Continue?",
+                    windowTitle="Announced deadline not reached")
             return True
-        if announcement is None:
-            msgBox = qt.QMessageBox()
+
+        # No announcement was made.  Always nudge (non-blocking): softly when nothing is open
+        # (a solo dataset), more firmly when open items would be closed.  'Proceed' is always there.
+        msgBox = qt.QMessageBox()
+        announceButton = msgBox.addButton("Announce first...", qt.QMessageBox.ActionRole)
+        proceedButton = msgBox.addButton("Proceed anyway", qt.QMessageBox.AcceptRole)
+        if openCount == 0:
+            msgBox.setWindowTitle("No release announcement")
+            msgBox.setIcon(qt.QMessageBox.Information)
+            msgBox.setText("No upcoming-release announcement was made.")
+            msgBox.setInformativeText(
+                "If others contribute segmentations to this dataset, it is good practice to announce "
+                "the upcoming release first (with a deadline) so they can finish in time. For a solo "
+                "dataset you can simply proceed.")
+            msgBox.setDefaultButton(proceedButton)
+        else:
             msgBox.setWindowTitle("No pre-release announcement")
             msgBox.setIcon(qt.QMessageBox.Warning)
             msgBox.setText("No pre-release announcement has been made for this release.")
@@ -2569,28 +2907,21 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                 f"{openCount} open issue(s)/PR(s) will be closed by this release, and the "
                 "contributors have not been notified to finish their work before it is cut.\n\n"
                 "Announce now to give them a deadline, proceed anyway, or cancel.")
-            announceButton = msgBox.addButton("Announce now...", qt.QMessageBox.ActionRole)
-            proceedButton = msgBox.addButton("Proceed anyway", qt.QMessageBox.AcceptRole)
             msgBox.addButton("Cancel", qt.QMessageBox.RejectRole)
-            msgBox.exec_()
-            clicked = msgBox.clickedButton()
-            if clicked == announceButton:
-                self.releaseUI.announcementCollapsibleButton.collapsed = False
-                slicer.util.infoDisplay(
-                    "Set a deadline and message above, then click 'Notify contributors'. "
-                    "Re-run Make Release when you are ready.",
-                    windowTitle="Announce upcoming release")
-                return False
-            return clicked == proceedButton
-        # An announcement exists — remind only if its deadline has not yet passed.
-        deadline = announcement.get("deadline")
-        todayISO = qt.QDate.currentDate().toString(qt.Qt.ISODate)
-        if deadline and todayISO < deadline:
-            return slicer.util.confirmOkCancelDisplay(
-                f"You announced a release deadline of {deadline}, which has not passed yet.\n\n"
-                "Cutting the release now will close contributors' open work early. Continue?",
-                windowTitle="Announced deadline not reached")
-        return True
+        msgBox.exec_()
+        clicked = msgBox.clickedButton()
+        if clicked == announceButton:
+            self.releaseUI.announcementCollapsibleButton.collapsed = False
+            slicer.util.infoDisplay(
+                "Set a deadline and message above, then click 'Notify contributors'. "
+                "Re-run Make Release when you are ready.",
+                windowTitle="Announce upcoming release")
+            return False
+        if clicked == proceedButton:
+            return True
+        # Esc / closed with no explicit choice: proceed for the soft (nothing-open) nudge,
+        # treat as Cancel when real open items were at stake.
+        return openCount == 0
 
     def onAnnounceUpcomingRelease(self):
         if not self.logic.localRepo:
@@ -3644,7 +3975,7 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         elif command.__class__() == []:
             commandList = command
         else:
-            logging.error("command must be string or list")
+            raise TypeError("gh command must be a string or list")
         self.progressMethod(" ".join(commandList))
         fullCommandList = [self.ghExecutablePath] + commandList
 
@@ -3698,7 +4029,10 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         """Wrapper around gh that returns json loaded data or an empty list on error"""
         jsonString = self.gh(command)
         if jsonString:
-            return json.loads(jsonString)
+            try:
+                return json.loads(jsonString)
+            except (ValueError, json.JSONDecodeError):
+                logging.warning(f"ghJSON: could not parse gh output for {command!r}")
         return []
 
     def hasWorkflowScope(self):
@@ -3826,6 +4160,7 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
             ]
             result.append({
                 "nameWithOwner": j["nameWithOwner"],
+                "curator": j.get("curator"),
                 "pullRequests": {"nodes": prs_nodes},
                 "issues": {"nodes": issues_nodes},
             })
@@ -3858,8 +4193,13 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         return []
 
     def whoami(self):
-        """ Get the active gh account """
-        return(self.gh("auth status --active").split()[7])
+        """ Get the active gh login.  Parse the '... account <login> ...' token by regex (robust to
+        gh's status-line wording) rather than a fixed word index; fall back to the stable API."""
+        status = self.gh("auth status --active") or ""
+        match = re.search(r"account\s+(\S+)", status)
+        if match:
+            return match.group(1)
+        return self.gh("api user --jq .login").strip()
 
     def ghUserProfile(self):
         """Return {login, name, email} for the active gh account.
@@ -3957,17 +4297,19 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         return issueList
 
     def administratedRepoList(self):
+        # Releases are ARCHIVAL-ONLY (org-design Sec.9.6): only org repos the user curates can be
+        # released, so the Release tab lists only those.  Personal short-term repos are excluded —
+        # they cannot be released, and showing them is misleading.  A member's archival repo is owned
+        # by the MorphoDepot org (owner != me); the journaled CURATOR (RepoClerk schema v3) is the
+        # authoritative "this is mine to release" signal.  (curator is None on pre-v3 journals, so an
+        # org repo lights up once RepoClerk re-drains with the field.)
         me = self.whoami()
         returnRepos = []
         for repo in self.morphoRepos():
-            # A repo is "mine to administer" if I own it (personal tier) OR I'm its CURATOR.
-            # The org tier matters here: a member's repo is owned by the MorphoDepot org, not the
-            # member, so owner != me — the journaled CURATOR (RepoClerk schema v3) is the
-            # authoritative signal. viewerPermission can't be used: it's per-viewer and a shared
-            # cache cannot carry it. curator is None on pre-v3 journals, so org repos simply light
-            # up once RepoClerk re-drains with the field (personal repos work meanwhile).
-            if repo['owner']['login'] == me or repo.get('curator') == me:
-                repo['nameWithOwner'] = f"{repo['owner']['login']}/{repo['name']}"
+            ownerLogin = repo['owner']['login']
+            isArchival = ownerLogin != me           # archival repos live in the org, not on my account
+            if isArchival and repo.get('curator') == me:
+                repo['nameWithOwner'] = f"{ownerLogin}/{repo['name']}"
                 returnRepos.append(repo)
         return returnRepos
 
@@ -3981,10 +4323,16 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         prList = []
         for repo in repoData:
             for pr in repo['pullRequests']['nodes']:
+                prAuthor = (pr.get('author') or {}).get('login')  # None for a deleted/ghost account
                 if role == "segmenter":
-                    parties = [pr['author']['login']]
+                    parties = [prAuthor] if prAuthor else []
                 elif role == "reviewer":
                     parties = [issue['repository']['owner']['login'] for issue in pr['closingIssuesReferences']['nodes']]
+                    # In-org (archival) repos are owned by the MorphoDepot org, not the curator's
+                    # login, so owner-keying alone hides every in-org PR from its curator.  Add the
+                    # journaled curator — the same owner-vs-curator fix administratedRepoList() applies.
+                    if repo.get('curator'):
+                        parties.append(repo['curator'])
                 else:
                     raise BaseException(f"Unknown role {role}")
                 issueTitles = [issue['title'] for issue in pr['closingIssuesReferences']['nodes']]
@@ -3994,13 +4342,15 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
                                       'title': pr['title'],
                                       'issueTitles': issueTitles,
                                       'isDraft': pr['isDraft'],
-                                      'author': {'login': pr['author']['login']},
+                                      'author': {'login': prAuthor},
                                       'repository': { 'name': repoName, 'nameWithOwner': repo['nameWithOwner']}})
         return prList
 
 
     def repositoryList(self):
-        repositories = json.loads(self.gh("repo list --json name"))
+        # --limit 1000: gh defaults to 30, which would make loadIssue's fork-exists check
+        # (forkExists = name in repositoryList) miss a real fork for users with many repos.
+        repositories = self.ghJSON("repo list --json name --limit 1000") or []
         repositoryList = [r['name'] for r in repositories]
         return repositoryList
 
@@ -4139,7 +4489,7 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
                 colorPath = glob.glob(f"{localDirectory}/*.ctbl")[0]
                 self.colorTableNode = slicer.util.loadColorTable(colorPath)
             except IndexError:
-                self.ghProgressMethod(f"No color table found")
+                self.progressMethod("No color table found")
 
         # TODO: move from single volume file to segmentation specification json
         volumePath = os.path.join(localDirectory, "source_volume")
@@ -4332,6 +4682,11 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
 
     def requestChanges(self, message=""):
         pr = self.issuePR(role="reviewer")
+        if not pr:
+            branch = self.localRepo.active_branch.name if self.localRepo else "this branch"
+            raise RuntimeError(
+                f"No open pull request found for '{branch}'. It may already be merged or closed "
+                f"(the Review list can lag a minute behind GitHub). Click 'Refresh Github' to update it.")
         upstreamNameWithOwner = self.nameWithOwner("upstream")
         commandList = f"""
             pr review {pr['number']}
@@ -4353,26 +4708,34 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
 
     def approvePR(self, message=""):
         pr = self.issuePR(role="reviewer")
+        if not pr:
+            branch = self.localRepo.active_branch.name if self.localRepo else "this branch"
+            raise RuntimeError(
+                f"No open pull request found for '{branch}'. It may already be merged or closed "
+                f"(the Review list can lag a minute behind GitHub). Click 'Refresh Github' to update it.")
         upstreamNameWithOwner = self.nameWithOwner("upstream")
-        # TODO: this if the reviewer is also the creator of the PR
-        # this generates an error from github that you aren't allowed
-        # to approve your own PRs, but it's just a warning in this case.
-        # Checking the name to avoid the approval or just skipping
-        # approval since we are closing the PR anyway would be fine.
-        commandList = f"""
-            pr review {pr['number']}
-                --approve
-                --repo {upstreamNameWithOwner}
-        """.replace("\n"," ").split()
-        if message != "":
-            commandList += ["--body", message]
-        self.gh(commandList)
+        # GitHub forbids approving your OWN pull request (addPullRequestReview fails with
+        # "Can not approve your own pull request"), regardless of repo role — an "approve" review
+        # is by definition independent sign-off.  When the curator/reviewer is also the PR author
+        # (their own baseline contribution, or testing), skip the approval review and just merge:
+        # merging your own PR IS allowed for write/admin, only the review verdict is restricted.
+        me = self.whoami()
+        selfAuthored = (pr.get("author") or {}).get("login") == me
+        if not selfAuthored:
+            commandList = f"""
+                pr review {pr['number']}
+                    --approve
+                    --repo {upstreamNameWithOwner}
+            """.replace("\n"," ").split()
+            if message != "":
+                commandList += ["--body", message]
+            self.gh(commandList)
         commandList = f"""
             pr merge {pr['number']}
                 --repo {upstreamNameWithOwner}
                 --squash
         """.replace("\n"," ").split()
-        commandList += ["--body", "Merging and closing"]
+        commandList += ["--body", message if (selfAuthored and message) else "Merging and closing"]
         self.gh(commandList)
         try:
             self.notifyRepoClerk(upstreamNameWithOwner)
@@ -4531,6 +4894,19 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
                 if caption:
                     lines.append(f"_{caption}_")
 
+        # Contributors section, generated from CONTRIBUTORS.json (written just before this during the
+        # release; org-design Sec.9.6). The DOI block is added separately by the App at mint time.
+        try:
+            import MorphoDepotContributors as MDC
+            contribPath = os.path.join(repoDir, "CONTRIBUTORS.json")
+            if os.path.exists(contribPath):
+                creditMarkdown = MDC.render_markdown(MDC.load(contribPath))
+                if creditMarkdown:
+                    lines.append("")
+                    lines.append(creditMarkdown.rstrip())
+        except Exception as e:
+            logging.warning(f"Could not render contributors section: {e}")
+
         return "\n".join(lines) + "\n"
 
     def prepareReleaseSnapshot(self, newTag, baselineNode, colorTableNode, screenshots):
@@ -4636,6 +5012,11 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         backupName = f"pre-release-{tag}"
         # Create the archive branch locally and push it before any working-tree changes
         # so the pre-release state is preserved on the remote even if later steps fail.
+        # Idempotent: a retry after a partial failure may find this local branch already present
+        # (resetToReleaseBackup deliberately keeps it), so recreate it at the current commit rather
+        # than crashing with "a branch named 'pre-release-vN' already exists".
+        if backupName in [head.name for head in self.localRepo.heads]:
+            self.localRepo.git.branch("-D", backupName)
         self.localRepo.git.branch(backupName)
         self.releaseBackupBranch = backupName
         self.localRepo.remote(name="origin").push(backupName)
