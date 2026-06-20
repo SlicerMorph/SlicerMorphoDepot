@@ -201,7 +201,7 @@ jobs:
         repoFileNames.append(f"{colorTableName}.csv")
 
         # write accessionData file
-        accessionData['fileFormatVersion'] = MorphoDepotLogic.accessionFileFormatVersion
+        accessionData['fileFormatVersion'] = self.accessionFileFormatVersion
         fp = open(os.path.join(repoDir, "MorphoDepotAccession.json"), "w")
         fp.write(json.dumps(accessionData, indent=4))
         fp.close()
@@ -265,7 +265,7 @@ jobs:
             workflowDir = os.path.join(repoDir, ".github", "workflows")
             os.makedirs(workflowDir, exist_ok=True)
             with open(os.path.join(workflowDir, "auto-assign.yml"), "w") as fp:
-                fp.write(MorphoDepotLogic.autoAssignWorkflow)
+                fp.write(self.autoAssignWorkflow)
             repoFileNames.append(os.path.join(".github", "workflows", "auto-assign.yml"))
 
         repoFilePaths = [os.path.join(repoDir, fileName) for fileName in repoFileNames]
@@ -730,7 +730,7 @@ jobs:
         priorSpecies = self._speciesFromReadme(repoDir)
 
         # Regenerate the metadata-derived files from the edited data.
-        accessionData['fileFormatVersion'] = MorphoDepotLogic.accessionFileFormatVersion
+        accessionData['fileFormatVersion'] = self.accessionFileFormatVersion
         with open(os.path.join(repoDir, "MorphoDepotAccession.json"), "w") as fp:
             fp.write(json.dumps(accessionData, indent=4))
 
