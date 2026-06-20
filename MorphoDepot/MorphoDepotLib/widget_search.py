@@ -1,6 +1,7 @@
 """MorphoDepotWidget SearchTabMixin (split from MorphoDepot.py)."""
 import os
 import re
+import html
 import sys
 import csv
 import glob
@@ -133,15 +134,18 @@ class SearchTabMixin:
             sizeItem.setData(repoDataKey, qt.Qt.UserRole + 1)
             rowItems = [sizeItem, repoItem, ownerItem, speciesItem, modalityItem, activeItem, spacingItem, dimensionsItem]
 
-            # Create a rich HTML tooltip
-            tooltipParts = [f"<b>{repoName}</b> by <b>{owner}</b><br><hr>"]
+            # Create a rich HTML tooltip.  S9: every interpolated field below is journal-derived
+            # (mirrored from arbitrary public repos), so escape it -- Qt rich text won't run JS but
+            # <img>/markup could load remote/file:// resources or corrupt layout.
+            esc = lambda v: html.escape(str(v))
+            tooltipParts = [f"<b>{esc(repoName)}</b> by <b>{esc(owner)}</b><br><hr>"]
             tooltipParts.append("<table>")
-            tooltipParts.append(f"<tr><td><b>Last Active:</b></td><td>{activeText}</td></tr>")
-            tooltipParts.append(f"<tr><td><b>Species:</b></td><td>{species}</td></tr>")
-            tooltipParts.append(f"<tr><td><b>Size (GB):</b></td><td>{sizeText}</td></tr>")
-            tooltipParts.append(f"<tr><td><b>Modality:</b></td><td>{modality}</td></tr>")
-            tooltipParts.append(f"<tr><td><b>Spacing:</b></td><td>{spacingText}</td></tr>")
-            tooltipParts.append(f"<tr><td><b>Dimensions:</b></td><td>{dimensionsText}</td></tr>")
+            tooltipParts.append(f"<tr><td><b>Last Active:</b></td><td>{esc(activeText)}</td></tr>")
+            tooltipParts.append(f"<tr><td><b>Species:</b></td><td>{esc(species)}</td></tr>")
+            tooltipParts.append(f"<tr><td><b>Size (GB):</b></td><td>{esc(sizeText)}</td></tr>")
+            tooltipParts.append(f"<tr><td><b>Modality:</b></td><td>{esc(modality)}</td></tr>")
+            tooltipParts.append(f"<tr><td><b>Spacing:</b></td><td>{esc(spacingText)}</td></tr>")
+            tooltipParts.append(f"<tr><td><b>Dimensions:</b></td><td>{esc(dimensionsText)}</td></tr>")
             tooltipParts.append("</table>")
             screenshotCount = repoData.get('screenshotCount', 0)
 
@@ -167,9 +171,16 @@ class SearchTabMixin:
                         tooltipParts.append(f"<i>...and {screenshotCount - 5} more.</i>")
                         break
 
+                    # S3: filename is a key from a RepoClerk journal (mirrored from arbitrary public
+                    # repos); accept only a bare screenshot basename so it can't traverse out of the
+                    # cache dir when downloadFile writes to it (path-traversal write primitive).
+                    safeName = os.path.basename(filename)
+                    if not re.fullmatch(r"screenshot-\d+\.png", safeName):
+                        logging.warning(f"Skipping screenshot with unexpected filename: {filename!r}")
+                        continue
                     urlPrefix = "https://raw.githubusercontent.com"
-                    imageURL = f"{urlPrefix}/{owner}/{repoName}/main/screenshots/{filename}"
-                    localImagePath = os.path.join(screenshotCacheDir, owner, repoName, filename)
+                    imageURL = f"{urlPrefix}/{owner}/{repoName}/main/screenshots/{safeName}"
+                    localImagePath = os.path.join(screenshotCacheDir, owner, repoName, safeName)
 
                     if not os.path.exists(localImagePath):
                         try:
@@ -179,7 +190,9 @@ class SearchTabMixin:
                             logging.warning(f"Could not download screenshot {imageURL}: {e}")
 
                     if os.path.exists(localImagePath):
-                        tooltipParts.append(f'<img src="file:///{localImagePath}" width="128"> ')
+                        # S9: owner/repoName are also in this path -- escape so a crafted value
+                        # can't break out of the src="" attribute.
+                        tooltipParts.append(f'<img src="file:///{html.escape(localImagePath)}" width="128"> ')
 
             tooltipText = "".join(tooltipParts)
 
