@@ -262,8 +262,13 @@ class SearchTabMixin:
             with slicer.util.tryWithErrorDisplay("Failed to load repository", waitCursor=True):
                 self.logic.loadRepoForPreview(repoNameWithOwner)
                 repoDir = self.logic.localRepo.working_dir
-                if os.path.exists(repoDir):
-                    shutil.rmtree(repoDir)
+                # S11 safety: only ever rmtree a strict child of the configured working directory,
+                # never whatever working_dir the clone happened to set.
+                base = os.path.abspath(self.logic.localRepositoryDirectory())
+                absRepoDir = os.path.abspath(repoDir) if repoDir else base
+                if absRepoDir != base and os.path.commonpath([base, absRepoDir]) == base \
+                        and os.path.exists(absRepoDir):
+                    shutil.rmtree(absRepoDir)
                 self.logic.localRepo = None
                 slicer.util.showStatusMessage(f"Repository {repoNameWithOwner} loaded for preview.")
                 slicer.util.messageBox("To contribute segmentations, right click on the search results row to open the repository web page and add an issue for your request.  The currently loaded data is not saved by default.",
