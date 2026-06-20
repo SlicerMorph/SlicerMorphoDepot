@@ -265,6 +265,8 @@ class SearchTabMixin:
                 # S11 safety: only ever rmtree a strict child of the configured working directory,
                 # never whatever working_dir the clone happened to set.
                 base = os.path.abspath(self.logic.localRepositoryDirectory())
+                if not repoDir:
+                    logging.warning("previewRepository: localRepo.working_dir is None/empty — skipping cleanup")
                 absRepoDir = os.path.abspath(repoDir) if repoDir else base
                 if absRepoDir != base and os.path.commonpath([base, absRepoDir]) == base \
                         and os.path.exists(absRepoDir):

@@ -7,7 +7,6 @@ import glob
 import json
 import time
 import math
-import locale
 import random
 import shutil
 import logging
@@ -48,15 +47,13 @@ class GitHubMixin:
         baseDelay = 1
         attempts = 4
         for attempt in range(attempts):
-            # S6: setting the process locale must never crash gh on a host where en_US.UTF-8 is not
-            # generated (minimal Linux/CI) -- make it best-effort.
-            originalLocale = None
-            try:
-                originalLocale = locale.setlocale(locale.LC_ALL)
-                locale.setlocale(locale.LC_ALL, "en_US.UTF-8")
-            except locale.Error:
-                pass
-            process = slicer.util.launchConsoleProcess(fullCommandList)
+            # S6: give gh a UTF-8 locale via the child's environment.  The previous code mutated the
+            # Python process C-locale, which (a) raised locale.Error and broke every gh call on hosts
+            # where en_US.UTF-8 isn't generated (minimal Linux/CI), and (b) doesn't even propagate to
+            # the spawned child -- the subprocess env is what gh actually reads.
+            process = slicer.util.launchConsoleProcess(
+                fullCommandList,
+                updateEnvironment={"LC_ALL": "en_US.UTF-8", "LANG": "en_US.UTF-8"})
             try:
                 # S7: a hung or auth-prompting gh child must not block the Slicer UI thread forever.
                 result = process.communicate(timeout=timeout)
@@ -66,13 +63,9 @@ class GitHubMixin:
                     process.communicate()
                 except Exception:
                     pass
+                # S7: a timeout is fatal (not retried, unlike the transient 503 below) -- a process
+                # still alive after `timeout`s is not a transient condition.
                 raise RuntimeError(f"gh command timed out after {timeout}s: {' '.join(commandList)}")
-            finally:
-                if originalLocale is not None:
-                    try:
-                        locale.setlocale(locale.LC_ALL, originalLocale)
-                    except locale.Error:
-                        pass
             # S11: gh writes errors to stderr, so the 503 retry signal can be on either stream.
             combined = (result[0] or "") + (result[1] or "")
             needRetry = "error: 503" in combined or "HTTP 503" in combined
