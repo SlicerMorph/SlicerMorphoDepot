@@ -922,9 +922,17 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         header (Segment{N}_* custom fields).  Returns None if it cannot be determined."""
         try:
             import re
+            # Read until the NRRD header terminator (\n\n), not a fixed slice: a segmentation with many
+            # DICOM-derived per-segment tag strings can push the header past a fixed cap, which would
+            # undercount segments and let the no-change guard silently pass. Cap at 8 MB as a backstop.
+            header = b""
             with open(path, "rb") as f:
-                head = f.read(524288)
-            header = head.split(b"\n\n", 1)[0]
+                while b"\n\n" not in header and len(header) < 8 * 1024 * 1024:
+                    chunk = f.read(262144)
+                    if not chunk:
+                        break
+                    header += chunk
+            header = header.split(b"\n\n", 1)[0]
             indices = set(re.findall(rb"Segment(\d+)_", header))
             return len(indices) if indices else None
         except Exception as e:
@@ -943,6 +951,10 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         committed = glob.glob(f"{repoDir}/*.csv") or glob.glob(f"{repoDir}/*.ctbl")
         if not committed:
             return False
+        if len(committed) > 1:
+            # Compare against the same file prepareReleaseSnapshot writes (first match); warn so a
+            # stray extra color file can't silently make the comparison pick the wrong one.
+            logging.warning(f"Multiple committed color files {committed}; comparing against {committed[0]}")
         committedPath = committed[0]
         tmpDir = tempfile.mkdtemp()
         try:
@@ -3139,8 +3151,11 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             f"Release creation failed:\n{error}\n\n"
             "Click OK to reset the local repository to its pre-release state.\n"
             "Click Cancel to leave the working tree as is so you can salvage screenshots or other work.\n\n"
-            "Note: a local reset cannot undo any push that may have already reached origin/main; "
-            "if the push succeeded you may need to fix things on GitHub manually."
+            "Note: a local reset cannot undo a push that may have already reached GitHub. For a personal "
+            "repo that is origin/main; for an org/archival repo the push went to a "
+            "'release-candidate-<version>' branch and main is untouched until approval. Either is safe "
+            "to leave — a retry force-pushes the candidate again — but you may delete a stray "
+            "release-candidate branch on GitHub if you prefer."
         )
         if (not self.testingMode) and slicer.util.confirmOkCancelDisplay(msg, windowTitle="Release failed"):
             try:
@@ -5204,9 +5219,11 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         me = self.whoami()
         selfAuthored = (pr.get("author") or {}).get("login") == me
         if selfAuthored:
-            if message != "":
-                self.gh(["pr", "comment", str(pr['number']), "--repo", upstreamNameWithOwner,
-                         "--body", message])
+            # Always post a comment -- an empty message would otherwise set the PR back to draft
+            # (below) with zero feedback to the contributor.
+            body = message if message != "" else "Changes requested (no additional comment)."
+            self.gh(["pr", "comment", str(pr['number']), "--repo", upstreamNameWithOwner,
+                     "--body", body])
         else:
             commandList = f"""
                 pr review {pr['number']}
