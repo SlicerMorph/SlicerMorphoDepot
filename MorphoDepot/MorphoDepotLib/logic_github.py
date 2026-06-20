@@ -7,7 +7,6 @@ import glob
 import json
 import time
 import math
-import locale
 import random
 import shutil
 import logging
@@ -28,9 +27,11 @@ from slicer.i18n import translate
 
 
 class GitHubMixin:
-    def gh(self, command):
+    def gh(self, command, timeout=300):
         """Execute `gh` command.  Multiline input string accepted for readablity.
-        Do not include `gh` in the command string"""
+        Do not include `gh` in the command string.  `timeout` (seconds) bounds each attempt so a
+        hung/auth-prompting child can't block the UI thread; pass timeout=None for the few genuinely
+        long operations (large release upload/download)."""
         if not self.ghExecutablePath or self.ghExecutablePath == "":
             logging.error("Error, gh not found")
             return "Error, gh not found"
@@ -46,12 +47,28 @@ class GitHubMixin:
         baseDelay = 1
         attempts = 4
         for attempt in range(attempts):
-            originalLocale = locale.setlocale(locale.LC_ALL)
-            locale.setlocale(locale.LC_ALL, "en_US.UTF-8")
-            process = slicer.util.launchConsoleProcess(fullCommandList)
-            result = process.communicate()
-            locale.setlocale(locale.LC_ALL, originalLocale)
-            needRetry = result[0].find("error: 503") != -1
+            # S6: give gh a UTF-8 locale via the child's environment.  The previous code mutated the
+            # Python process C-locale, which (a) raised locale.Error and broke every gh call on hosts
+            # where en_US.UTF-8 isn't generated (minimal Linux/CI), and (b) doesn't even propagate to
+            # the spawned child -- the subprocess env is what gh actually reads.
+            process = slicer.util.launchConsoleProcess(
+                fullCommandList,
+                updateEnvironment={"LC_ALL": "en_US.UTF-8", "LANG": "en_US.UTF-8"})
+            try:
+                # S7: a hung or auth-prompting gh child must not block the Slicer UI thread forever.
+                result = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                try:
+                    process.communicate()
+                except Exception:
+                    pass
+                # S7: a timeout is fatal (not retried, unlike the transient 503 below) -- a process
+                # still alive after `timeout`s is not a transient condition.
+                raise RuntimeError(f"gh command timed out after {timeout}s: {' '.join(commandList)}")
+            # S11: gh writes errors to stderr, so the 503 retry signal can be on either stream.
+            combined = (result[0] or "") + (result[1] or "")
+            needRetry = "error: 503" in combined or "HTTP 503" in combined
             if process.returncode == 0 or not needRetry:
                 if attempt > 0:
                     print(f"Command succeeded after try {attempt}")
@@ -85,9 +102,9 @@ class GitHubMixin:
             return ""
         try:
             command = [self.gitExecutablePath, 'config', '--global', key]
-            result = subprocess.check_output(command, universal_newlines=True).strip()
+            result = subprocess.check_output(command, universal_newlines=True, timeout=10).strip()
             return result
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
             return ""
 
     def setGitConfig(self, key, value):
@@ -95,8 +112,8 @@ class GitHubMixin:
         if not self.gitExecutablePath:
             return
         try:
-            subprocess.check_call([self.gitExecutablePath, 'config', '--global', key, value])
-        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            subprocess.check_call([self.gitExecutablePath, 'config', '--global', key, value], timeout=10)
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
             logging.error(f"Failed to set git config {key}: {e}")
 
     def hasWorkflowScope(self):

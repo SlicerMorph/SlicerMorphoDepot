@@ -69,8 +69,11 @@ class ContributeMixin:
         originNameWithOwner = self.nameWithOwner("origin")
         originOwner = originNameWithOwner.split("/")[0]
         if not self._openPRForBranch(upstreamNameWithOwner, originOwner, branchName):
-            issueNumber = branchName.split("-")[1]
-            prBody = f"Fixes #{issueNumber}"
+            # S11: branchName is normally "issue-<issueNumber>" (from loadIssue); guard a malformed
+            # name instead of IndexError-ing out of the push handler.
+            parts = branchName.split("-")
+            issueNumber = parts[1] if len(parts) > 1 else None
+            prBody = f"Fixes #{issueNumber}" if issueNumber else "Resolves the linked issue."
             if self.currentIssue and 'author' in self.currentIssue and 'login' in self.currentIssue['author']:
                 authorLogin = self.currentIssue['author']['login']
                 prBody = f"Started work on this issue for @{authorLogin}. {prBody}"

@@ -63,7 +63,7 @@ class AccessionMixin:
             licenseURL = "https://creativecommons.org/licenses/by-nc/4.0/legalcode.txt"
         else:
             licenseURL = "https://creativecommons.org/licenses/by/4.0/legalcode.txt"
-        response = requests.get(licenseURL)
+        response = requests.get(licenseURL, timeout=15)
         with open(os.path.join(repoDir, "LICENSE.txt"), "w") as fp:
             fp.write(response.content.decode('ascii', errors="ignore"))
 
@@ -490,7 +490,7 @@ jobs:
         commandList += ["--notes", "Initial release"]
         self.gh(commandList)
         self.gh(["release", "upload", "--repo", repoNameWithOwner, "v1",
-                 f"{sourceFilePath}#{sourceFileName}.nrrd"])
+                 f"{sourceFilePath}#{sourceFileName}.nrrd"], timeout=None)  # large upload: no timeout
 
         # write source volume pointer: an owner-relative path resolved against the repo's current
         # owner at read time (resolveVolumeURL).
