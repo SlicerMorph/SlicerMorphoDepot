@@ -130,6 +130,14 @@ def _stress_continuous_colortable_guard():
     terminologyNode = slicer.util.getNode("GenericAnatomyColors")
     assert terminologyNode is not None, "GenericAnatomyColors not in scene (positive case can't run)"
     assert not H.w._colorTableNotTerminology(terminologyNode), "File terminology table wrongly flagged"
+    # a user-built table reports type 'UserDefined' (NOT 'User') and must not be flagged
+    ud = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLColorTableNode", "stress-ud")
+    ud.SetTypeToUser(); ud.SetNumberOfColors(2); ud.SetColor(1, "A", 1.0, 0.0, 0.0, 1.0)
+    try:
+        assert ud.GetTypeAsString() == "UserDefined", f"unexpected user type {ud.GetTypeAsString()!r}"
+        assert not H.w._colorTableNotTerminology(ud), "UserDefined table wrongly flagged"
+    finally:
+        slicer.mrmlScene.RemoveNode(ud)
 
 
 def _stress_invalid_repo_name():
