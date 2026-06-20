@@ -333,6 +333,22 @@ class ReleaseTabMixin:
 
     # Search
 
+    def _segmentationIsEmpty(self, node):
+        """True if the segmentation has no segments (nothing to release/credit)."""
+        try:
+            return node is not None and node.GetSegmentation().GetNumberOfSegments() == 0
+        except Exception:
+            return False
+
+    def _colorTableNotTerminology(self, node):
+        """True if the color node does not look like a discrete terminology color table -- e.g. a
+        built-in continuous colormap (Rainbow/Grey/...) or generic Labels.  A real MorphoDepot color
+        table is loaded from a file or built by the user (type 'File'/'User').  False on any error."""
+        try:
+            return node is not None and node.GetTypeAsString() not in ("File", "User")
+        except Exception:
+            return False
+
     def onMakeRelease(self):
         if not self.logic.localRepo:
             return
@@ -340,6 +356,22 @@ class ReleaseTabMixin:
         colorTableNode = self.releaseUI.newColorSelector.currentNode()
         if baselineNode is None or colorTableNode is None:
             return
+
+        # Part E bad-input guards: an empty baseline or a non-terminology (e.g. continuous) color
+        # table would publish a broken release.  Warn (consistent with the no-change warnings below).
+        if self._segmentationIsEmpty(baselineNode):
+            if not (self.testingMode or slicer.util.confirmOkCancelDisplay(
+                    "The selected baseline segmentation has no segments, so this release would "
+                    "publish an empty baseline.\n\nProceed anyway?", windowTitle="Empty baseline")):
+                return
+        if self._colorTableNotTerminology(colorTableNode):
+            if not (self.testingMode or slicer.util.confirmOkCancelDisplay(
+                    f"The selected color table '{colorTableNode.GetName()}' (type "
+                    f"'{colorTableNode.GetTypeAsString()}') does not look like a terminology color "
+                    "table loaded from a file -- it may be a built-in continuous colormap. MorphoDepot "
+                    "expects a discrete, terminology-based color table.\n\nUse it anyway?",
+                    windowTitle="Color table not terminology")):
+                return
 
         nameWithOwner = self.logic.nameWithOwner("origin")
         newTag = self.logic.nextReleaseTag()

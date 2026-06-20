@@ -112,7 +112,41 @@ def _annotate_tab_touch():
     assert H.w.annotateUI.commitButton is not None
 
 
+def _stress_empty_segmentation_guard():
+    # Part E: an empty baseline segmentation must be detected (would publish an empty baseline).
+    seg = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode", "stress-empty")
+    try:
+        assert H.w._segmentationIsEmpty(seg), "empty segmentation not detected"
+        seg.GetSegmentation().AddEmptySegment("a")
+        assert not H.w._segmentationIsEmpty(seg), "non-empty segmentation flagged as empty"
+    finally:
+        slicer.mrmlScene.RemoveNode(seg)
+
+
+def _stress_continuous_colortable_guard():
+    # Part E: a continuous/built-in colormap must be flagged; a File/User terminology table must not.
+    assert H.w._colorTableNotTerminology(slicer.util.getNode("Rainbow")), "Rainbow (continuous) not flagged"
+    assert H.w._colorTableNotTerminology(slicer.util.getNode("Grey")), "Grey (continuous) not flagged"
+    assert not H.w._colorTableNotTerminology(slicer.util.getNode("GenericAnatomyColors")), \
+        "File terminology table wrongly flagged"
+
+
+def _stress_invalid_repo_name():
+    # Part E: a malformed repo name must keep Create disabled (form regex guard).
+    H.goTab("Create")
+    H.fillValidForm(name="valid-name", shortTerm=True)
+    assert H.w.createUI.createRepository.enabled, "valid name should enable Create"
+    f = H.form()
+    f.userEditedRepoName = True
+    f.questions["githubRepoName"].answerText.text = "bad name!"   # space + '!' -> invalid
+    H.pump(60)
+    assert not H.w.createUI.createRepository.enabled, "invalid repo name should keep Create disabled"
+
+
 TESTS = [
+    ("stress_empty_segmentation_guard", _stress_empty_segmentation_guard),
+    ("stress_continuous_colortable_guard", _stress_continuous_colortable_guard),
+    ("stress_invalid_repo_name", _stress_invalid_repo_name),
     ("create_redistribution_gate", _create_redistribution_gate),
     ("create_f4_name_suggestion", _create_f4_name_suggestion),
     ("create_repotype_shortterm_personal", _create_repotype_shortterm_personal),

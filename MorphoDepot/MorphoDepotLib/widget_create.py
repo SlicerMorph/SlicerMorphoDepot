@@ -536,6 +536,14 @@ class CreateTabMixin:
                 "Use the 'All nodes' tab of the Data module to access the color table and right-click to rename.")
             return None
 
+        # Part E bad-input guard: a selected-but-empty baseline segmentation would stage an empty
+        # baseline. (Color-table terminology is validated below for archival / warned for short-term.)
+        if self._segmentationIsEmpty(sourceSegmentation):
+            if not slicer.util.confirmOkCancelDisplay(
+                    "The selected baseline segmentation has no segments. Stage it anyway (the "
+                    "repository would start with an empty baseline)?", windowTitle="Empty baseline"):
+                return None
+
         accessionData = self.createUI.accessionForm.accessionData()
         accessionData['scanDimensions'] = str(sourceVolume.GetImageData().GetDimensions())
         accessionData['scanSpacing'] = str(sourceVolume.GetSpacing())
