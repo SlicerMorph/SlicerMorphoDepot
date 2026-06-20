@@ -61,6 +61,10 @@ class ObjectStoreMixin:
         qsettings = qt.QSettings()
         signEndpoint = qsettings.value("MorphoDepot/uploadSignEndpoint",
                                        "https://join.morphodepot.org/uploads/sign")
+        # S5: the user's gh token authenticates these calls; refuse a non-HTTPS endpoint so a
+        # poisoned/typo'd QSettings value can't exfiltrate it in cleartext.
+        if not str(signEndpoint).startswith("https://"):
+            raise RuntimeError(f"Refusing non-HTTPS upload endpoint: {signEndpoint!r}")
         # Derive the multipart base: …/uploads/sign -> …/uploads/multipart
         base = signEndpoint.rsplit("/uploads/", 1)[0] + "/uploads/multipart"
         # Authenticate with the user's own gh token (member tier — "git + gh, nothing else").
