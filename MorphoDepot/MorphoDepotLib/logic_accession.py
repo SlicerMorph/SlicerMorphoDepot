@@ -348,10 +348,16 @@ jobs:
         sourceFileName = buildContext["sourceFileName"]
         checksum = buildContext["checksum"]
 
-        self.progressMethod(f"Creating {self.morphoDepotOrg}/{repoName} (private) via the App...")
-        info = self.controlPlaneRequest("repos/create", {"name": repoName})
-        nameWithOwner = info["full_name"]
-        cloneURL = info["clone_url"]
+        # Member-driven create (#20): the member creates the repo in-org with their OWN gh -- they have
+        # create-private rights and become its admin -- instead of asking the App. This is what lets the
+        # App drop its Administration permission. The member (admin) retains push regardless; the
+        # {login}-team grant for other collaborators can be added later without the App.
+        self.progressMethod(f"Creating {self.morphoDepotOrg}/{repoName} (private)...")
+        nameWithOwner = f"{self.morphoDepotOrg}/{repoName}"
+        self.gh(f"repo create {nameWithOwner} --private --disable-wiki")
+        cloneURL = f"https://github.com/{nameWithOwner}.git"
+        # Mark it staged with the member's own gh (members own their topics now; the App does not).
+        self.gh(f"repo edit {nameWithOwner} --add-topic {self.stagingTopic}")
 
         # Push the locally built content to the empty in-org repo (member has Write via team).
         self.localRepo = repo
@@ -503,24 +509,32 @@ jobs:
         return repoNameWithOwner
 
     def _publishStagedRepoInOrg(self, ctx):
-        """Member tier: ask the App to make the staged org repo public.  Going public is a governed
-        event (org-design 11.3): the App routes the request through the MD-reviewers review gate —
-        it emails a signed Approve link and does NOT flip the repo now.  Returns a pending-review
-        dict in that case (the repo stays private + staged until a reviewer approves, after which
-        the App makes it public on its own).  A non-gated immediate publish (backstop) returns the
-        nameWithOwner string, as before."""
+        """Member tier (#20): submit the staged org repo to the App's review gate.  The App validates
+        (#19): on a hard-check failure it AUTO-BOUNCES (returns changes_requested) — the repo stays
+        private + staged and we surface the failures; otherwise it requests review (pending_review).
+        Once a reviewer approves, the App mints the DOI but does NOT flip; the member's repeat publish
+        then gets {status: approved, flip: True}, and the MEMBER flips visibility + sets the discovery
+        topics here with their OWN gh (they are admin of their repo).  Returns a dict (changesRequested
+        / pending) or the public nameWithOwner string once flipped."""
         repoName = ctx["repoName"]
         species = ctx.get("speciesTopicString")
         topics = ["morphodepot"] + ([f"md-{species}"] if species else [])
         finalNameWithOwner = ctx["personalNameWithOwner"]
+        repoDir = ctx.get("repoDir")
         self.progressMethod(f"Submitting {finalNameWithOwner} for review...")
         resp = self.controlPlaneRequest("repos/publish", {"repo": repoName, "topics": topics}) or {}
-        repoDir = ctx.get("repoDir")
+        status = resp.get("status")
 
-        if resp.get("status") == "pending_review":
-            # Review requested.  The repo is still private and still carries morphodepot-staging,
-            # so it remains in the unpublished list; drop only the transient local clone (reopen
-            # re-clones).  Do NOT notify RepoClerk (nothing public to crawl) or add a contact.
+        if status == "changes_requested":
+            # #19 auto-bounce: automated validation found blocking issues.  The repo stays private +
+            # staged; surface the failures so the curator can fix and re-submit (the local clone is
+            # kept — reopen/edit is unchanged).
+            return {"changesRequested": True, "nameWithOwner": finalNameWithOwner,
+                    "validation": resp.get("validation"), "issueUrl": resp.get("issue_url")}
+
+        if status == "pending_review":
+            # Review requested.  The repo is still private and still carries morphodepot-staging, so it
+            # remains in the unpublished list; drop only the transient local clone (reopen re-clones).
             self.localRepo = None
             if repoDir and os.path.exists(repoDir):
                 shutil.rmtree(repoDir, ignore_errors=True)
@@ -528,14 +542,29 @@ jobs:
             return {"pending": True, "nameWithOwner": finalNameWithOwner,
                     "reviewSentTo": resp.get("review_sent_to")}
 
-        # Backstop: an immediate (non-gated) publish actually made it public — clean up as before.
+        if status == "approved" and resp.get("flip"):
+            # Member-driven go-live (#20): the reviewer approved and the App minted the DOI WITHOUT
+            # flipping.  The MEMBER now flips the repo public and swaps the staging topic for the
+            # discovery topics, both with their own gh — so the App never needs Administration.
+            self.progressMethod(f"Approved -- publishing {finalNameWithOwner}...")
+            self.setRepoVisibility(finalNameWithOwner, public=True)
+            self.addMorphoTopics(finalNameWithOwner, species)
+            self.ghTopicClearCache()
+            self.localRepo = None
+            if repoDir and os.path.exists(repoDir):
+                shutil.rmtree(repoDir, ignore_errors=True)
+            try:
+                self.notifyRepoClerk(finalNameWithOwner)
+            except Exception as e:
+                logging.warning(f"Could not notify RepoClerk of publish: {e}")
+            self.stagingContext = None
+            return finalNameWithOwner
+
+        # Backstop: a non-gated immediate publish (legacy App-flips mode) already made it public.
         self.ghTopicClearCache()
         self.localRepo = None
         if repoDir and os.path.exists(repoDir):
             shutil.rmtree(repoDir, ignore_errors=True)
-        # The repo is now public + topic:morphodepot, so RepoClerk will crawl it — nudge it to
-        # journal the new repo promptly instead of waiting for the next scheduled sweep.
-        # Best-effort: the publish already succeeded, so a notify failure must not surface here.
         try:
             self.notifyRepoClerk(finalNameWithOwner)
         except Exception as e:
