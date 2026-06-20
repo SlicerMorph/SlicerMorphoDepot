@@ -619,14 +619,23 @@ jobs:
         personal = ctx["personalNameWithOwner"]
         repoDir = ctx.get("repoDir")
         if ctx.get("isMember"):
-            # Member tier: the App deletes the in-org repo AND its S3 object (only while private).
-            self.progressMethod(f"Discarding {personal} (deleting repo + volume)...")
-            self.controlPlaneRequest("repos/discard", {"repo": ctx["repoName"]})
+            # Member tier: ask the App to free the S3 object.  Administration-free cutover (#20): the
+            # App cannot delete the repo, so it returns ``member_must_discard`` and the member marks it
+            # ``morphodepot-discarded`` with their OWN gh (repo-admin) -- it leaves the unpublished list
+            # and a cleanup job removes it.  (Legacy: the App deletes the repo + volume outright.)
+            self.progressMethod(f"Discarding {personal}...")
+            resp = self.controlPlaneRequest("repos/discard", {"repo": ctx["repoName"]}) or {}
+            if resp.get("member_must_discard"):
+                try:
+                    self.gh(f"repo edit {personal} --add-topic morphodepot-discarded "
+                            f"--remove-topic {self.stagingTopic}")
+                except Exception as e:
+                    logging.warning(f"Could not mark {personal} discarded: {e}")
             self.localRepo = None
             if repoDir and os.path.exists(repoDir):
                 shutil.rmtree(repoDir, ignore_errors=True)
             self.stagingContext = None
-            return None    # already deleted — nothing for the UI to open
+            return None    # member's view is cleared; the marked repo is removed by the cleanup job
         self.localRepo = None
         if repoDir and os.path.exists(repoDir):
             shutil.rmtree(repoDir, ignore_errors=True)
