@@ -36,6 +36,10 @@ class ObjectStoreMixin:
         "releases/download/v1/..." pointers are re-based onto the repo owner.
         """
         if volumeRef.startswith("http"):
+            # S10: a source_volume pointer comes from (potentially arbitrary) repo content; require
+            # https so a poisoned pointer can't downgrade to cleartext http or use a non-http scheme.
+            if not volumeRef.startswith("https://"):
+                raise ValueError(f"Refusing non-HTTPS source volume URL: {volumeRef!r}")
             return volumeRef  # full URL (object-store or legacy hardcoded) — use as-is
         return f"https://github.com/{repoNameWithOwner}/{volumeRef}"
 

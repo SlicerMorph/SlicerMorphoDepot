@@ -10,6 +10,7 @@ import math
 import locale
 import random
 import shutil
+import hashlib
 import logging
 import platform
 import datetime
@@ -228,6 +229,21 @@ class RepoMixin:
         self.loadFromLocalRepository(remoteName="origin", configuration="preview")
         return True
 
+    def _fileMatchesChecksum(self, filePath, checksum):
+        """True if filePath's digest matches `checksum` ('<algo>:<hex>', e.g. 'SHA256:ab...', or a
+        bare SHA-256 hex).  Used to re-verify the name-keyed volume cache on every load (review S4)."""
+        algo, sep, expected = checksum.partition(":")
+        if not sep:
+            algo, expected = "sha256", checksum  # bare hex -> assume SHA-256
+        try:
+            h = hashlib.new(algo.lower())
+            with open(filePath, "rb") as fp:
+                for block in iter(lambda: fp.read(1024 * 1024), b""):
+                    h.update(block)
+        except (ValueError, OSError):
+            return False  # unknown algorithm or unreadable file -> treat as mismatch
+        return h.hexdigest().lower() == expected.strip().lower()
+
     def loadFromLocalRepository(self, remoteName="upstream", configuration="segment"):
         localDirectory = self.localRepo.working_dir
         branchName = self.localRepo.active_branch.name
@@ -263,6 +279,18 @@ class RepoMixin:
         if os.path.exists(checksumFilePath):
             with open(checksumFilePath) as fp:
                 checksum = fp.read().strip()
+        else:
+            # S4: no committed checksum -- integrity can't be verified.  Warn rather than silently
+            # trusting whatever bytes are served/cached for legacy repos.
+            self.progressMethod("Warning: no source_volume_checksum committed; cannot verify volume integrity.")
+        if checksum and os.path.exists(nrrdPath) and not self._fileMatchesChecksum(nrrdPath, checksum):
+            # S4: the cache is keyed by repo name, not content, so a stale (new release) or tampered
+            # cached file would otherwise be reused unverified -- re-fetch instead of trusting it.
+            self.progressMethod("Cached source volume failed checksum; re-downloading.")
+            try:
+                os.remove(nrrdPath)
+            except OSError:
+                pass
         if not os.path.exists(nrrdPath):
             slicer.util.downloadFile(volumeURL, nrrdPath, checksum=checksum)
         volumeNode = slicer.util.loadVolume(nrrdPath)

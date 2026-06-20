@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.request
 
 SCHEMA = "morphodepot-contributors/1"
@@ -73,6 +74,11 @@ def save(path: str, data: dict) -> None:
 
 def orcid_name(orcid: str):
     """Authoritative ``(given, family)`` from the public ORCID record — best-effort (None, None)."""
+    # S10: orcid is interpolated into the request URL; require the canonical ORCID format so a
+    # malformed value can't alter the URL path or host.
+    orcid = (orcid or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{4}-\d{4}-\d{3}[\dX]", orcid):
+        return (None, None)
     try:
         req = urllib.request.Request(f"{ORCID_PUBLIC_API}/{orcid}/person",
                                      headers={"Accept": "application/json"})
