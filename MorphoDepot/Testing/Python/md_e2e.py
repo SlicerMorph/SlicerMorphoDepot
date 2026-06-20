@@ -10,10 +10,11 @@ E2E_COLOR = "mdteste2ecolors"
 
 
 def _rm(name):
-    n = slicer.mrmlScene.GetFirstNodeByName(name)
-    while n:
-        slicer.mrmlScene.RemoveNode(n)
+    for _ in range(100):          # bounded so a stuck node can't spin forever
         n = slicer.mrmlScene.GetFirstNodeByName(name)
+        if not n:
+            break
+        slicer.mrmlScene.RemoveNode(n)
 
 
 def setupCreateFixtures():
@@ -56,7 +57,7 @@ def probeCreateValidation(archival=True, name="mdtest-e2e-probe"):
         "collectOK": inp is not None,
         "dialogs": H.shown(),
         "colorType": ct.GetTypeAsString(),
-        "term1": ct.GetTerminologyAsString(1)[:40],
+        "term1": (ct.GetTerminologyAsString(1) or "")[:40],
         "notTerminology": H.w._colorTableNotTerminology(ct),
         "volDims": str(vol.GetImageData().GetDimensions()) if vol.GetImageData() else None,
     }

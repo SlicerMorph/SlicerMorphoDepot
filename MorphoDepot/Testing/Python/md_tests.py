@@ -132,7 +132,9 @@ def _stress_continuous_colortable_guard():
     assert not H.w._colorTableNotTerminology(terminologyNode), "File terminology table wrongly flagged"
     # a user-built table reports type 'UserDefined' (NOT 'User') and must not be flagged
     ud = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLColorTableNode", "stress-ud")
-    ud.SetTypeToUser(); ud.SetNumberOfColors(2); ud.SetColor(1, "A", 1.0, 0.0, 0.0, 1.0)
+    ud.SetTypeToUser()
+    ud.SetNumberOfColors(2)
+    ud.SetColor(1, "A", 1.0, 0.0, 0.0, 1.0)
     try:
         assert ud.GetTypeAsString() == "UserDefined", f"unexpected user type {ud.GetTypeAsString()!r}"
         assert not H.w._colorTableNotTerminology(ud), "UserDefined table wrongly flagged"
