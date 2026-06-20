@@ -55,6 +55,13 @@ def _logic_whoami():
     assert who, "whoami returned empty"
 
 
+def _logic_mixins_touch():
+    # cheap, side-effect-free methods spanning several Logic mixins
+    assert H.logic.localRepositoryDirectory(), "RepoMixin.localRepositoryDirectory empty"
+    assert H.logic.controlPlaneBase(), "ControlPlaneMixin.controlPlaneBase empty"
+    assert H.logic.volumeChecksumIndexURL(), "ObjectStoreMixin.volumeChecksumIndexURL empty"
+
+
 def _baseline_nochange_helper():
     # Unit-touch of the M6 no-change check: a file compared to itself is 'unchanged'.
     import tempfile, os, shutil
@@ -116,5 +123,6 @@ TESTS = [
     ("configure_tab_touch", _configure_tab_touch),
     ("annotate_tab_touch", _annotate_tab_touch),
     ("logic_whoami", _logic_whoami),
+    ("logic_mixins_touch", _logic_mixins_touch),
     ("baseline_nochange_helper", _baseline_nochange_helper),
 ]
