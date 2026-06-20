@@ -1007,6 +1007,22 @@ class CreateTabMixin:
         slicer.util.showStatusMessage("")
         if not final:
             return
+        # Member-driven cutover (#20): automated validation (#19) bounced the submission — show the
+        # specific blocking failures and leave the repo staged so the curator can fix and re-submit.
+        if isinstance(final, dict) and final.get("changesRequested"):
+            v = final.get("validation") or {}
+            fails = v.get("failures") or []
+            lines = "\n".join(f"  • {f.get('title')}: {f.get('detail')}" for f in fails) or "  • (see the review report)"
+            self._stagedNameWithOwner = final.get("nameWithOwner")
+            self.refreshStagedReposList(force=True)
+            if not self.testingMode:
+                slicer.util.errorDisplay(
+                    "Automated checks must pass before this can be reviewed:\n\n"
+                    f"{lines}\n\n"
+                    "Fix these, then click Make Public again to re-submit."
+                    + (f"\n\nTracking issue: {final.get('issueUrl')}" if final.get("issueUrl") else ""),
+                    windowTitle="Changes required before publishing")
+            return
         # Org publish is routed through the MD-reviewers review gate (org-design 11.3): the App
         # emailed an Approve link and did NOT make the repo public yet.  Report that review was
         # requested and leave the repo staged; do NOT add a contact (the repo isn't public).
@@ -1024,10 +1040,10 @@ class CreateTabMixin:
             if not self.testingMode:
                 slicer.util.infoDisplay(
                     f"'{where}' has been submitted for review.\n\n"
-                    f"A request was emailed to {to}. Once a reviewer approves, the repository is "
-                    "made public automatically and you'll get an email. Until then it stays "
-                    "private and remains in your unpublished list (reopen it there to make "
-                    "changes, which will require requesting review again).",
+                    f"A request was emailed to {to}. Once a reviewer approves you'll get an email — "
+                    "then reopen this repo from your unpublished list and click Make Public again to "
+                    "publish it. Until then it stays private (reopening to make changes will require "
+                    "requesting review again).",
                     windowTitle="Submitted for review")
             slicer.mrmlScene.Clear()
             return
