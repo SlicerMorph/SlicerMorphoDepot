@@ -853,6 +853,16 @@ class CreateTabMixin:
         except Exception:
             return False
 
+    def _repoHasMintedDoi(self, nameWithOwner):
+        """True if the App already minted a DOI on this still-private repo (``.zenodo/state.json``) --
+        i.e. it was approved and is awaiting the member's flip (#20).  Used to SKIP the edit-resave on
+        a finish-flip, which would otherwise rewrite main and drop the App's DOI citation block."""
+        try:
+            info = self.logic.ghJSON(["api", f"/repos/{nameWithOwner}/contents/.zenodo/state.json"])
+            return isinstance(info, dict) and bool(info.get("sha"))
+        except Exception:
+            return False
+
     def _readRepoFileViaApi(self, nameWithOwner, path):
         """Return (text, sha) for a repo file via the GitHub API, or (None, None) if absent."""
         import base64
@@ -957,10 +967,15 @@ class CreateTabMixin:
                   + (" in the MorphoDepot organization." if isOrg else " on your account."))
         if not (self.testingMode or slicer.util.confirmOkCancelDisplay(prompt, windowTitle="Publish repository")):
             return
+        # Member-driven finish (#20): a resumed repo that is already approved (the App minted its DOI on
+        # the still-private repo, awaiting the member's flip) must NOT have its edits re-saved -- that
+        # rewrites main and drops the App's DOI citation block.  Just flip it.
+        nwoForFinish = ctx.get("personalNameWithOwner")
+        approvedFinish = bool(isOrg and nwoForFinish and self._repoHasMintedDoi(nwoForFinish))
         # Gather any pending edits up front so we can abort cleanly (without publishing) if the
         # loaded segmentation was edited in place.
         editsBundle = None
-        if self._resumedForEdit:
+        if self._resumedForEdit and not approvedFinish:
             editsBundle = self._gatherStagedEdits()
             if editsBundle is None:
                 return  # warned; abort publish
