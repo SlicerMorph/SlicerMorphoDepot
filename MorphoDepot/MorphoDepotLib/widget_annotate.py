@@ -142,7 +142,11 @@ class AnnotateTabMixin:
     def onIssueDoubleClicked(self, item):
         slicer.util.showStatusMessage(f"Loading {item.text()}")
         repoDirectory = os.path.normpath(self.configureUI.repoDirectory.currentPath)
-        issue = self.issuesByItem[item]
+        # S8: issuesByItem is shared across tabs; a stale/foreign list item is not a key -- bail
+        # instead of raising KeyError outside any tryWithErrorDisplay.
+        issue = self.issuesByItem.get(item)
+        if issue is None:
+            return
         if self.testingMode or slicer.util.confirmOkCancelDisplay("Close scene and load issue?"):
             with slicer.util.tryWithErrorDisplay("Failed to load issue", waitCursor=True):
                 slicer.util.showStatusMessage(f"Loading {item.text()}")

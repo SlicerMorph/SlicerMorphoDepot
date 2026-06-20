@@ -29,8 +29,13 @@ from slicer.i18n import translate
 
 class ControlPlaneMixin:
     def controlPlaneBase(self):
-        return qt.QSettings().value(
+        base = qt.QSettings().value(
             "MorphoDepot/controlPlaneBase", "https://join.morphodepot.org").rstrip("/")
+        # S5: the user's gh token is sent here as a Bearer credential; refuse a non-HTTPS endpoint so
+        # a poisoned/typo'd QSettings value can't exfiltrate it in cleartext or to an http host.
+        if not str(base).startswith("https://"):
+            raise RuntimeError(f"Refusing non-HTTPS control plane endpoint: {base!r}")
+        return base
 
     def orgMembershipStatus(self, org=None):
         """Tri-state membership against the MorphoDepot org via the App control plane (`/me`):

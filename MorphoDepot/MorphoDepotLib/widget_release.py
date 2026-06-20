@@ -195,7 +195,11 @@ class ReleaseTabMixin:
             slicer.util.showStatusMessage(f"Found {len(administratedRepos)} owned repositories.")
 
     def onReleaseRepoDoubleClicked(self, item):
-        repoData = self.reposByItem[item]
+        # S8: reposByItem is shared across tabs; a stale/foreign list item is not a key -- bail
+        # instead of raising KeyError outside any tryWithErrorDisplay.
+        repoData = self.reposByItem.get(item)
+        if repoData is None:
+            return
         slicer.util.showStatusMessage(f"Loading repository {repoData['nameWithOwner']}...")
         if self.testingMode or slicer.util.confirmOkCancelDisplay("Close scene and load repository?"):
             slicer.mrmlScene.Clear()
