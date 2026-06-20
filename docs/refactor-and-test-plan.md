@@ -163,3 +163,48 @@ where terminology is required · empty segmentation · non-binary / overlapping 
 byte-identical color copy · baseline identical to committed · invalid/duplicate repo name · App
 unreachable / 5xx · stale approve link · interrupted release retry. Several will surface **missing
 validation** — that becomes the post-refactor hardening backlog (add guard → pin with a test).
+
+---
+
+## Status — delivered
+
+All phases shipped to `org-development`: the workflow net, the refactor (R0–R4), Part E hardening,
+and the in-depth E2E layer.
+
+- **Refactor** — `MorphoDepot.py` 7,194 → 1,266 lines. The four Slicer-required classes stay thin in
+  the main file and inherit per-domain mixins from `MorphoDepotLib/` (the Python-built UI classes,
+  10 Logic mixins, 6 Widget tab mixins, a shared `ValidationMixin`). `onReload` reloads the
+  `MorphoDepotLib.*` submodules before Slicer's stock reload.
+- **Tests** (`MorphoDepot/Testing/Python/`) — `md_harness.py` (signal-level driver; monkeypatched
+  modal dialogs so real wiring runs without blocking), `md_tests.py` (15-case breadth net across
+  every tab + F4 + the M6 guards + Logic mixins + Part-E bad-input guards), `md_e2e.py` (live
+  create/publish/release drivers + synthetic fixtures), `md_run.py` (entry point).
+- **Bugs the in-depth layer caught in already-merged code** — both invisible to the breadth net
+  because it never exercised those paths: `_colorTableNotTerminology` keyed on `"User"` instead of
+  the actual `"UserDefined"` type string; and a `createAccessionRepo` `NameError` from the R2 split
+  (`MorphoDepotLogic.<classattr>` by class name in a mixin) that had **broken `create` entirely**.
+  Both fixed + merged.
+
+## Running the suite
+
+The harness runs **inside Slicer** via the MCP. Launch Slicer (the MCP binds port 2026), then exec
+the runner inside Slicer's Python (e.g. via the MCP `execute_python`):
+
+    exec(open(".../MorphoDepot/Testing/Python/md_run.py").read(), globals())   # -> {pass, fail, cases}
+
+Reload the module (`onReload`) between an E2E run and the breadth net — the E2E leaves the widget in
+the loaded/go-live state, which the create tests read as "a repo is staged".
+
+### End-to-end (live GitHub + the App test-mode)
+
+`md_e2e.py` drives real create/publish/release. A repo named `mdtest-*` routes through the App
+**test-mode** so the gate is drivable without emailing the reviewer:
+
+- `test_repo_prefix` (default `mdtest-`) — governed-action requests for matching repos skip the
+  review email; the rest of the gate (store → approve → execute → DOI) is unchanged.
+- `GET /repos/_test/pending/{name}` — returns the pending approve-id so the harness can drive Approve.
+- `DELETE /repos/_test/{name}` — App-admin teardown of a test **org** repo.
+- Both endpoints require `X-Test-Token == test_endpoint_token` (set in the box env; empty token =
+  endpoints disabled, so they are inert in production). Org repos tear down autonomously; **personal**
+  repos cannot be auto-deleted — the App has no admin there and a normal `gh` token lacks
+  `delete_repo`.
