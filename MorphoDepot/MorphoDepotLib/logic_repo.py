@@ -289,8 +289,12 @@ class RepoMixin:
             self.progressMethod("Cached source volume failed checksum; re-downloading.")
             try:
                 os.remove(nrrdPath)
-            except OSError:
-                pass
+            except OSError as e:
+                # S4: if we can't evict the bad file we must NOT fall through and load it (the
+                # `if not os.path.exists` below would otherwise skip re-download and loadVolume the
+                # known-bad cache file, defeating the integrity check).
+                raise RuntimeError(
+                    f"Cached source volume failed checksum and could not be removed for re-download: {e}")
         if not os.path.exists(nrrdPath):
             slicer.util.downloadFile(volumeURL, nrrdPath, checksum=checksum)
         volumeNode = slicer.util.loadVolume(nrrdPath)

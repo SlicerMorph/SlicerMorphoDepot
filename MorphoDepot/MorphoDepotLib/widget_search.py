@@ -190,7 +190,9 @@ class SearchTabMixin:
                             logging.warning(f"Could not download screenshot {imageURL}: {e}")
 
                     if os.path.exists(localImagePath):
-                        tooltipParts.append(f'<img src="file:///{localImagePath}" width="128"> ')
+                        # S9: owner/repoName are also in this path -- escape so a crafted value
+                        # can't break out of the src="" attribute.
+                        tooltipParts.append(f'<img src="file:///{html.escape(localImagePath)}" width="128"> ')
 
             tooltipText = "".join(tooltipParts)
 
