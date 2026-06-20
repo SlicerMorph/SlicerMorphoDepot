@@ -108,7 +108,7 @@ class RepoMixin:
         else:
             cloneTarget = self._userForkOf(sourceRepository)
             if not cloneTarget:
-                self.gh(f"repo fork {sourceRepository} --clone=false")
+                self.gh(["repo", "fork", sourceRepository, "--clone=false"])
                 cloneTarget = self._userForkOf(sourceRepository) or f"{me}/{repositoryName}"
             isFork = True
         self.gh(["repo", "clone", cloneTarget, localDirectory])
@@ -208,7 +208,7 @@ class RepoMixin:
         self.cacheOldVersion(localDirectory)
 
         # clone the main repo, not a fork
-        self.gh(f"repo clone {repoNameWithOwner} {localDirectory}")
+        self.gh(["repo", "clone", repoNameWithOwner, localDirectory])
 
         self.localRepo = git.Repo(localDirectory)
         self.localRepo.git.checkout("main")
@@ -221,7 +221,7 @@ class RepoMixin:
 
         self.cacheOldVersion(localDirectory)
 
-        self.gh(f"repo clone {repoNameWithOwner} {localDirectory}")
+        self.gh(["repo", "clone", repoNameWithOwner, localDirectory])
 
         self.localRepo = git.Repo(localDirectory)
         self.localRepo.git.checkout("main")

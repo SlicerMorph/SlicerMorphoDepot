@@ -200,10 +200,11 @@ class GitHubMixin:
         and REMOVE the `morphodepot-staging` marker, so the repo becomes findable by RepoClerk
         and the extension and simultaneously leaves the unpublished list.  The species topic is
         skipped when unknown (e.g. recovered repos with no species)."""
-        command = f"repo edit {nameWithOwner} --add-topic morphodepot --remove-topic {self.stagingTopic}"
+        command = ["repo", "edit", nameWithOwner, "--add-topic", "morphodepot",
+                   "--remove-topic", self.stagingTopic]
         if speciesTopicString:
-            command = (f"repo edit {nameWithOwner} --add-topic morphodepot "
-                       f"--add-topic md-{speciesTopicString} --remove-topic {self.stagingTopic}")
+            command = ["repo", "edit", nameWithOwner, "--add-topic", "morphodepot",
+                       "--add-topic", f"md-{speciesTopicString}", "--remove-topic", self.stagingTopic]
         self.gh(command)
 
     def issueList(self):

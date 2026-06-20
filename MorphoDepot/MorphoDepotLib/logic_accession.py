@@ -326,7 +326,13 @@ jobs:
 
         # Local clones are disposable working copies.  Clear any stale leftover (e.g. from a
         # previous interrupted attempt) so it never blocks a fresh build with the same name.
-        repoDir = os.path.join(self.localRepositoryDirectory(), repoName)
+        base = os.path.abspath(self.localRepositoryDirectory())
+        repoDir = os.path.abspath(os.path.join(base, repoName))
+        # Safety (review S2): a crafted name ('.', '..', or separators) could make repoDir resolve to
+        # the working directory itself or its parent -- rmtree would then wipe unrelated clones/caches.
+        # Refuse any repoDir that is not a *strict* child of the working directory.
+        if repoDir == base or os.path.commonpath([base, repoDir]) != base:
+            raise ValueError(f"Invalid repository name {repoName!r} -- must be a plain repository name.")
         if os.path.exists(repoDir):
             self.progressMethod(f"Removing stale local directory {repoDir}")
             shutil.rmtree(repoDir, ignore_errors=True)
@@ -354,10 +360,10 @@ jobs:
         # {login}-team grant for other collaborators can be added later without the App.
         self.progressMethod(f"Creating {self.morphoDepotOrg}/{repoName} (private)...")
         nameWithOwner = f"{self.morphoDepotOrg}/{repoName}"
-        self.gh(f"repo create {nameWithOwner} --private --disable-wiki")
+        self.gh(["repo", "create", nameWithOwner, "--private", "--disable-wiki"])
         cloneURL = f"https://github.com/{nameWithOwner}.git"
         # Mark it staged with the member's own gh (members own their topics now; the App does not).
-        self.gh(f"repo edit {nameWithOwner} --add-topic {self.stagingTopic}")
+        self.gh(["repo", "edit", nameWithOwner, "--add-topic", self.stagingTopic])
 
         # Push the locally built content to the empty in-org repo (member has Write via team).
         self.localRepo = repo
@@ -436,7 +442,8 @@ jobs:
 
         # Create PRIVATE: the staging state is invisible (private + no topic) until go-live.
         try:
-            self.gh(f"repo create {personalTarget} --disable-wiki --private --source {repoDir} --push")
+            self.gh(["repo", "create", personalTarget, "--disable-wiki", "--private",
+                     "--source", repoDir, "--push"])
         except RuntimeError as e:
             # gh repo create --push can race with GitHub provisioning the new repo for
             # git-over-HTTPS access; the create succeeds but the immediate push fails with
@@ -465,7 +472,7 @@ jobs:
 
         # Tag the repo as staged-but-unpublished.  This topic is the durable, queryable record
         # of staging state (no client-side marker); publish removes it.
-        self.gh(f"repo edit {repoNameWithOwner} --add-topic {self.stagingTopic}")
+        self.gh(["repo", "edit", repoNameWithOwner, "--add-topic", self.stagingTopic])
 
         # subscribe to all notifications for the new repository
         # gh repo watch was removed in newer gh CLI versions; use the API directly
@@ -478,7 +485,8 @@ jobs:
         commandList = ["release", "create", "--repo", repoNameWithOwner, "v1"]
         commandList += ["--notes", "Initial release"]
         self.gh(commandList)
-        self.gh(f"release upload --repo {repoNameWithOwner} v1 {sourceFilePath}#{sourceFileName}.nrrd")
+        self.gh(["release", "upload", "--repo", repoNameWithOwner, "v1",
+                 f"{sourceFilePath}#{sourceFileName}.nrrd"])
 
         # write source volume pointer: an owner-relative path resolved against the repo's current
         # owner at read time (resolveVolumeURL).
@@ -627,8 +635,8 @@ jobs:
             resp = self.controlPlaneRequest("repos/discard", {"repo": ctx["repoName"]}) or {}
             if resp.get("member_must_discard"):
                 try:
-                    self.gh(f"repo edit {personal} --add-topic morphodepot-discarded "
-                            f"--remove-topic {self.stagingTopic}")
+                    self.gh(["repo", "edit", personal, "--add-topic", "morphodepot-discarded",
+                             "--remove-topic", self.stagingTopic])
                 except Exception as e:
                     logging.warning(f"Could not mark {personal} discarded: {e}")
             self.localRepo = None
@@ -707,7 +715,7 @@ jobs:
         repoDir = os.path.join(self.localRepositoryDirectory(), repoName)
         if os.path.exists(repoDir):
             shutil.rmtree(repoDir, ignore_errors=True)
-        self.gh(f"repo clone {nameWithOwner} {repoDir}")
+        self.gh(["repo", "clone", nameWithOwner, repoDir])
         self.localRepo = git.Repo(repoDir)
 
         accession = {}
