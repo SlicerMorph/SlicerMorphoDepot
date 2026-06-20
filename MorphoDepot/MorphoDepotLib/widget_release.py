@@ -341,6 +341,22 @@ class ReleaseTabMixin:
         if baselineNode is None or colorTableNode is None:
             return
 
+        # Part E bad-input guards: an empty baseline or a non-terminology (e.g. continuous) color
+        # table would publish a broken release.  Warn (consistent with the no-change warnings below).
+        if self._segmentationIsEmpty(baselineNode):
+            if not (self.testingMode or slicer.util.confirmOkCancelDisplay(
+                    "The selected baseline segmentation has no segments, so this release would "
+                    "publish an empty baseline.\n\nProceed anyway?", windowTitle="Empty baseline")):
+                return
+        if self._colorTableNotTerminology(colorTableNode):
+            if not (self.testingMode or slicer.util.confirmOkCancelDisplay(
+                    f"The selected color table '{colorTableNode.GetName()}' (type "
+                    f"'{colorTableNode.GetTypeAsString()}') does not look like a terminology color "
+                    "table loaded from a file -- it may be a built-in continuous colormap. MorphoDepot "
+                    "expects a discrete, terminology-based color table.\n\nUse it anyway?",
+                    windowTitle="Color table not terminology")):
+                return
+
         nameWithOwner = self.logic.nameWithOwner("origin")
         newTag = self.logic.nextReleaseTag()
         plan = self.logic.releaseSnapshotPlan(newTag, baselineNode, colorTableNode, self.screenshots)
