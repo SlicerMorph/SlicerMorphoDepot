@@ -696,6 +696,19 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         """Called when the application closes and the module widget is destroyed."""
         self.removeObservers()
 
+    def onReload(self):
+        """Reload this module AND its ``MorphoDepotLib`` submodules. Slicer's stock reload
+        re-execs only ``MorphoDepot.py``, leaving ``MorphoDepotLib.*`` cached (stale), so edits
+        to the split-out mixins/clients would not take effect without reloading them first."""
+        import importlib
+        for name in [n for n in list(sys.modules)
+                     if n == "MorphoDepotLib" or n.startswith("MorphoDepotLib.")]:
+            try:
+                importlib.reload(sys.modules[name])
+            except Exception as e:
+                logging.warning(f"Could not reload {name}: {e}")
+        ScriptedLoadableModuleWidget.onReload(self)
+
     def enter(self):
         """Disable everything except the configUI"""
         moduleEnabled = self.checkModuleEnabled()
