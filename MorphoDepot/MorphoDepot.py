@@ -883,30 +883,100 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                 logging.warning(f"Could not load staged screenshots: {e}")
         self.updateScreenshotCount()
 
-    def _committedBaselineSignature(self, path, referenceVolume):
-        """Content signature of the baseline currently committed on disk (baseline.seg.nrrd),
-        loaded into a temporary node so it can be compared by CONTENT against the
-        about-to-be-released segmentation.  Returns None if there is no committed baseline."""
-        if not path or not os.path.exists(path):
-            return None
-        tmpNode = None
+    def _baselineMatchesCommittedFile(self, node, committedPath):
+        """M6 no-change check (org-design M6), done CHEAPLY: save the candidate baseline to a temp
+        COMPRESSED .seg.nrrd and compare its SIZE to the committed baseline.seg.nrrd.  A compressed
+        segmentation is small (KB-MB), so this is file I/O on a small file -- the previous approach
+        resampled every segment onto the full source-volume voxel grid and SHA-256'd it, which pegged
+        every core for minutes and froze the UI.  A single changed voxel changes the compressed size,
+        and size is immune to gzip-header timestamp non-determinism.  Returns True only when the sizes
+        match exactly (no new work -> not a release); ANY save/read failure returns False so a tooling
+        hiccup never blocks a real release.  (A different-content / same-compressed-size collision is
+        astronomically unlikely; add a decompressed-voxel tiebreak on a size match if ever needed.)"""
+        import tempfile
+        if not committedPath or not os.path.exists(committedPath):
+            return False
+        # Segment count: a reliable signal that adding/removing segments ALWAYS changes -- the
+        # compressed size alone can miss it, and Slicer's modified flag can miss copy/merge edits.
         try:
-            tmpNode = slicer.util.loadSegmentation(path)
-            return self._segmentationContentSignature(tmpNode, referenceVolume)
+            committedCount = self._committedSegmentCount(committedPath)
+            if committedCount is not None and node is not None \
+                    and node.GetSegmentation().GetNumberOfSegments() != committedCount:
+                return False  # different number of segments -> definitely changed
         except Exception as e:
-            logging.warning(f"Could not compute committed-baseline signature: {e}")
-            return None
+            logging.warning(f"Baseline segment-count check failed: {e}")
+        tmpDir = tempfile.mkdtemp()
+        try:
+            tmpPath = os.path.join(tmpDir, "candidate.seg.nrrd")
+            if not slicer.util.saveNode(node, tmpPath, {'useCompression': True}):
+                return False
+            return os.path.getsize(tmpPath) == os.path.getsize(committedPath)
+        except Exception as e:
+            logging.warning(f"Baseline file comparison failed; treating as changed: {e}")
+            return False
         finally:
-            if tmpNode is not None:
-                slicer.mrmlScene.RemoveNode(tmpNode)
+            shutil.rmtree(tmpDir, ignore_errors=True)
+
+    def _committedSegmentCount(self, path):
+        """Number of segments in a committed .seg.nrrd, parsed from its (uncompressed) NRRD text
+        header (Segment{N}_* custom fields).  Returns None if it cannot be determined."""
+        try:
+            import re
+            # Read until the NRRD header terminator (\n\n), not a fixed slice: a segmentation with many
+            # DICOM-derived per-segment tag strings can push the header past a fixed cap, which would
+            # undercount segments and let the no-change guard silently pass. Cap at 8 MB as a backstop.
+            header = b""
+            with open(path, "rb") as f:
+                while b"\n\n" not in header and len(header) < 8 * 1024 * 1024:
+                    chunk = f.read(262144)
+                    if not chunk:
+                        break
+                    header += chunk
+            header = header.split(b"\n\n", 1)[0]
+            indices = set(re.findall(rb"Segment(\d+)_", header))
+            return len(indices) if indices else None
+        except Exception as e:
+            logging.warning(f"Could not read committed segment count from {path}: {e}")
+            return None
+
+    def _colorTableMatchesCommitted(self, colorNode):
+        """True if the picked color table is byte-identical to the repository's committed color file
+        (so a release would not actually change it -- only the node name differs).  Saves the picked
+        node to a temp file of the same extension and compares bytes.  Returns False when there is no
+        committed color file or on any error, so it never falsely blocks a real color change."""
+        import tempfile
+        if colorNode is None or not (self.logic and self.logic.localRepo):
+            return False
+        repoDir = self.logic.localRepo.working_dir
+        committed = glob.glob(f"{repoDir}/*.csv") or glob.glob(f"{repoDir}/*.ctbl")
+        if not committed:
+            return False
+        if len(committed) > 1:
+            # Compare against the same file prepareReleaseSnapshot writes (first match); warn so a
+            # stray extra color file can't silently make the comparison pick the wrong one.
+            logging.warning(f"Multiple committed color files {committed}; comparing against {committed[0]}")
+        committedPath = committed[0]
+        tmpDir = tempfile.mkdtemp()
+        try:
+            tmpPath = os.path.join(tmpDir, "candidate" + os.path.splitext(committedPath)[1])
+            if not slicer.util.saveNode(colorNode, tmpPath):
+                return False
+            with open(tmpPath, "rb") as a, open(committedPath, "rb") as b:
+                return a.read() == b.read()
+        except Exception as e:
+            logging.warning(f"Color-table comparison failed; assuming changed: {e}")
+            return False
+        finally:
+            shutil.rmtree(tmpDir, ignore_errors=True)
 
     def _segmentationContentSignature(self, segNode, referenceVolume=None):
-        """A content signature of a segmentation (segment ids + binary-labelmap voxels), used
-        to detect whether the loaded baseline was edited in the scene.  Hashes content, not
-        file bytes, so it is robust to save non-determinism.  A referenceVolume is required to
-        sample each segment's labelmap (the segmentation carries no reference geometry of its
-        own) — the source volume serves that role.  Falls back to the source volume if not
-        given, then to a modified-time string only as a last resort."""
+        """A content signature of a segmentation (segment ids + binary-labelmap voxels), used to
+        detect whether the loaded baseline was edited in the scene (publish-edit path only; the
+        release no-change check now compares compressed file sizes instead).  Falls back to a
+        modified-time string if no reference geometry is available.  NOTE: when a referenceVolume is
+        present this resamples each segment onto it (can be slow for a large volume) -- the same
+        pre-existing cost the release path moved away from; left as-is here since this path is not
+        currently exercised, and a file-size approach should be applied here too if it ever is."""
         if segNode is None:
             return ""
         if referenceVolume is None:
@@ -1143,6 +1213,56 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         saveEdits = getattr(self.createUI, "saveEditsButton", None)
         if saveEdits is not None and getattr(self, "_resumedForEdit", False):
             saveEdits.enabled = valid
+        self._scheduleRepoNameAvailabilityCheck()   # F4: advisory availability of the suggested name
+
+    def _scheduleRepoNameAvailabilityCheck(self):
+        """Debounce an advisory GitHub availability check for the (possibly auto-suggested) repo
+        name -- fired ~0.7s after the user stops changing the form, so it never blocks typing."""
+        form = getattr(self.createUI, "accessionForm", None)
+        if form is None or not hasattr(form, "repoNameStatus"):
+            return
+        timer = getattr(self, "_repoNameCheckTimer", None)
+        if timer is None:
+            timer = qt.QTimer()
+            timer.setSingleShot(True)
+            timer.setInterval(700)
+            timer.connect("timeout()", self._checkSuggestedRepoNameAvailability)
+            self._repoNameCheckTimer = timer
+        timer.start()
+
+    def _checkSuggestedRepoNameAvailability(self):
+        """Tell the user whether the current repo name is free on their account (advisory only --
+        the authoritative check happens at create time).  Best-effort: stays silent on any error."""
+        form = getattr(self.createUI, "accessionForm", None)
+        if form is None or not hasattr(form, "repoNameStatus"):
+            return
+        name = (form.questions["githubRepoName"].answer() or "").strip()
+        if not name:
+            form.repoNameStatus.text = ""
+            return
+        if name == getattr(self, "_lastCheckedRepoName", None):
+            return
+        self._lastCheckedRepoName = name
+        try:
+            owner = self.logic.whoami()
+        except Exception:
+            owner = None
+        if not owner:
+            return
+        try:
+            taken = self.logic.repoExists(f"{owner}/{name}")
+        except Exception as e:
+            logging.warning(f"Repo-name availability check failed: {e}")
+            form.repoNameStatus.text = ""
+            return
+        if taken:
+            form.repoNameStatus.text = (
+                f"<span style='color:#a4671a;'>‘{name}’ already exists in your account "
+                "— edit the name below.</span>")
+        else:
+            form.repoNameStatus.text = (
+                f"<span style='color:#2a7a2a;'>‘{name}’ is available — you can edit "
+                "it if you like.</span>")
 
     def _redistributionAcknowledged(self):
         """True if the Section-6 'I have the right to allow redistribution of this data' box is
@@ -1589,6 +1709,47 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         except Exception:
             pass
 
+    def _enrichMembersViaApi(self, data):
+        """Resolve every contributor handle to a member identity in ONE App call (the App checks org
+        membership and reads the owners-only onboarding records, which a non-owner curator cannot).
+        Members get name/ORCID/affiliation and source='member'; true outsiders stay handle-only.
+        Falls back to the per-person _enrichMemberPerson (owner-readable records + GitHub profile) if
+        the App is unreachable, so the dialog still degrades gracefully offline.  (org-design 9.5/9.6)
+        """
+        people = data.get("people", [])
+        # Resolve EVERY GitHub handle (even already-named rows) so the stable numeric github_id gets
+        # filled for all of them (Sec.9.5 C5); names/ORCID are still only filled for blank rows.
+        handles = [p["github"] for p in people if p.get("github")]
+        resolved = None
+        if handles:
+            try:
+                resolved = self.logic.controlPlaneRequest("contributors/resolve", {"handles": handles})
+            except Exception as e:
+                logging.warning(f"Could not resolve member identities via the App: {e}")
+        for person in people:
+            github = person.get("github")
+            if not github:
+                continue
+            info = (resolved or {}).get(github)
+            if info is None:
+                if not person.get("name"):
+                    self._enrichMemberPerson(person)  # App unreachable -> best-effort local
+                continue
+            if info.get("github_id") and not person.get("github_id"):
+                person["github_id"] = info["github_id"]   # stable id, even for already-named rows
+            if info.get("is_member"):
+                person["source"] = "member"
+            if person.get("name"):
+                continue  # already named -> keep it (id filled above)
+            if info.get("name"):
+                person["name"] = info["name"]
+                if info.get("orcid") and not person.get("orcid"):
+                    person["orcid"] = info["orcid"]
+                if info.get("affiliation") and not person.get("affiliation"):
+                    person["affiliation"] = info["affiliation"]
+            elif not info.get("is_member"):
+                self._enrichMemberPerson(person)  # confirmed outsider -> try a profile display name
+
     def _repoHasBaseline(self, nameWithOwner):
         """True if the staged repo carries a baseline.seg.nrrd (it shipped a baseline -> atlas case).
         A from-scratch archival repo has no baseline file and skips the credit gate at go-live."""
@@ -1751,6 +1912,30 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             return
         slicer.util.showStatusMessage("")
         if not final:
+            return
+        # Org publish is routed through the MD-reviewers review gate (org-design 11.3): the App
+        # emailed an Approve link and did NOT make the repo public yet.  Report that review was
+        # requested and leave the repo staged; do NOT add a contact (the repo isn't public).
+        if isinstance(final, dict) and final.get("pending"):
+            where = final.get("nameWithOwner")
+            to = final.get("reviewSentTo") or "the MorphoDepot reviewers"
+            self._exitResumeMode()
+            self._stagedNameWithOwner = where
+            self.createUI.publishButton.enabled = False
+            self.createUI.discardButton.enabled = False
+            self.createUI.openRepository.enabled = False
+            self.createUI.stagingStatusLabel.text = (
+                f"Submitted for review: {where} becomes public once approved.")
+            self.refreshStagedReposList(force=True)
+            if not self.testingMode:
+                slicer.util.infoDisplay(
+                    f"'{where}' has been submitted for review.\n\n"
+                    f"A request was emailed to {to}. Once a reviewer approves, the repository is "
+                    "made public automatically and you'll get an email. Until then it stays "
+                    "private and remains in your unpublished list (reopen it there to make "
+                    "changes, which will require requesting review again).",
+                    windowTitle="Submitted for review")
+            slicer.mrmlScene.Clear()
             return
         # Now that the repo is actually public, add the creator to the contact list (best-effort,
         # background).  Done here — never at stage — so discarded/abandoned repos never leak a
@@ -2351,6 +2536,17 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         hasColorTable = self.releaseUI.newColorSelector.currentNode() is not None
         self.releaseUI.makeReleaseButton.enabled = bool(hasRepo and hasSegmentation and hasColorTable)
 
+    def _resetReleaseInputs(self):
+        """After a release is submitted/created, clear the New-release inputs and (via the selector
+        change) disable Make Release, so the finished action can't be fired again by mistake.  The
+        loaded-repository context (Current release line) is left as-is."""
+        self.releaseUI.newBaselineSelector.setCurrentNode(None)
+        self.releaseUI.newColorSelector.setCurrentNode(None)
+        self.releaseUI.releaseCommentsEdit.plainText = ""
+        self.screenshots = []
+        self.updateScreenshotCount()
+        self.updateMakeReleaseEnabled()  # no segmentation/color selected now -> button disabled
+
     def updateAnnouncementCounts(self, repoData):
         issues = repoData.get('issues', {}).get('totalCount', 0)
         prs = repoData.get('pullRequests', {}).get('totalCount', 0)
@@ -2683,33 +2879,13 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         if plan is None:
             return
 
-        # #123: guard against a release that carries no new segmentation work — decided by
-        # CONTENT, not node identity, so editing the loaded baseline in place is recognized.
-        #   Stage 1 (cheap): the picked node is the loaded baseline AND untouched since read →
-        #     certainly identical to the committed file; no hashing needed.
-        #   Stage 2 (precise, only otherwise): hash the picked segmentation's voxels and compare
-        #     to the committed baseline.seg.nrrd on disk.
-        loadedBaseline = getattr(self.logic, 'baselineSegmentationNode', None)
-        isLoadedNode = (loadedBaseline is not None and baselineNode.GetID() == loadedBaseline.GetID())
-        try:
-            untouched = isLoadedNode and not baselineNode.GetModifiedSinceRead()
-        except Exception as e:
-            logging.warning(f"GetModifiedSinceRead unavailable on baseline node; using content hash: {e}")
-            untouched = False
-        baselineUnchanged = untouched
-        if not untouched:
-            refVolume = getattr(self.logic, 'sourceVolumeNode', None)
-            if refVolume is None:
-                logging.warning("sourceVolumeNode not set on logic; baseline content check may be unreliable")
-            committedPath = os.path.join(self.logic.localRepo.working_dir, "baseline.seg.nrrd")
-            committedSig = self._committedBaselineSignature(committedPath, refVolume)
-            if committedSig is None:
-                # Committed baseline could not be read/hashed (missing file or load error);
-                # _committedBaselineSignature already logged why.  Default to "changed" so a
-                # tooling failure never silently blocks a legitimate release.
-                baselineUnchanged = False
-            else:
-                baselineUnchanged = (committedSig == self._segmentationContentSignature(baselineNode, refVolume))
+        # #123: guard against a release that carries no new segmentation work.  Compare CONTENT
+        # directly via _baselineMatchesCommittedFile (segment count + compressed file size).  Do NOT
+        # trust Slicer's GetModifiedSinceRead() as an "unchanged" shortcut: it does not reliably
+        # register copy/merge-segment edits, so it would short-circuit to "unchanged" and skip the
+        # comparison -- which wrongly reported a baseline with many added segments as no new work.
+        committedPath = os.path.join(self.logic.localRepo.working_dir, "baseline.seg.nrrd")
+        baselineUnchanged = self._baselineMatchesCommittedFile(baselineNode, committedPath)
         if baselineUnchanged:
             if not (self.testingMode or slicer.util.confirmOkCancelDisplay(
                     "The selected baseline is identical to the repository's current baseline, so "
@@ -2718,6 +2894,22 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                     "build) the updated segmentation as the new baseline first.\n\n"
                     "Release with the unchanged baseline anyway?",
                     windowTitle="Baseline unchanged")):
+                return
+
+        # Color-table no-change feedback -- ONLY when the curator picked a DIFFERENT color node than
+        # the one loaded from the repo (so a change was intended) that turns out byte-identical: the
+        # case where a "fix" silently didn't take.  Releasing with the existing (loaded) color table
+        # unchanged is normal and must NOT warn -- unlike the baseline, the color table need not change.
+        loadedColor = getattr(self.logic, 'colorTableNode', None)
+        colorIsLoadedNode = (loadedColor is not None and colorTableNode.GetID() == loadedColor.GetID())
+        if not colorIsLoadedNode and self._colorTableMatchesCommitted(colorTableNode):
+            if not (self.testingMode or slicer.util.confirmOkCancelDisplay(
+                    f"The selected color table '{colorTableNode.GetName()}' is byte-identical to the "
+                    "repository's committed color table, so the release will NOT change it.\n\n"
+                    "If you meant to apply a color or terminology fix, click Cancel, correct the "
+                    "color table, and re-select it.\n\n"
+                    "Release with the unchanged color table anyway?",
+                    windowTitle="Color table unchanged")):
                 return
 
         # #124: non-blocking reminder if no pre-release announcement was made (or its deadline
@@ -2748,6 +2940,38 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             )
         except Exception as e:
             self.handleReleaseFailure(e)
+            return
+
+        # Archival/org release is routed through the App's review gate (org-design Sec.11.3): the App
+        # emailed an Approve link and has NOT cut the tag or minted the DOI yet, so the release is not
+        # live.  Report that review was requested and skip the post-release cleanup (announcement
+        # retire, item close) — those belong to an actually-created release.
+        if isinstance(createdTag, dict) and createdTag.get("pending"):
+            to = createdTag.get("reviewSentTo") or "the MorphoDepot reviewers"
+            tag = createdTag.get("tag")
+            self.logic.discardReleaseBackup()
+            self.updateCurrentVersionLabel()
+            # Retire the pre-release announcement now (its contributions are gathered and the release
+            # is submitted) -- best-effort/idempotent.
+            try:
+                self.logic.clearReleaseAnnouncement(nameWithOwner)
+                self.updateAnnouncementState(nameWithOwner)
+            except Exception as e:
+                logging.warning(f"Could not retire the pre-release announcement: {e}")
+            slicer.util.showStatusMessage("Release submitted for review.")
+            if not self.testingMode:
+                slicer.util.infoDisplay(
+                    f"Release {tag} has been submitted for review.\n\n"
+                    f"A request was emailed to {to}. Once a reviewer approves, the release is cut and "
+                    "its DOI is minted automatically; if changes are requested you'll get an email "
+                    "with the details. The release commit is already pushed to the repository.",
+                    windowTitle="Release submitted for review")
+            # The contributions are merged into the release commit, so offer to close their open
+            # issues/PRs now -- the curator's token can close both (the App's token can't close PRs),
+            # and they should not linger waiting on approval.
+            self.maybeCloseOpenItemsForRelease(nameWithOwner, tag, created=False)
+            # Finished: clear the New-release inputs and disable Make Release so it can't re-fire.
+            self._resetReleaseInputs()
             return
 
         self.logic.discardReleaseBackup()
@@ -2805,17 +3029,20 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                 curator = f.read().strip() or None
         curator = curator or self.logic.whoami()
         MDC.ensure_person(data, github=curator, author=True, source="member")["curator"] = True
-        for member in data["people"]:   # pre-fill rows we already have info for (curator + members)
-            self._enrichMemberPerson(member)
 
         tag = self.logic.nextReleaseTag() or ""
-        # Gather segmentation contributions (merged issue-N PRs) so the dialog shows live credit even
-        # when the release-time sync_contributors Action is not installed on the repo.  Best-effort —
+        # Gather segmentation contributions (merged issue-N PRs) FIRST so the member-resolution pass
+        # below sees every contributor (not just those already in CONTRIBUTORS.json).  Best-effort —
         # a gh failure here must never block the release.
         try:
             self._gatherMergedContributions(nameWithOwner, data, tag)
         except Exception as e:
             logging.warning(f"Could not gather merged-PR contributions: {e}")
+        # Pre-fill every contributor's identity AFTER gathering: members (the curator AND merged-PR
+        # authors like @muratmaga) are resolved to name/ORCID/affiliation; true outsiders stay
+        # handle-only.  Resolved via the App so it works even when the curator can't read the
+        # owners-only onboarding records.
+        self._enrichMembersViaApi(data)
         panel = MDC.make_contributor_panel(data, title=f"Release {tag} - confirm contributors")
         dialog = qt.QDialog(slicer.util.mainWindow())
         dialog.setWindowTitle("Contributors & credit")
@@ -2924,8 +3151,11 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             f"Release creation failed:\n{error}\n\n"
             "Click OK to reset the local repository to its pre-release state.\n"
             "Click Cancel to leave the working tree as is so you can salvage screenshots or other work.\n\n"
-            "Note: a local reset cannot undo any push that may have already reached origin/main; "
-            "if the push succeeded you may need to fix things on GitHub manually."
+            "Note: a local reset cannot undo a push that may have already reached GitHub. For a personal "
+            "repo that is origin/main; for an org/archival repo the push went to a "
+            "'release-candidate-<version>' branch and main is untouched until approval. Either is safe "
+            "to leave — a retry force-pushes the candidate again — but you may delete a stray "
+            "release-candidate branch on GitHub if you prefer."
         )
         if (not self.testingMode) and slicer.util.confirmOkCancelDisplay(msg, windowTitle="Release failed"):
             try:
@@ -2938,14 +3168,16 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                 f"Release left mid-flight. Backup branch: {getattr(self.logic, 'releaseBackupBranch', None)}"
             )
 
-    def maybeCloseOpenItemsForRelease(self, nameWithOwner, version):
-        """After a release, offer to close all remaining open issues and PRs."""
+    def maybeCloseOpenItemsForRelease(self, nameWithOwner, version, created=True):
+        """After a release (or its submission for review), offer to close all remaining open issues
+        and PRs.  `created=False` for a gated release that has been *submitted* but not yet cut."""
         with slicer.util.tryWithErrorDisplay("Failed to query open items", waitCursor=True):
             issues, prs = self.logic.openIssuesAndPRs(nameWithOwner)
         if not issues and not prs:
             return
+        state = "created" if created else "submitted for review"
         prompt = (
-            f"Release {version} created.\n\n"
+            f"Release {version} {state}.\n\n"
             f"Close {len(issues)} open issues and {len(prs)} open PRs as part of the release?\n"
             f"(Open PRs will be closed without merging — contributors must rebase onto the new baseline.)"
         )
@@ -3321,6 +3553,18 @@ class MorphoDepotAccessionForm():
         self.questions["githubRepoName"] = FormTextQuestion(q, self.validateForm)
         self.questions["githubRepoName"].questionBox.toolTip = t
         layout.addWidget(self.questions["githubRepoName"].questionBox)
+        # F4: auto-suggest a descriptive, metadata-derived repo name (editable). The status line is
+        # filled by the widget's availability check; the link points at the naming guidelines.
+        self.userEditedRepoName = False
+        self._lastSuggestedName = ""
+        self.repoNameStatus = qt.QLabel("")
+        self.repoNameStatus.setWordWrap(True)
+        self.questions["githubRepoName"].questionLayout.addWidget(self.repoNameStatus)
+        namingGuidelines = qt.QLabel(
+            '<a href="https://github.com/MorphoDepot/MorphoDepot/wiki/Repository-naming">'
+            'MorphoDepot repository-naming guidelines</a>')
+        namingGuidelines.setOpenExternalLinks(True)
+        self.questions["githubRepoName"].questionLayout.addWidget(namingGuidelines)
         q,a,t = form["repoType"]
         self.questions["repoType"] = FormRadioQuestion(q, a, self.validateForm)
         layout.addWidget(self.questions["repoType"].questionBox)
@@ -3339,6 +3583,62 @@ class MorphoDepotAccessionForm():
             for sectionWidget in self.sectionWidgets.values():
                 sectionWidget.hide()
             self.sectionWidgets[section].show()
+
+    @staticmethod
+    def _slug(text):
+        """A GitHub-safe slug: lowercase, runs of non-alphanumerics collapsed to single dashes."""
+        import re
+        return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", (text or "").lower())).strip("-")
+
+    def suggestedRepoName(self):
+        """A descriptive default repo name from the accession metadata: ``genus-species[-modality]
+        [-contents]`` (e.g. ``mus-musculus-microct-whole``).  Deliberately longer than bare
+        genus-species so two scans of the same species are less likely to collide and the name is
+        self-describing.  Falls back to the free-text subject description for non-biological subjects.
+        Returns "" when there is nothing to base a name on yet."""
+        modalitySlug = {
+            "Micro CT (or synchrotron)": "microct",
+            "Medical CT": "medicalct",
+            "MRI": "mri",
+            "Lightsheet microscopy": "lightsheet",
+            "3D confocal microscopy": "confocal",
+            "Surface model (photogrammetry, structured light, or laser scanning)": "surface",
+        }
+        contentsSlug = {"Whole specimen": "whole", "Partial specimen": "partial"}
+        base = self._slug(self.questions["species"].answer())
+        if not base:
+            base = self._slug(self.questions["otherSubjectDescription"].answer())
+        if not base:
+            return ""
+        parts = [base]
+        modality = modalitySlug.get(self.questions["modality"].answer())
+        if modality:
+            parts.append(modality)
+        contents = contentsSlug.get(self.questions["imageContents"].answer())
+        if contents:
+            parts.append(contents)
+        return "-".join(parts)
+
+    def _applySuggestedRepoName(self):
+        """Prefill the GitHub repo-name field with suggestedRepoName(), refreshing it as more
+        metadata is entered -- but only until the user types their own value, after which their
+        entry is never overwritten.  Robust to Qt signal ordering: any field text we did not place
+        there ourselves is treated as the user's and locks the field."""
+        question = self.questions.get("githubRepoName")
+        if question is None:
+            return
+        field = question.answerText
+        current = field.text
+        if current and current != getattr(self, "_lastSuggestedName", ""):
+            self.userEditedRepoName = True
+        if getattr(self, "userEditedRepoName", False):
+            return
+        name = self.suggestedRepoName()
+        if name and current != name:
+            field.blockSignals(True)   # programmatic fill: no validateForm re-entry, not "user-edited"
+            field.text = name
+            field.blockSignals(False)
+            self._lastSuggestedName = name
 
     def validateForm(self, arguments=None):
 
@@ -3405,6 +3705,7 @@ class MorphoDepotAccessionForm():
             valid = valid and self.questions["imageContents"].answer() != ""
         valid = valid and self.questions["redistributionAcknowledgement"].answer() != []
         valid = valid and self.questions["license"].answer() != ""
+        self._applySuggestedRepoName()   # F4: prefill a metadata-derived name (until the user edits it)
         valid = valid and self.questions["githubRepoName"].answer() != ""
         valid = valid and self.questions["repoType"].answer() != ""
         repoNameRegex = r"^(?:([a-zA-Z\d]+(?:-[a-zA-Z\d]+)*)/)?([\w.-]+)$"
@@ -4784,6 +5085,21 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
                 issuePR = pr
         return issuePR
 
+    def _openPRForBranch(self, upstreamNameWithOwner, headOwner, branchName):
+        """Authoritative check for an already-open PR whose head is headOwner:branchName into the
+        upstream repo, queried DIRECTLY from GitHub (gh api) rather than the lagging RepoClerk
+        journal that prList()/issuePR() read.  Returns the PR dict or None (None also on any query
+        error, so the caller falls through to PR creation, which is itself guarded against
+        duplicates).  The journal lags minutes behind GitHub, so it cannot answer "does a PR exist
+        for this branch right now" — the moment that matters when deciding whether to open one."""
+        try:
+            prs = self.ghJSON(["api",
+                               f"repos/{upstreamNameWithOwner}/pulls?head={headOwner}:{branchName}&state=open"])
+        except Exception as e:
+            logging.warning(f"Could not check for an existing PR on {branchName}: {e}")
+            return None
+        return prs[0] if prs else None
+
     def cacheOldVersion(self, directoryPath):
         """If directoryPath exists, move it to an archive in the cache."""
         if os.path.exists(directoryPath):
@@ -4826,12 +5142,17 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
                     self.progressMethod(f"Push failed with {flag}")
                     return False
 
-        # create a PR if needed
-        if not self.issuePR():
+        # Create a PR if one does not already exist.  Check AUTHORITATIVELY (direct gh), NOT via the
+        # RepoClerk journal that issuePR()/prList() read: the journal lags minutes behind GitHub, so
+        # right after the first push it still reports "no PR" and the old `if not self.issuePR()`
+        # guard would try to open a SECOND PR for the same head->base.  gh rejects that ("a pull
+        # request ... already exists"), which surfaced as a spurious "Failed to commit and push"
+        # even though the push succeeded -- for repo owners and outside segmenters alike.
+        upstreamNameWithOwner = self.nameWithOwner("upstream")
+        originNameWithOwner = self.nameWithOwner("origin")
+        originOwner = originNameWithOwner.split("/")[0]
+        if not self._openPRForBranch(upstreamNameWithOwner, originOwner, branchName):
             issueNumber = branchName.split("-")[1]
-            upstreamNameWithOwner = self.nameWithOwner("upstream")
-            originNameWithOwner = self.nameWithOwner("origin")
-            originOwner = originNameWithOwner.split("/")[0]
             prBody = f"Fixes #{issueNumber}"
             if self.currentIssue and 'author' in self.currentIssue and 'login' in self.currentIssue['author']:
                 authorLogin = self.currentIssue['author']['login']
@@ -4845,7 +5166,15 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
                 --head {originOwner}:{branchName}
             """.replace("\n"," ").split()
             commandList += ["--body", prBody]
-            self.gh(commandList)
+            try:
+                self.gh(commandList)
+            except RuntimeError as e:
+                # Backstop for the race between the check above and now: gh refuses a duplicate
+                # head->base PR.  The push already updated that PR, so "already exists" is success;
+                # re-raise anything else.
+                if "already exists" not in str(e):
+                    raise
+                self.progressMethod("A pull request for this issue already exists; your push updated it.")
             try:
                 self.notifyRepoClerk(upstreamNameWithOwner)
             except Exception as e:
@@ -4853,12 +5182,19 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         return True
 
     def requestReview(self):
+        upstreamNameWithOwner = self.nameWithOwner("upstream")
         pr = self.issuePR(role="segmenter")
+        if not pr:
+            # The RepoClerk journal that issuePR() reads lags, so a just-opened PR may not appear
+            # there yet -- fall back to an authoritative direct lookup before giving up (same root
+            # cause as the commitAndPush duplicate-PR bug).
+            branchName = self.localRepo.active_branch.name
+            originOwner = self.nameWithOwner("origin").split("/")[0]
+            pr = self._openPRForBranch(upstreamNameWithOwner, originOwner, branchName)
         if not pr:
             logging.error("No pull request found for the current issue branch.")
             return
 
-        upstreamNameWithOwner = self.nameWithOwner("upstream")
         self.gh(f"""
             pr ready {pr['number']}
                 --repo {upstreamNameWithOwner}
@@ -4876,14 +5212,27 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
                 f"No open pull request found for '{branch}'. It may already be merged or closed "
                 f"(the Review list can lag a minute behind GitHub). Click 'Refresh Github' to update it.")
         upstreamNameWithOwner = self.nameWithOwner("upstream")
-        commandList = f"""
-            pr review {pr['number']}
-                --request-changes
-                --repo {upstreamNameWithOwner}
-        """.replace("\n"," ").split()
-        if message != "":
-            commandList += ["--body", message]
-        self.gh(commandList)
+        # GitHub forbids submitting a review (--request-changes) on your OWN pull request, exactly like
+        # --approve (see approvePR).  When the reviewer is also the PR author (their own contribution,
+        # or testing), post the feedback as a plain comment instead; the PR is still set back to draft
+        # below so the contributor knows to revise.
+        me = self.whoami()
+        selfAuthored = (pr.get("author") or {}).get("login") == me
+        if selfAuthored:
+            # Always post a comment -- an empty message would otherwise set the PR back to draft
+            # (below) with zero feedback to the contributor.
+            body = message if message != "" else "Changes requested (no additional comment)."
+            self.gh(["pr", "comment", str(pr['number']), "--repo", upstreamNameWithOwner,
+                     "--body", body])
+        else:
+            commandList = f"""
+                pr review {pr['number']}
+                    --request-changes
+                    --repo {upstreamNameWithOwner}
+            """.replace("\n"," ").split()
+            if message != "":
+                commandList += ["--body", message]
+            self.gh(commandList)
         self.gh(f"""
             pr ready {pr['number']}
                 --undo
@@ -4939,17 +5288,22 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
 
     def closedIssuesSinceLastRelease(self, nameWithOwner):
         """Return a list of {number,title} for issues closed since the last published release.
-        If there is no prior release, returns all closed issues for the repo."""
+        If there is no prior release, returns all closed issues for the repo.  Pre-release
+        ANNOUNCEMENT issues are excluded: they carry the invisible release-announce marker and are
+        not contributions -- retiring an announcement closes it, which would otherwise make it show
+        up as a 'change in this release' in the next cycle (the bug this filters out)."""
         releases = self.ghJSON(f"release list --repo {nameWithOwner} --json tagName,publishedAt") or []
         sinceDate = releases[0].get('publishedAt') if releases else None
         if sinceDate:
             cmd = ["issue", "list", "--repo", nameWithOwner,
-                   "--json", "number,title",
+                   "--json", "number,title,body",
                    "--search", f"is:issue is:closed closed:>{sinceDate}"]
         else:
             cmd = ["issue", "list", "--repo", nameWithOwner, "--state", "closed",
-                   "--json", "number,title"]
-        return self.ghJSON(cmd) or []
+                   "--json", "number,title,body"]
+        issues = self.ghJSON(cmd) or []
+        return [{"number": i["number"], "title": i["title"]} for i in issues
+                if self.releaseAnnounceMarkerName not in (i.get("body") or "")]
 
     def nextReleaseTag(self):
         """Compute the next vN tag based on existing releases. Returns None if no repo loaded."""
@@ -5097,16 +5451,22 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
 
         return "\n".join(lines) + "\n"
 
-    def prepareReleaseSnapshot(self, newTag, baselineNode, colorTableNode, screenshots):
+    def prepareReleaseSnapshot(self, newTag, baselineNode, colorTableNode, screenshots, candidateBranch=None):
         """Stage the working tree for a release tag: write baseline.seg.nrrd from the picked
         segmentation, overwrite the repo's color table with the picked one, rotate README.md
         to README-{previousTag}.md and generate a fresh README.md, append new screenshots
         with sequential numbering (and update screenshots/captions.json), drop issue-*.seg.nrrd
-        from the working tree (still in git history). Then commit and push to origin/main."""
+        from the working tree (still in git history), and commit.
+
+        If `candidateBranch` is given (org/gated, Option C), the release commit is force-pushed to
+        that branch and local main + working tree are reset back to the pre-release state -- main is
+        NOT modified (the App archives main and fast-forwards it to the candidate on approval).
+        Otherwise (personal) the commit is pushed straight to origin/main as before."""
         if not self.localRepo:
             return None
         repoDir = self.localRepo.working_dir
         previousTag = self.previousReleaseTag()
+        baseSha = self.localRepo.head.commit.hexsha  # pre-release main, to restore in candidate mode
 
         # Baseline segmentation
         baselinePath = os.path.join(repoDir, "baseline.seg.nrrd")
@@ -5158,10 +5518,20 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         for path in glob.glob(os.path.join(repoDir, "issue-*.seg.nrrd")):
             os.remove(path)
 
-        # Stage everything (added, modified, deleted), commit, push.
+        # Stage everything (added, modified, deleted), commit.
         self.localRepo.git.add("--all")
         self.localRepo.index.commit(f"Prepare release {newTag}")
-        self.localRepo.remote(name="origin").push("main")
+        if candidateBranch:
+            # Option C: publish the release commit to the candidate branch and leave main UNTOUCHED.
+            # Always reset local main + working tree back to the pre-release state afterward (even if
+            # the push fails), so an unapproved or re-submitted release never rewrites main.  The App
+            # archives main and fast-forwards it to this candidate on approval.
+            try:
+                self.localRepo.git.push("--force", "origin", f"HEAD:refs/heads/{candidateBranch}")
+            finally:
+                self.localRepo.git.reset("--hard", baseSha)
+        else:
+            self.localRepo.remote(name="origin").push("main")
 
     def resetToReleaseBackup(self):
         """Hard-reset main to the pre-release archive branch and discard untracked changes.
@@ -5182,13 +5552,16 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         self.releaseBackupBranch = None
 
     def createRelease(self, releaseNotes="", baselineSegmentationNode=None, colorTableNode=None, screenshots=None):
-        """Create a new release: create and push a pre-release-{tag} archive branch
-        capturing main as it is right now (so per-issue segmentations and any other
-        about-to-be-removed files stay browsable on GitHub), prepare the working tree
-        (baseline, color table, README rotation, drop issue segmentations, screenshots),
-        commit, push to origin/main, then create the gh release tag at that commit.
-        On exception the archive branch is left in place so resetToReleaseBackup can
-        roll back the local repo. Returns the new tag on success."""
+        """Create a new release.
+
+        Org/archival repo (gated, Option C): the release commit is published to a
+        `release-candidate-{tag}` branch and **main is left untouched**.  On approval the App archives
+        the current main as `pre-release-{tag}` (preserving the per-issue contributions), fast-forwards
+        main to the candidate, cuts the tag, and mints the DOI.  This keeps main/history intact through
+        an unapproved or re-submitted (request-changes) release.  Returns a pending marker dict.
+
+        Personal/short-term repo: no gate -- archive main, rewrite main directly, and create the tag.
+        Returns the new tag."""
         if not self.localRepo:
             return None
         if baselineSegmentationNode is None or colorTableNode is None:
@@ -5196,24 +5569,31 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic):
         tag = self.nextReleaseTag()
         if tag is None:
             return None
+        originNameWithOwner = self.nameWithOwner("origin")
+        if releaseNotes == "":
+            releaseNotes = f"Version {tag} release."
+        originOwner = originNameWithOwner.split("/")[0]
 
+        if originOwner == self.morphoDepotOrg:
+            # Build the release commit on the candidate branch (main untouched), then request review.
+            candidate = f"release-candidate-{tag}"
+            self.prepareReleaseSnapshot(tag, baselineSegmentationNode, colorTableNode,
+                                        screenshots or [], candidateBranch=candidate)
+            repoName = originNameWithOwner.split("/")[1]
+            resp = self.controlPlaneRequest(
+                "repos/release", {"repo": repoName, "tag": tag, "notes": releaseNotes}) or {}
+            if resp.get("status") == "pending_review":
+                return {"pending": True, "tag": tag, "reviewSentTo": resp.get("review_sent_to")}
+            return tag
+
+        # Personal/short-term repo: archive main, rewrite main directly, then create the tag.
         backupName = f"pre-release-{tag}"
-        # Create the archive branch locally and push it before any working-tree changes
-        # so the pre-release state is preserved on the remote even if later steps fail.
-        # Idempotent: a retry after a partial failure may find this local branch already present
-        # (resetToReleaseBackup deliberately keeps it), so recreate it at the current commit rather
-        # than crashing with "a branch named 'pre-release-vN' already exists".
         if backupName in [head.name for head in self.localRepo.heads]:
             self.localRepo.git.branch("-D", backupName)
         self.localRepo.git.branch(backupName)
         self.releaseBackupBranch = backupName
         self.localRepo.remote(name="origin").push(backupName)
-
         self.prepareReleaseSnapshot(tag, baselineSegmentationNode, colorTableNode, screenshots or [])
-
-        originNameWithOwner = self.nameWithOwner("origin")
-        if releaseNotes == "":
-            releaseNotes = f"Version {tag} release."
         commandList = ["release", "create", tag, "--repo", originNameWithOwner]
         commandList += ["--notes", releaseNotes]
         self.gh(commandList)
@@ -5837,16 +6217,33 @@ jobs:
         return repoNameWithOwner
 
     def _publishStagedRepoInOrg(self, ctx):
-        """Member tier: publish via the App — one-way private->public + topic swap (the App owns
-        topics; members only have Write)."""
+        """Member tier: ask the App to make the staged org repo public.  Going public is a governed
+        event (org-design 11.3): the App routes the request through the MD-reviewers review gate —
+        it emails a signed Approve link and does NOT flip the repo now.  Returns a pending-review
+        dict in that case (the repo stays private + staged until a reviewer approves, after which
+        the App makes it public on its own).  A non-gated immediate publish (backstop) returns the
+        nameWithOwner string, as before."""
         repoName = ctx["repoName"]
         species = ctx.get("speciesTopicString")
         topics = ["morphodepot"] + ([f"md-{species}"] if species else [])
-        self.progressMethod(f"Publishing {ctx['personalNameWithOwner']} (making public)...")
-        self.controlPlaneRequest("repos/publish", {"repo": repoName, "topics": topics})
-        self.ghTopicClearCache()
         finalNameWithOwner = ctx["personalNameWithOwner"]
+        self.progressMethod(f"Submitting {finalNameWithOwner} for review...")
+        resp = self.controlPlaneRequest("repos/publish", {"repo": repoName, "topics": topics}) or {}
         repoDir = ctx.get("repoDir")
+
+        if resp.get("status") == "pending_review":
+            # Review requested.  The repo is still private and still carries morphodepot-staging,
+            # so it remains in the unpublished list; drop only the transient local clone (reopen
+            # re-clones).  Do NOT notify RepoClerk (nothing public to crawl) or add a contact.
+            self.localRepo = None
+            if repoDir and os.path.exists(repoDir):
+                shutil.rmtree(repoDir, ignore_errors=True)
+            self.stagingContext = None
+            return {"pending": True, "nameWithOwner": finalNameWithOwner,
+                    "reviewSentTo": resp.get("review_sent_to")}
+
+        # Backstop: an immediate (non-gated) publish actually made it public — clean up as before.
+        self.ghTopicClearCache()
         self.localRepo = None
         if repoDir and os.path.exists(repoDir):
             shutil.rmtree(repoDir, ignore_errors=True)
