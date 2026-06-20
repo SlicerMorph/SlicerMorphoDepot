@@ -127,8 +127,9 @@ def _stress_continuous_colortable_guard():
     # Part E: a continuous/built-in colormap must be flagged; a File/User terminology table must not.
     assert H.w._colorTableNotTerminology(slicer.util.getNode("Rainbow")), "Rainbow (continuous) not flagged"
     assert H.w._colorTableNotTerminology(slicer.util.getNode("Grey")), "Grey (continuous) not flagged"
-    assert not H.w._colorTableNotTerminology(slicer.util.getNode("GenericAnatomyColors")), \
-        "File terminology table wrongly flagged"
+    terminologyNode = slicer.util.getNode("GenericAnatomyColors")
+    assert terminologyNode is not None, "GenericAnatomyColors not in scene (positive case can't run)"
+    assert not H.w._colorTableNotTerminology(terminologyNode), "File terminology table wrongly flagged"
 
 
 def _stress_invalid_repo_name():

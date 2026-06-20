@@ -333,22 +333,6 @@ class ReleaseTabMixin:
 
     # Search
 
-    def _segmentationIsEmpty(self, node):
-        """True if the segmentation has no segments (nothing to release/credit)."""
-        try:
-            return node is not None and node.GetSegmentation().GetNumberOfSegments() == 0
-        except Exception:
-            return False
-
-    def _colorTableNotTerminology(self, node):
-        """True if the color node does not look like a discrete terminology color table -- e.g. a
-        built-in continuous colormap (Rainbow/Grey/...) or generic Labels.  A real MorphoDepot color
-        table is loaded from a file or built by the user (type 'File'/'User').  False on any error."""
-        try:
-            return node is not None and node.GetTypeAsString() not in ("File", "User")
-        except Exception:
-            return False
-
     def onMakeRelease(self):
         if not self.logic.localRepo:
             return

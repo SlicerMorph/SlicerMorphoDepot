@@ -57,6 +57,7 @@ from MorphoDepotLib.widget_annotate import AnnotateTabMixin
 from MorphoDepotLib.widget_review import ReviewTabMixin
 from MorphoDepotLib.widget_release import ReleaseTabMixin
 from MorphoDepotLib.widget_search import SearchTabMixin
+from MorphoDepotLib.widget_validation import ValidationMixin
 
 
 class MorphoDepot(ScriptedLoadableModule):
@@ -149,7 +150,7 @@ class EnableModuleMixin:
         return True
 
 
-class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, EnableModuleMixin, CreateTabMixin, ConfigureTabMixin, AnnotateTabMixin, ReviewTabMixin, ReleaseTabMixin, SearchTabMixin):
+class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, EnableModuleMixin, ValidationMixin, CreateTabMixin, ConfigureTabMixin, AnnotateTabMixin, ReviewTabMixin, ReleaseTabMixin, SearchTabMixin):
     """Uses ScriptedLoadableModuleWidget base class, available at:
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
     """
