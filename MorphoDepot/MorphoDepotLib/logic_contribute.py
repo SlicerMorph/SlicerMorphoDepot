@@ -149,6 +149,8 @@ class ContributeMixin:
             """.replace("\n"," ").split()
             if message != "":
                 commandList += ["--body", message]
+            else:
+                commandList += ["--no-body"]   # else recent gh opens an editor + hangs headless
             self.gh(commandList)
         self.gh(f"""
             pr ready {pr['number']}
@@ -183,6 +185,8 @@ class ContributeMixin:
             """.replace("\n"," ").split()
             if message != "":
                 commandList += ["--body", message]
+            else:
+                commandList += ["--no-body"]   # else recent gh opens an editor + hangs headless
             self.gh(commandList)
         commandList = f"""
             pr merge {pr['number']}

@@ -2,7 +2,9 @@
 runs them, and leaves the result in __result. Re-exec after editing either file."""
 import os
 import slicer
-_here = "/Users/amaga/Desktop/MorphoDepotOrg/SlicerMorphoDepot/MorphoDepot/Testing/Python"
+# Derive our own location from the installed module path (portable; works under
+# exec(open(...).read()) where __file__ is not set).
+_here = os.path.join(os.path.dirname(slicer.util.modulePath("MorphoDepot")), "Testing", "Python")
 exec(open(os.path.join(_here, "md_harness.py")).read(), globals())
 exec(open(os.path.join(_here, "md_tests.py")).read(), globals())
 

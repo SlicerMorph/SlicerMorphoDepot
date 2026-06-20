@@ -91,7 +91,7 @@ class ReviewTabMixin:
     def onApprove(self):
         with slicer.util.tryWithErrorDisplay("Failed to approve PR", waitCursor=True):
             slicer.util.showStatusMessage(f"Approving")
-            prURL = self.logic.approvePR()
+            self.logic.approvePR()
             self.reviewUI.reviewMessage.plainText = ""
             self.updateReviewPRList()
 

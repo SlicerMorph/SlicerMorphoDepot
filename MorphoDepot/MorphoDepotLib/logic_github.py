@@ -336,7 +336,6 @@ class GitHubMixin:
 
     def _ghToken(self):
         """The user's GitHub token (from gh) used to authenticate to the App control plane."""
-        import subprocess
         try:
             out = subprocess.run([self.ghExecutablePath, "auth", "token"],
                                  capture_output=True, text=True, timeout=15)

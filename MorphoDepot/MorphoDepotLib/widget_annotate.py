@@ -250,7 +250,7 @@ class AnnotateTabMixin:
             pr = self.logic.issuePR(role="segmenter")
             if not pr:
                 self.onCommit()
-            prURL = self.logic.requestReview()
+            self.logic.requestReview()
             self.updateAnnotatePRList()
             self.annotateUI.messageTitle.text = ""
             self.annotateUI.messageBody.plainText = ""
