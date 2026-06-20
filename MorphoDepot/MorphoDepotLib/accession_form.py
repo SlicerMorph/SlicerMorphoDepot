@@ -421,7 +421,9 @@ class MorphoDepotAccessionForm():
         self._applySuggestedRepoName()   # F4: prefill a metadata-derived name (until the user edits it)
         valid = valid and self.questions["githubRepoName"].answer() != ""
         valid = valid and self.questions["repoType"].answer() != ""
-        repoNameRegex = r"^(?:([a-zA-Z\d]+(?:-[a-zA-Z\d]+)*)/)?([\w.-]+)$"
+        # Reject "." / ".." as the repo name (review S2): such a name flows into a local
+        # os.path.join + shutil.rmtree and would otherwise target the whole working dir / its parent.
+        repoNameRegex = r"^(?:([a-zA-Z\d]+(?:-[a-zA-Z\d]+)*)/)?((?!\.\.?$)[\w.-]+)$"
         valid = valid and (re.match(repoNameRegex, self.questions["githubRepoName"].answer()) != None)
         # The contact email is validated separately at Go-live (see _updatePublishEnabled), not here.
         self.validationCallback(valid)

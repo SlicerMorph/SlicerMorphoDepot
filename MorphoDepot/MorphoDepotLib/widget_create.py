@@ -155,8 +155,9 @@ class CreateTabMixin:
                         slicer.util.downloadFile(volumeURL, nrrdPath)
                     else:
                         # Legacy staged repo: volume is a private v1 release asset (needs gh auth).
-                        self.logic.gh(f"release download v1 --repo {nameWithOwner} "
-                                      f"--pattern {sourceVolumeName}.nrrd --dir {cacheDir} --clobber")
+                        self.logic.gh(["release", "download", "v1", "--repo", nameWithOwner,
+                                       "--pattern", f"{sourceVolumeName}.nrrd", "--dir", cacheDir,
+                                       "--clobber"])
                 volumeNode = slicer.util.loadVolume(nrrdPath)
                 self.createUI.inputSelector.setCurrentNode(volumeNode)
             except Exception as e:
