@@ -77,15 +77,12 @@ class ContributeMixin:
             if self.currentIssue and 'author' in self.currentIssue and 'login' in self.currentIssue['author']:
                 authorLogin = self.currentIssue['author']['login']
                 prBody = f"Started work on this issue for @{authorLogin}. {prBody}"
-            commandList = f"""
-                pr create
-                --draft
-                --repo {upstreamNameWithOwner}
-                --base main
-                --title {branchName}
-                --head {originOwner}:{branchName}
-            """.replace("\n"," ").split()
-            commandList += ["--body", prBody]
+            commandList = ["pr", "create", "--draft",
+                           "--repo", upstreamNameWithOwner,
+                           "--base", "main",
+                           "--title", branchName,
+                           "--head", f"{originOwner}:{branchName}",
+                           "--body", prBody]
             try:
                 self.gh(commandList)
             except RuntimeError as e:
@@ -115,10 +112,7 @@ class ContributeMixin:
             logging.error("No pull request found for the current issue branch.")
             return
 
-        self.gh(f"""
-            pr ready {pr['number']}
-                --repo {upstreamNameWithOwner}
-            """)
+        self.gh(["pr", "ready", str(pr['number']), "--repo", upstreamNameWithOwner])
         try:
             self.notifyRepoClerk(upstreamNameWithOwner)
         except Exception as e:
@@ -145,21 +139,14 @@ class ContributeMixin:
             self.gh(["pr", "comment", str(pr['number']), "--repo", upstreamNameWithOwner,
                      "--body", body])
         else:
-            commandList = f"""
-                pr review {pr['number']}
-                    --request-changes
-                    --repo {upstreamNameWithOwner}
-            """.replace("\n"," ").split()
+            commandList = ["pr", "review", str(pr['number']), "--request-changes",
+                           "--repo", upstreamNameWithOwner]
             if message != "":
                 commandList += ["--body", message]
             else:
                 commandList += ["--no-body"]   # else recent gh opens an editor + hangs headless
             self.gh(commandList)
-        self.gh(f"""
-            pr ready {pr['number']}
-                --undo
-                --repo {upstreamNameWithOwner}
-            """)
+        self.gh(["pr", "ready", str(pr['number']), "--undo", "--repo", upstreamNameWithOwner])
         try:
             self.notifyRepoClerk(upstreamNameWithOwner)
         except Exception as e:
@@ -181,21 +168,14 @@ class ContributeMixin:
         me = self.whoami()
         selfAuthored = (pr.get("author") or {}).get("login") == me
         if not selfAuthored:
-            commandList = f"""
-                pr review {pr['number']}
-                    --approve
-                    --repo {upstreamNameWithOwner}
-            """.replace("\n"," ").split()
+            commandList = ["pr", "review", str(pr['number']), "--approve",
+                           "--repo", upstreamNameWithOwner]
             if message != "":
                 commandList += ["--body", message]
             else:
                 commandList += ["--no-body"]   # else recent gh opens an editor + hangs headless
             self.gh(commandList)
-        commandList = f"""
-            pr merge {pr['number']}
-                --repo {upstreamNameWithOwner}
-                --squash
-        """.replace("\n"," ").split()
+        commandList = ["pr", "merge", str(pr['number']), "--repo", upstreamNameWithOwner, "--squash"]
         commandList += ["--body", message if (selfAuthored and message) else "Merging and closing"]
         self.gh(commandList)
         try:
