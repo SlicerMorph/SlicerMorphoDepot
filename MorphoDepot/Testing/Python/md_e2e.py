@@ -26,6 +26,8 @@ def makeBaseline(name, nsegs, vol=None):
     if vol is None:
         vol = slicer.mrmlScene.GetFirstNodeByName(E2E_VOL)
     shape = slicer.util.arrayFromVolume(vol).shape
+    if nsegs and (2 + (nsegs - 1) * 4 + 3) > min(shape):
+        raise ValueError(f"nsegs={nsegs} too large for volume shape {shape} (blocks would clip)")
     lm = np.zeros(shape, "uint8")
     for i in range(nsegs):
         s = 2 + i * 4
@@ -153,8 +155,12 @@ def e2eChangedBaseline(nsegs):
     release baseline. Returns whether Make Release is now enabled."""
     vol = slicer.mrmlScene.GetFirstNodeByName(getattr(H.w.logic, "sourceVolumeName", "") or "")
     if vol is None:
-        vols = slicer.util.getNodesByClass("vtkMRMLScalarVolumeNode")
+        # fallback: a loaded scalar volume that is NOT the create-fixture volume (wrong geometry)
+        vols = [v for v in slicer.util.getNodesByClass("vtkMRMLScalarVolumeNode")
+                if v.GetName() != E2E_VOL]
         vol = vols[0] if vols else None
+    if vol is None:
+        return {"error": "no loaded source volume found for the release baseline"}
     seg = makeBaseline("mdteste2e-newbaseline", nsegs, vol=vol)
     H.w.releaseUI.newBaselineSelector.setCurrentNode(seg)
     slicer.app.processEvents()
