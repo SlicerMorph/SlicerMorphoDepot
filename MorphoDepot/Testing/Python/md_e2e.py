@@ -43,6 +43,58 @@ def setupCreateFixtures():
     return vol, ct
 
 
+def e2eCreate(name, archival):
+    """Drive Create to STAGE a real repo (short-term=personal, archival=org). Auto-accepts the
+    custom confirmation modal and disables auto-assign (skips the workflow push). Returns the
+    staged nameWithOwner (or an error)."""
+    vol, ct = setupCreateFixtures()
+    H.fillValidForm(name=name, shortTerm=not archival)
+    H.w.createUI.inputSelector.setCurrentNode(vol)
+    H.w.createUI.colorSelector.setCurrentNode(ct)
+    H.w.createUI.autoAssignCheckBox.checked = False
+    slicer.app.processEvents()
+    orig = H.w.showConfirmationDialog
+    H.w.showConfirmationDialog = lambda *a, **k: True   # auto-accept (it's a custom QDialog)
+    H.dialogLog = []
+    err = None
+    try:
+        H.w.onCreateRepository()
+    except Exception as e:
+        import traceback
+        err = {"err": str(e), "tb": traceback.format_exc().splitlines()[-5:]}
+    finally:
+        H.w.showConfirmationDialog = orig
+    H.pump(200)
+    return {"staged": getattr(H.w, "_stagedNameWithOwner", None), "dialogs": H.shown(), "error": err}
+
+
+def e2eDiscard():
+    """Drive Discard to delete the currently-staged repo (teardown). Confirm dialog auto-answered."""
+    H.dialogLog = []
+    err = None
+    try:
+        H.w.onDiscard()
+    except Exception as e:
+        err = str(e)
+    H.pump(200)
+    return {"staged": getattr(H.w, "_stagedNameWithOwner", None), "dialogs": H.shown(), "error": err}
+
+
+def e2ePublish():
+    """Drive Make Public (onPublish). For an archival repo this requests review (the gate); the
+    repo stays staged + pending. Returns staged name + dialog texts."""
+    H.dialogLog = []
+    err = None
+    try:
+        H.w.onPublish()
+    except Exception as e:
+        import traceback
+        err = {"err": str(e), "tb": traceback.format_exc().splitlines()[-5:]}
+    H.pump(200)
+    return {"staged": getattr(H.w, "_stagedNameWithOwner", None), "dialogs": H.shown(),
+            "texts": [d["text"][:200] for d in H.dialogLog], "error": err}
+
+
 def probeCreateValidation(archival=True, name="mdtest-e2e-probe"):
     """Set up fixtures + fill the form, then run _collectAccessionInputs WITHOUT creating a repo.
     Returns whether validation passed + what (if any) dialogs it raised + a peek at the color check."""
