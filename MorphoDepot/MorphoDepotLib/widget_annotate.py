@@ -140,13 +140,13 @@ class AnnotateTabMixin:
             slicer.util.errorDisplay("No PR selected.")
 
     def onIssueDoubleClicked(self, item):
-        slicer.util.showStatusMessage(f"Loading {item.text()}")
-        repoDirectory = os.path.normpath(self.configureUI.repoDirectory.currentPath)
         # S8: issuesByItem is shared across tabs; a stale/foreign list item is not a key -- bail
-        # instead of raising KeyError outside any tryWithErrorDisplay.
+        # before showing any status, instead of raising KeyError outside any tryWithErrorDisplay.
         issue = self.issuesByItem.get(item)
         if issue is None:
             return
+        slicer.util.showStatusMessage(f"Loading {item.text()}")
+        repoDirectory = os.path.normpath(self.configureUI.repoDirectory.currentPath)
         if self.testingMode or slicer.util.confirmOkCancelDisplay("Close scene and load issue?"):
             with slicer.util.tryWithErrorDisplay("Failed to load issue", waitCursor=True):
                 slicer.util.showStatusMessage(f"Loading {item.text()}")
