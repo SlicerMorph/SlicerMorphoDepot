@@ -132,7 +132,7 @@ class EnableModuleMixin:
             msgBox.addButton(qt.QMessageBox.Ok)
             msgBox.exec_()
             if msgBox.clickedButton() == openDocsButton:
-                qt.QDesktopServices.openUrl(qt.QUrl("https://github.com/MorphoCloud/SlicerMorphoDepot?tab=readme-ov-file#prerequisites-for-morphodepot"))
+                qt.QDesktopServices.openUrl(qt.QUrl("https://github.com/SlicerMorph/SlicerMorphoDepot?tab=readme-ov-file#prerequisites-for-morphodepot"))
             return False
 
         # check local directory
