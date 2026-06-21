@@ -676,13 +676,19 @@ class CreateTabMixin:
             return
         self.screenshots = []
         self.updateScreenshotCount()
-        # UI #2: staging is a save-point, not go-live -- confirm, then reset the scene + form. The
-        # curator resumes (double-click in the unpublished list) to edit/publish later.
-        self._completeStepReset(
-            "Staging completed",
-            "Staging is completed. Scene is reset.\n\n"
-            "You can go back and edit the repo by double-clicking it in the staged-only repos list.\n\n"
-            "Repos that are not requested to be made public within 14 days of staging will be discarded.")
+        if self.testingMode:
+            # Tests / e2e (e2eCreate -> e2ePublish) drive stage->publish in ONE session, hold this
+            # widget ref, and read _stagedNameWithOwner; keep the go-live state for them rather than
+            # the interactive reset (which reloads the module and would invalidate that ref).
+            self._enterGoLiveState(staged)
+        else:
+            # UI #2: staging is a save-point, not go-live -- confirm, then reset the scene + form. The
+            # curator resumes (double-click in the unpublished list) to edit/publish later.
+            self._completeStepReset(
+                "Staging completed",
+                "Staging is completed. Scene is reset.\n\n"
+                "You can go back and edit the repo by double-clicking it in the staged-only repos list.\n\n"
+                "Repos that are not requested to be made public within 14 days of staging will be discarded.")
 
     def _enterGoLiveState(self, stagedNameWithOwner):
         """Reveal the Go-live gate after a repo has been staged privately."""
@@ -1281,7 +1287,11 @@ class CreateTabMixin:
     def _completeStepReset(self, title, message):
         """Shared close-out for a completed step (UI #2 theme): reset the scene, confirm with a popup,
         then reset the form so the next action starts from a clean slate.  onClearForm reloads the
-        scripted module (rebuilding this widget), so it MUST be the final call here."""
+        scripted module (rebuilding this widget), so it MUST be the final call here.  No-op in
+        testingMode: the popup would block the automated run and the reload would invalidate the
+        test's widget reference."""
+        if self.testingMode:
+            return
         slicer.mrmlScene.Clear()
         slicer.util.infoDisplay(message, windowTitle=title)
         self.onClearForm()
