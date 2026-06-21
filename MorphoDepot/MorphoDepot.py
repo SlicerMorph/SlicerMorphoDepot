@@ -250,6 +250,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                 min-height: 18px;
             }
             QPushButton:hover { background-color: palette(light); }
+            QPushButton:focus { border: 1px solid palette(highlight); outline: none; }
             QPushButton:pressed { background-color: palette(button); }
             QPushButton:disabled {
                 background-color: palette(window);
