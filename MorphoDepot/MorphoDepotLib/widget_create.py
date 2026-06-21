@@ -514,10 +514,14 @@ class CreateTabMixin:
         return bool(owner) and owner != getattr(self.createUI, "destinationPersonalLogin", "")
 
     def _isDefaultSlicerColorTable(self, colorNode):
-        """True if colorNode is a built-in/default Slicer color table rather than a terminology table:
-        a procedural built-in such as Labels/Grey (any Type other than the User/File markers), or one
-        of Slicer's shipped color files (GenericColors, GenericAnatomyColors, the colormaps, ...)
-        matched by name.  These are never valid for an archival segmentation (UI #3a)."""
+        """True if colorNode is a built-in/default Slicer color table rather than a real terminology
+        table.  Two cases: a procedural built-in (Labels/Grey/Rainbow/...), which the shared
+        _colorTableNotTerminology already detects by source type ('UserDefined'/'File' are the real
+        terminology types); or one of Slicer's shipped file-loaded color tables (GenericColors,
+        GenericAnatomyColors, the colormaps, brain atlases, ...), which report Type 'File' like a user
+        table and so are matched by name (UI #3a)."""
+        if self._colorTableNotTerminology(colorNode):
+            return True
         shippedDefaults = {
             "GenericColors", "GenericAnatomyColors", "AbdomenColors", "PelvisColor",
             "64Color-Nonsemantic", "Slicer3_2010_Brain_Labels", "Slicer3_2010_Label_Colors",
@@ -526,8 +530,6 @@ class CreateTabMixin:
             "DivergingBlueRed", "DarkBrightChartColors", "LightPaleChartColors", "MediumChartColors",
         }
         try:
-            if colorNode.GetTypeAsString() not in ("User", "File"):
-                return True  # procedural built-in (Labels, Grey, Rainbow, the Red/Green ramps, ...)
             return colorNode.GetName() in shippedDefaults  # shipped file-loaded default
         except Exception:
             return False
