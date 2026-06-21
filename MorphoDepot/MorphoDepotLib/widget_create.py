@@ -1315,9 +1315,9 @@ class CreateTabMixin:
     def _completeStepReset(self, title, message):
         """Shared close-out for a completed step (UI #2 theme): reset the scene, confirm with a popup,
         then reset the form so the next action starts from a clean slate.  onClearForm reloads the
-        scripted module (rebuilding this widget), so it MUST be the final call here.  No-op in
-        testingMode: the popup would block the automated run and the reload would invalidate the
-        test's widget reference (the scene clear itself still runs in tests, to free the volume).
+        scripted module (rebuilding this widget), so it MUST be the final call here.  Under testingMode
+        the popup and the reload are skipped (the popup would block the automated run, the reload would
+        invalidate the test's widget reference) -- but the scene clear still runs, to free the volume.
         Call this ONLY after a repo-state change actually succeeded -- never after a failure/cancel."""
         slicer.mrmlScene.Clear()
         if self.testingMode:
