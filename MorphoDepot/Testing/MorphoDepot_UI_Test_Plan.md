@@ -1,8 +1,14 @@
 # MorphoDepot — UI-Driven Test Plan
 
 Status: **PLAN ONLY — do not execute until explicitly told "go".**
-Target under test: [`MorphoDepot/MorphoDepot.py`](../MorphoDepot.py) (~6,600 lines, single tabbed module).
+Target under test: [`MorphoDepot/MorphoDepot.py`](../MorphoDepot.py) (now a ~1,300-line shell:
+`MorphoDepotWidget` + `MorphoDepotLogic` mix in the tab/logic behavior from `MorphoDepotLib/{widget,logic}_*.py`).
 Author/driver model: Claude Code driving 3D Slicer through the **Slicer MCP server**.
+
+> **Note on line references:** this plan predates the `MorphoDepotLib/` refactor, so the inline
+> `MorphoDepot.py:NNNN` anchors below are pre-refactor approximations — the handlers/logic they
+> point at now live in the `MorphoDepotLib/*.py` mixins. The signal-level UI-driving approach is
+> unchanged (widget addressing via `slicer.modules.MorphoDepotWidget.<tab>UI.*` still holds).
 
 ---
 

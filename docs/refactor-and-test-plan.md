@@ -168,8 +168,8 @@ validation** — that becomes the post-refactor hardening backlog (add guard →
 
 ## Status — delivered
 
-All phases shipped to `org-development`: the workflow net, the refactor (R0–R4), Part E hardening,
-and the in-depth E2E layer.
+All phases shipped (originally to `org-development`, since merged into `main` — the current
+development line): the workflow net, the refactor (R0–R4), Part E hardening, and the in-depth E2E layer.
 
 - **Refactor** — `MorphoDepot.py` 7,194 → 1,266 lines. The four Slicer-required classes stay thin in
   the main file and inherit per-domain mixins from `MorphoDepotLib/` (the Python-built UI classes,
