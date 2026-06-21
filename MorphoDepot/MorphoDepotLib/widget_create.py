@@ -969,14 +969,15 @@ class CreateTabMixin:
         # contributor "next screen" below (org-design 9.6/9.7) only appears when the repo ships a
         # baseline at go-live -- so only promise that screen when it will actually show.
         nameWithOwner = ctx.get("personalNameWithOwner")
-        hasBaseline = bool(isOrg and nameWithOwner and self._repoHasBaseline(nameWithOwner))
+        with slicer.util.WaitCursor():  # _repoHasBaseline hits the GitHub API; show feedback (review)
+            hasBaseline = bool(isOrg and nameWithOwner and self._repoHasBaseline(nameWithOwner))
         if not isOrg:
             prompt = f"Publish {where}?\n\nThis makes it public on your account."
         elif hasBaseline:
             prompt = (
                 f"Publish {where}?\n\n"
                 "If you have anyone other than yourself to acknowledge contributing to the "
-                "segmentation, enter them in the next screen. Otherwise click Done.\n\n"
+                "segmentation, enter them on the next screen. Otherwise click Done there to skip.\n\n"
                 "After that we will proceed with automated quality controls. Repo admins do not "
                 "review your repo until these checks are completed.")
         else:
