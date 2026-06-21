@@ -64,6 +64,7 @@ class AccessionMixin:
         else:
             licenseURL = "https://creativecommons.org/licenses/by/4.0/legalcode.txt"
         response = requests.get(licenseURL, timeout=15)
+        response.raise_for_status()  # never commit a 4xx/5xx error page as the repo's LICENSE.txt
         with open(os.path.join(repoDir, "LICENSE.txt"), "w") as fp:
             fp.write(response.content.decode('ascii', errors="ignore"))
 
