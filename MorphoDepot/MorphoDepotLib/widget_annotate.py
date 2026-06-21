@@ -258,3 +258,5 @@ class AnnotateTabMixin:
             self.updateAnnotatePRList()
             self.annotateUI.messageTitle.text = ""
             self.annotateUI.messageBody.plainText = ""
+            self._completeStepReset("Review request is successfully completed",
+                                    "Your work was submitted; the repository owner will review it.")
