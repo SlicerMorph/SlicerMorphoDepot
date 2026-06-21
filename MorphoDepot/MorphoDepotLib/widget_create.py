@@ -513,6 +513,25 @@ class CreateTabMixin:
         owner = self.selectedDestination()
         return bool(owner) and owner != getattr(self.createUI, "destinationPersonalLogin", "")
 
+    def _isDefaultSlicerColorTable(self, colorNode):
+        """True if colorNode is a built-in/default Slicer color table rather than a terminology table:
+        a procedural built-in such as Labels/Grey (any Type other than the User/File markers), or one
+        of Slicer's shipped color files (GenericColors, GenericAnatomyColors, the colormaps, ...)
+        matched by name.  These are never valid for an archival segmentation (UI #3a)."""
+        shippedDefaults = {
+            "GenericColors", "GenericAnatomyColors", "AbdomenColors", "PelvisColor",
+            "64Color-Nonsemantic", "Slicer3_2010_Brain_Labels", "Slicer3_2010_Label_Colors",
+            "SPL-BrainAtlas-ColorFile", "SPL-BrainAtlas-2009-ColorFile", "SPL-BrainAtlas-2012-ColorFile",
+            "Cividis", "Inferno", "Magma", "Plasma", "Viridis", "ColdToHotRainbow", "HotToColdRainbow",
+            "DivergingBlueRed", "DarkBrightChartColors", "LightPaleChartColors", "MediumChartColors",
+        }
+        try:
+            if colorNode.GetTypeAsString() not in ("User", "File"):
+                return True  # procedural built-in (Labels, Grey, Rainbow, the Red/Green ramps, ...)
+            return colorNode.GetName() in shippedDefaults  # shipped file-loaded default
+        except Exception:
+            return False
+
     def _collectAccessionInputs(self):
         """Validate the Create-tab selections and assemble accessionData.
 
@@ -550,6 +569,18 @@ class CreateTabMixin:
         accessionData['scanSpacing'] = str(sourceVolume.GetSpacing())
 
         if accessionData["repoType"][1] == "Archival (intended for long-term maintenance)":
+            # UI #3a: a generic/default Slicer color table is never a valid terminology table, so an
+            # archival repo (which goes through review) must not start with one. Whether a *custom*
+            # table's terminology is meaningful is a human call, left to the review app.
+            if self._isDefaultSlicerColorTable(colorTable):
+                slicer.util.errorDisplay(
+                    f"'{colorTable.GetName()}' is a generic/default Slicer color table, not a "
+                    "terminology-based one.\n\nArchival repositories must use a terminology color "
+                    "table (each segment carrying an ontology term) so reviewers and downstream tools "
+                    "can interpret the segmentation. Load or build a terminology color table, choose "
+                    "it as the Color table, and stage again.",
+                    windowTitle="Generic color table not allowed")
+                return None
             for colorIndex in range(1, colorTable.GetNumberOfColors()):
                 if colorTable.GetTerminologyAsString(colorIndex) == "~^^~^^~^^~~^^~^^~":
                     slicer.util.errorDisplay(f"Selected Color table is missing terminology for index {colorIndex}, {colorTable.GetColorName(colorIndex)}", windowTitle="Missing Terminology")
