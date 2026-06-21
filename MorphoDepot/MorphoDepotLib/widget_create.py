@@ -676,7 +676,13 @@ class CreateTabMixin:
             return
         self.screenshots = []
         self.updateScreenshotCount()
-        self._enterGoLiveState(staged)
+        # UI #2: staging is a save-point, not go-live -- confirm, then reset the scene + form. The
+        # curator resumes (double-click in the unpublished list) to edit/publish later.
+        self._completeStepReset(
+            "Staging completed",
+            "Staging is completed. Scene is reset.\n\n"
+            "You can go back and edit the repo by double-clicking it in the staged-only repos list.\n\n"
+            "Repos that are not requested to be made public within 14 days of staging will be discarded.")
 
     def _enterGoLiveState(self, stagedNameWithOwner):
         """Reveal the Go-live gate after a repo has been staged privately."""
@@ -1271,6 +1277,14 @@ class CreateTabMixin:
         slicer.util.reloadScriptedModule(self.moduleName)
         self.screenshots = []
         self.updateScreenshotCount()
+
+    def _completeStepReset(self, title, message):
+        """Shared close-out for a completed step (UI #2 theme): reset the scene, confirm with a popup,
+        then reset the form so the next action starts from a clean slate.  onClearForm reloads the
+        scripted module (rebuilding this widget), so it MUST be the final call here."""
+        slicer.mrmlScene.Clear()
+        slicer.util.infoDisplay(message, windowTitle=title)
+        self.onClearForm()
 
     def onFillFormForTesting(self):
         """Fills the accession form with default data for testing."""
