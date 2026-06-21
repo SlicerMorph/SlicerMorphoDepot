@@ -357,6 +357,8 @@ class GitHubMixin:
         try:
             out = subprocess.run([self.ghExecutablePath, "auth", "token"],
                                  capture_output=True, text=True, timeout=15)
+            if out.returncode != 0:
+                return ""  # gh failed: never treat a stray stdout diagnostic as a Bearer token
             return (out.stdout or "").strip()
         except Exception as e:
             raise RuntimeError(f"Could not get a GitHub token from gh: {e}")

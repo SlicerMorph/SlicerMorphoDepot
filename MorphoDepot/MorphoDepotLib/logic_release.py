@@ -33,7 +33,8 @@ class ReleaseMixin:
         if not self.localRepo:
             return None
         originNameWithOwner = self.nameWithOwner("origin")
-        return self.ghJSON(f"release list --repo {originNameWithOwner} --json name,tagName,publishedAt")
+        return self.ghJSON(["release", "list", "--repo", originNameWithOwner,
+                            "--json", "name,tagName,publishedAt"])
 
     def closedIssuesSinceLastRelease(self, nameWithOwner):
         """Return a list of {number,title} for issues closed since the last published release.
@@ -41,7 +42,8 @@ class ReleaseMixin:
         ANNOUNCEMENT issues are excluded: they carry the invisible release-announce marker and are
         not contributions -- retiring an announcement closes it, which would otherwise make it show
         up as a 'change in this release' in the next cycle (the bug this filters out)."""
-        releases = self.ghJSON(f"release list --repo {nameWithOwner} --json tagName,publishedAt") or []
+        releases = self.ghJSON(["release", "list", "--repo", nameWithOwner,
+                               "--json", "tagName,publishedAt"]) or []
         sinceDate = releases[0].get('publishedAt') if releases else None
         if sinceDate:
             cmd = ["issue", "list", "--repo", nameWithOwner,
@@ -350,8 +352,10 @@ class ReleaseMixin:
 
     def openIssuesAndPRs(self, nameWithOwner):
         """Return (issues, prs) lists of open items for the given repo, each with number and title."""
-        issues = self.ghJSON(f"issue list --repo {nameWithOwner} --state open --json number,title")
-        prs = self.ghJSON(f"pr list --repo {nameWithOwner} --state open --json number,title")
+        issues = self.ghJSON(["issue", "list", "--repo", nameWithOwner, "--state", "open",
+                             "--json", "number,title"])
+        prs = self.ghJSON(["pr", "list", "--repo", nameWithOwner, "--state", "open",
+                          "--json", "number,title"])
         return issues, prs
 
     def announceUpcomingRelease(self, nameWithOwner, deadlineISO, message):
