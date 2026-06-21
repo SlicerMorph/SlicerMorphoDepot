@@ -232,6 +232,34 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         tabIndex = slicer.util.settingsValue("MorphoDepot/tabIndex", 0, converter=int)
         self.tabWidget.currentIndex = tabIndex
 
+        # Give push buttons a subtle raised "surface" so they read as buttons instead of
+        # blending into the adjacent text fields and combo boxes (Slicer's default Button
+        # color is nearly identical to the field/window color in both themes). All colors
+        # come from the active Qt palette via the palette() stylesheet function, so this
+        # tracks the user's Slicer theme automatically -- the gray is #e6e6e6 in the light
+        # theme and #5a5a5b in the dark theme. Applied once on the tab widget, it cascades
+        # to every QPushButton in all tabs; ctkCollapsibleButton headers are a different
+        # class and are left untouched.
+        self.tabWidget.setStyleSheet(
+            """
+            QPushButton {
+                background-color: palette(midlight);
+                border: 1px solid palette(mid);
+                border-radius: 4px;
+                padding: 4px 12px;
+                min-height: 18px;
+            }
+            QPushButton:hover { background-color: palette(light); }
+            QPushButton:focus { border: 1px solid palette(highlight); outline: none; }
+            QPushButton:pressed { background-color: palette(button); }
+            QPushButton:disabled {
+                background-color: palette(window);
+                border: 1px solid palette(midlight);
+                color: palette(mid);
+            }
+            """
+        )
+
         # Set scene in MRML widgets. Make sure that in Qt designer the top-level qMRMLWidget's
         # "mrmlSceneChanged(vtkMRMLScene*)" signal in is connected to each MRML widget's.
         # "setMRMLScene(vtkMRMLScene*)" slot.
