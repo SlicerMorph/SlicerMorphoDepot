@@ -964,8 +964,26 @@ class CreateTabMixin:
                     "Publishing will create another public copy of the same data. Publish anyway?",
                     windowTitle="Duplicate volume detected"):
                 return
-        prompt = (f"Publish {where}?\n\nThis makes it public and discoverable"
-                  + (" in the MorphoDepot organization." if isOrg else " on your account."))
+        # Tailor the publish prompt to the actual flow: a personal repo publishes straight to the
+        # member's account; an org repo goes through the MD-reviewers gate, and the baseline-
+        # contributor "next screen" below (org-design 9.6/9.7) only appears when the repo ships a
+        # baseline at go-live -- so only promise that screen when it will actually show.
+        nameWithOwner = ctx.get("personalNameWithOwner")
+        hasBaseline = bool(isOrg and nameWithOwner and self._repoHasBaseline(nameWithOwner))
+        if not isOrg:
+            prompt = f"Publish {where}?\n\nThis makes it public on your account."
+        elif hasBaseline:
+            prompt = (
+                f"Publish {where}?\n\n"
+                "If you have anyone other than yourself to acknowledge contributing to the "
+                "segmentation, enter them in the next screen. Otherwise click Done.\n\n"
+                "After that we will proceed with automated quality controls. Repo admins do not "
+                "review your repo until these checks are completed.")
+        else:
+            prompt = (
+                f"Publish {where}?\n\n"
+                "We will now proceed with automated quality controls. Repo admins do not review "
+                "your repo until these checks are completed.")
         if not (self.testingMode or slicer.util.confirmOkCancelDisplay(prompt, windowTitle="Publish repository")):
             return
         # Member-driven finish (#20): a resumed repo that is already approved (the App minted its DOI on
@@ -999,8 +1017,7 @@ class CreateTabMixin:
         # go-live (= v1) must declare who made that baseline before it can be made public.  No local
         # clone exists at publish, so this reads/writes CONTRIBUTORS.json on GitHub directly (the repo
         # is private but the curator has write).  Cancelling here blocks the publish.  (org-design 9.6/9.7)
-        nameWithOwner = ctx.get("personalNameWithOwner")
-        if isOrg and nameWithOwner and self._repoHasBaseline(nameWithOwner):
+        if hasBaseline:
             try:
                 creditOk = self._curateBaselineCreditViaApi(nameWithOwner)
             except Exception as exc:
