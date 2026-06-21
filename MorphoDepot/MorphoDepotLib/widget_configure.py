@@ -110,7 +110,7 @@ class ConfigureTabMixin:
         msgBox.exec_()
         if msgBox.clickedButton() == openDocsButton:
             qt.QDesktopServices.openUrl(qt.QUrl(
-                "https://github.com/MorphoCloud/SlicerMorphoDepot?tab=readme-ov-file#morphodepot"))
+                "https://github.com/SlicerMorph/SlicerMorphoDepot?tab=readme-ov-file#morphodepot"))
 
     def onUserNameChanged(self, userName):
         if userName:
