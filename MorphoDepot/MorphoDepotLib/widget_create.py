@@ -1116,15 +1116,13 @@ class CreateTabMixin:
             self.createUI.stagingStatusLabel.text = (
                 f"Submitted for review: {where} becomes public once approved.")
             self.refreshStagedReposList(force=True)
-            if not self.testingMode:
-                slicer.util.infoDisplay(
-                    f"'{where}' has been submitted for review.\n\n"
-                    f"A request was emailed to {to}. Once a reviewer approves you'll get an email — "
-                    "then reopen this repo from your unpublished list and click Make Public again to "
-                    "publish it. Until then it stays private (reopening to make changes will require "
-                    "requesting review again).",
-                    windowTitle="Submitted for review")
-            slicer.mrmlScene.Clear()
+            self._completeStepReset(
+                "Review request is successfully completed",
+                f"'{where}' has been submitted for review.\n\n"
+                f"A request was emailed to {to}. Once a reviewer approves you'll get an email — then "
+                "reopen this repo from your unpublished list and click Make Public again to publish it. "
+                "Until then it stays private (reopening to make changes will require requesting review "
+                "again).")
             return
         # Now that the repo is actually public, add the creator to the contact list (best-effort,
         # background).  Done here — never at stage — so discarded/abandoned repos never leak a
@@ -1137,12 +1135,13 @@ class CreateTabMixin:
         self.createUI.openRepository.enabled = True
         self.createUI.stagingStatusLabel.text = f"Published: {final} is now public and discoverable."
         self.refreshStagedReposList(force=True)
-        # Publishing fully succeeded: open the now-public repository in the browser, and clear the
-        # scene so the (potentially multi-GB) source volume and segmentation do not linger in the
-        # session.  The browser is skipped under automated testing.
+        # Publishing fully succeeded: open the now-public repository in the browser, then reset (the
+        # scene clear inside _completeStepReset frees the multi-GB volume).  Browser skipped in tests.
         if not self.testingMode:
             qt.QDesktopServices.openUrl(qt.QUrl(f"https://github.com/{final}"))
-        slicer.mrmlScene.Clear()
+        self._completeStepReset(
+            "Publishing is successfully completed",
+            f"{final} is now public and discoverable in the MorphoDepot organization.")
 
     def onDiscard(self):
         """Abandon the staged repo.  Deleting a repo needs the `delete_repo` token scope,
@@ -1165,16 +1164,12 @@ class CreateTabMixin:
         slicer.util.showStatusMessage("")
         if settingsURL and not self.testingMode:
             qt.QDesktopServices.openUrl(qt.QUrl(settingsURL))
-            slicer.util.infoDisplay(
-                "Opened the repository's GitHub Settings page.\n\n"
-                "Scroll to the bottom (Danger Zone) and click 'Delete this repository' to "
-                "remove it from GitHub.",
-                windowTitle="Delete on GitHub")
-        self._setGoLiveZoneVisible(False)
-        self.createUI.stagingStatusLabel.text = ""
-        self.createUI.openRepository.enabled = False
         self.refreshStagedReposList(force=True)
-        self.onClearForm()
+        msg = "The staged repository has been discarded."
+        if settingsURL:
+            msg += ("\n\nIts GitHub Settings page was opened -- scroll to the Danger Zone and click "
+                    "'Delete this repository' to remove it from GitHub.")
+        self._completeStepReset("Discard is successfully completed", msg)
 
     def showConfirmationDialog(self, sourceVolume, colorTable, accessionData, sourceSegmentation, screenshots, useOrg=False):
         """Shows a confirmation dialog with a summary of the repository to be created."""
@@ -1322,10 +1317,11 @@ class CreateTabMixin:
         then reset the form so the next action starts from a clean slate.  onClearForm reloads the
         scripted module (rebuilding this widget), so it MUST be the final call here.  No-op in
         testingMode: the popup would block the automated run and the reload would invalidate the
-        test's widget reference."""
+        test's widget reference (the scene clear itself still runs in tests, to free the volume).
+        Call this ONLY after a repo-state change actually succeeded -- never after a failure/cancel."""
+        slicer.mrmlScene.Clear()
         if self.testingMode:
             return
-        slicer.mrmlScene.Clear()
         slicer.util.infoDisplay(message, windowTitle=title)
         self.onClearForm()
 

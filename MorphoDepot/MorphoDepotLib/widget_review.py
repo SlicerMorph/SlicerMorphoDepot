@@ -87,6 +87,8 @@ class ReviewTabMixin:
             self.reviewUI.reviewMessage.plainText = ""
             slicer.util.showStatusMessage(f"Changes requested")
             self.updateReviewPRList()
+            self._completeStepReset("Change request is successfully completed",
+                                    "The change request was sent to the contributor.")
 
     def onApprove(self):
         with slicer.util.tryWithErrorDisplay("Failed to approve PR", waitCursor=True):
@@ -94,5 +96,7 @@ class ReviewTabMixin:
             self.logic.approvePR()
             self.reviewUI.reviewMessage.plainText = ""
             self.updateReviewPRList()
+            self._completeStepReset("Review (approve) is successfully completed",
+                                    "The pull request was approved and merged.")
 
     # Release
