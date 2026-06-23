@@ -27,11 +27,14 @@ from slicer.i18n import translate
 
 
 class GitHubMixin:
-    def gh(self, command, timeout=300):
+    def gh(self, command, timeout=300, quietErrors=False):
         """Execute `gh` command.  Multiline input string accepted for readablity.
         Do not include `gh` in the command string.  `timeout` (seconds) bounds each attempt so a
         hung/auth-prompting child can't block the UI thread; pass timeout=None for the few genuinely
-        long operations (large release upload/download)."""
+        long operations (large release upload/download).  `quietErrors=True` when the caller treats a
+        non-zero exit as a normal result (e.g. the `repoExists` 404 = name-available preflight): the
+        RuntimeError is still raised for the caller to catch, but the failure is not logged as an
+        error (so a benign 'is this name free?' check doesn't print scary 'gh command error' lines)."""
         if not self.ghExecutablePath or self.ghExecutablePath == "":
             logging.error("Error, gh not found")
             return "Error, gh not found"
@@ -80,8 +83,9 @@ class GitHubMixin:
             time.sleep(delay)
         if process.returncode != 0:
             error_message = f"gh command failed: {' '.join(commandList)}\nOutput: {result}"
-            logging.error(error_message)
-            self.progressMethod(f"gh command error: {result}")
+            if not quietErrors:
+                logging.error(error_message)
+                self.progressMethod(f"gh command error: {result}")
             raise RuntimeError(error_message)
         self.progressMethod(f"gh command finished: {result}")
         return result[0]
@@ -198,7 +202,9 @@ class GitHubMixin:
         Used as the pre-create / pre-publish collision preflight.  Creates nothing.  Returns
         True if the GET succeeds, False on a 404 (or any error, treated as 'available')."""
         try:
-            self.gh(["api", f"/repos/{nameWithOwner}", "--silent"])
+            # quietErrors: a 404 here is the expected "name is free" outcome, not a failure -- don't
+            # let the gh() wrapper log it as an error (it confuses the log on every repo create).
+            self.gh(["api", f"/repos/{nameWithOwner}", "--silent"], quietErrors=True)
             return True
         except RuntimeError:
             return False
