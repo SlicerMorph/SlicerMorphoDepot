@@ -368,6 +368,21 @@ jobs:
         # Mark it staged with the member's own gh (members own their topics now; the App does not).
         self.gh(["repo", "edit", nameWithOwner, "--add-topic", self.stagingTopic])
 
+        # Grant the member's {login}-team Write, so the repo is reachable THROUGH the team.  The Create
+        # tab's unpublished list queries `affiliation=organization_member` (team-based); without this
+        # grant the member reaches the repo only as its direct-collaborator creator and it never shows.
+        # The member is repo-admin (creator) and the team's maintainer, so their OWN gh performs this --
+        # no App Administration is involved.  GitHub gates this on admin of THIS repo, so a member can
+        # only ever team-grant repos they created (verified: a read-only repo returns 403).  Best-effort:
+        # a failure here only delays the repo appearing in the list; staging itself still succeeds.
+        teamSlug = f"{curator}-team".lower()
+        try:
+            self.gh(["api", "--method", "PUT",
+                     f"/orgs/{self.morphoDepotOrg}/teams/{teamSlug}/repos/{nameWithOwner}",
+                     "--field", "permission=push"])
+        except Exception as e:
+            logging.warning(f"Could not grant {teamSlug} Write on {nameWithOwner}: {e}")
+
         # Push the locally built content to the empty in-org repo (member has Write via team).
         self.localRepo = repo
         try:
