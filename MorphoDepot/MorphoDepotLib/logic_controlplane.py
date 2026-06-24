@@ -90,7 +90,10 @@ class ControlPlaneMixin:
         if not repoNames:
             return {}
         try:
-            return self.controlPlaneRequest("repos/review-status", {"repos": list(repoNames)}) or {}
+            result = self.controlPlaneRequest("repos/review-status", {"repos": list(repoNames)})
+            # Defensive: only a dict is usable by the caller (statuses.get(...)).  Any other valid-but-
+            # unexpected JSON (list/bool/str) would otherwise crash the whole list render, not degrade.
+            return result if isinstance(result, dict) else {}
         except Exception as e:
             logging.warning(f"Could not fetch review status: {e}")
             return {}
