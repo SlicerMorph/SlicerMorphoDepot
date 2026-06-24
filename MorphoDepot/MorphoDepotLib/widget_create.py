@@ -53,8 +53,21 @@ class CreateTabMixin:
             placeholder.setFlags(qt.Qt.NoItemFlags)
             listWidget.addItem(placeholder)
             return
+        # Label each org repo with its review state so the curator isn't clicking Make Public blind:
+        # 'approved' (their turn to finish the flip) vs 'pending review'.  Org repos only -- short-term
+        # personal repos publish directly with no review.  Best-effort (reviewStatus returns {} on error).
+        orgPrefix = self.logic.morphoDepotOrg + "/"
+        orgNames = [r.get("repoName") for r in repos
+                    if r.get("repoName") and (r.get("nameWithOwner") or "").startswith(orgPrefix)]
+        statuses = self.logic.reviewStatus(orgNames) if orgNames else {}
         for repo in repos:
-            item = qt.QListWidgetItem(repo.get("summary") or repo.get("nameWithOwner", ""))
+            label = repo.get("summary") or repo.get("nameWithOwner", "")
+            state = statuses.get(repo.get("repoName"))
+            if state == "approved":
+                label += "    ✓ approved — click Make Public to finish"
+            elif state == "pending":
+                label += "    ⏳ pending review"
+            item = qt.QListWidgetItem(label)
             listWidget.addItem(item)
             self._stagedReposByItem[item] = repo
 
@@ -1119,10 +1132,11 @@ class CreateTabMixin:
             self._completeStepReset(
                 "Review request is successfully completed",
                 f"'{where}' has been submitted for review.\n\n"
-                f"A request was emailed to {to}. Once a reviewer approves you'll get an email — then "
-                "reopen this repo from your unpublished list and click Make Public again to publish it. "
-                "Until then it stays private (reopening to make changes will require requesting review "
-                "again).")
+                f"Publishing is a two-step process. A request was emailed to {to}. Once a reviewer "
+                "approves, you'll get an email; then reopen this repo from your unpublished list (it "
+                "will be marked 'approved') and click Make Public again to do the final flip to public "
+                "— within 14 days of approval. Until then it stays private (reopening to make changes "
+                "will require requesting review again).")
             return
         # Now that the repo is actually public, add the creator to the contact list (best-effort,
         # background).  Done here — never at stage — so discarded/abandoned repos never leak a
