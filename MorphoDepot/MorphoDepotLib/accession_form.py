@@ -259,9 +259,6 @@ class MorphoDepotAccessionForm():
 
         # section 7
         layout = self.sectionWidgets[7].layout()
-        # Note: the repository destination (personal account vs. organization) is chosen later,
-        # at the Go-live gate in the Create tab — not here. Every repo is first staged privately
-        # on the creator's personal account. See MorphoDepotWidget.populateOwnerSelector().
         q,a,t = form["githubRepoName"]
         self.questions["githubRepoName"] = FormTextQuestion(q, self.validateForm)
         self.questions["githubRepoName"].questionBox.toolTip = t
@@ -416,7 +413,10 @@ class MorphoDepotAccessionForm():
         if isBiological:
             valid = valid and self.questions["contrastEnhancement"].answer() != ""
             valid = valid and self.questions["imageContents"].answer() != ""
-        valid = valid and self.questions["redistributionAcknowledgement"].answer() != []
+        # Redistribution acknowledgement (Section 6) is required only for ARCHIVAL repos; short-term
+        # repos neither show nor require it (the box is hidden by the repo-type selector).
+        if self.questions["repoType"].answer().startswith("Archival"):
+            valid = valid and self.questions["redistributionAcknowledgement"].answer() != []
         valid = valid and self.questions["license"].answer() != ""
         self._applySuggestedRepoName()   # F4: prefill a metadata-derived name (until the user edits it)
         valid = valid and self.questions["githubRepoName"].answer() != ""

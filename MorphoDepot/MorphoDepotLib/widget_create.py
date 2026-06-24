@@ -53,7 +53,7 @@ class CreateTabMixin:
             placeholder.setFlags(qt.Qt.NoItemFlags)
             listWidget.addItem(placeholder)
             return
-        # Label each org repo with its review state so the curator isn't clicking Make Public blind:
+        # Label each org repo with its review state so the curator isn't clicking Publish blind:
         # 'approved' (their turn to finish the flip) vs 'pending review'.  Org repos only -- short-term
         # personal repos publish directly with no review.  Best-effort (reviewStatus returns {} on error).
         orgPrefix = self.logic.morphoDepotOrg + "/"
@@ -64,7 +64,7 @@ class CreateTabMixin:
             label = repo.get("summary") or repo.get("nameWithOwner", "")
             state = statuses.get(repo.get("repoName"))
             if state == "approved":
-                label += "    ✓ approved — click Make Public to finish"
+                label += "    ✓ approved — click Publish to finish"
             elif state == "pending":
                 label += "    ⏳ pending review"
             item = qt.QListWidgetItem(label)
@@ -323,6 +323,12 @@ class CreateTabMixin:
             self.createUI.accessionForm.questions["repoType"].optionButtons[label].click()
         except Exception:
             pass
+        # Section 6 redistribution acknowledgement is archival-only: show it for archival, hide it
+        # for short-term (validateForm requires it only when archival -- see accession_form).
+        try:
+            self.createUI.accessionForm.questions["redistributionAcknowledgement"].questionBox.setVisible(isArchival)
+        except Exception:
+            pass
 
     def _refreshAutoAssignAvailability(self):
         """Check whether the gh token has the `workflow` scope and enable the auto-assign checkbox
@@ -459,10 +465,18 @@ class CreateTabMixin:
 
     def _redistributionAcknowledged(self):
         """True if the Section-6 'I have the right to allow redistribution of this data' box is
-        ticked.  Required to stage (validateForm), and enforced again at Update and Publish so the
-        attestation cannot be revoked while still proceeding."""
+        ticked.  Archival-only: required to stage an archival repo (validateForm), and enforced
+        again at Update and Publish so the attestation cannot be revoked while still proceeding."""
         try:
             return self.createUI.accessionForm.questions["redistributionAcknowledgement"].answer() != []
+        except Exception:
+            return False
+
+    def _redistributionRequired(self):
+        """The redistribution acknowledgement is archival-only: required (and shown) only when the
+        repository type is Archival.  Short-term repos neither show nor require it."""
+        try:
+            return self.createUI.accessionForm.questions["repoType"].answer().startswith("Archival")
         except Exception:
             return False
 
@@ -488,43 +502,6 @@ class CreateTabMixin:
         emailRegex = r'^[^@\s]+@[^@\s]+\.[^@\s]+$'
         email = self.createUI.goLiveEmail.text.strip()
         self.createUI.publishButton.enabled = bool(re.match(emailRegex, email))
-
-    def populateOwnerSelector(self):
-        """Fill the Create-tab destination dropdown with the active user's account and orgs.
-
-        Detects the organizations the logged-in GitHub account belongs to; if there are any,
-        the destination selector offers a choice between the personal account and each
-        organization (consulted at Go-live).  Runs lazily the first time the Create tab is
-        opened; transient failures (e.g. gh not yet configured) leave the flag unset so it
-        retries next time."""
-        destination = getattr(self.createUI, "destinationQuestion", None)
-        if destination is None:
-            return
-        try:
-            personal = self.logic.whoami()
-        except Exception as e:
-            logging.warning(f"Could not determine active GitHub user: {e}")
-            personal = ""
-        organizations = self.logic.userOrganizations() if personal else []
-        options = []
-        if personal:
-            options.append((f"{personal} (your personal account)", personal))
-        for org in organizations:
-            options.append((f"{org} (organization)", org))
-        destination.setOptions(options)
-        destination.questionBox.setVisible(False)  # destination is chosen at create now, not publish
-        self.createUI.destinationPersonalLogin = personal
-        self.ownerSelectorPopulated = bool(personal)
-
-    def selectedDestination(self):
-        """Return the chosen Go-live destination owner login, or '' if none resolved yet."""
-        destination = getattr(self.createUI, "destinationQuestion", None)
-        return destination.answer() if destination is not None else ""
-
-    def selectedDestinationIsOrganization(self):
-        """True when the chosen Go-live destination is an organization, not the personal account."""
-        owner = self.selectedDestination()
-        return bool(owner) and owner != getattr(self.createUI, "destinationPersonalLogin", "")
 
     def _isDefaultSlicerColorTable(self, colorNode):
         """True if colorNode is a built-in/default Slicer color table rather than a real terminology
@@ -739,7 +716,6 @@ class CreateTabMixin:
     def _enterGoLiveState(self, stagedNameWithOwner):
         """Reveal the Go-live gate after a repo has been staged privately."""
         self._stagedNameWithOwner = stagedNameWithOwner
-        self.populateOwnerSelector()
         self.createUI.createRepository.enabled = False
         self._setGoLiveZoneVisible(True)
         # Org members are already on the contact list (verified email captured at ORCID
@@ -763,11 +739,11 @@ class CreateTabMixin:
         if self._resumedForEdit:
             self.createUI.stagingStatusLabel.text = (
                 f"Editing staged repo {stagedNameWithOwner} (private, not yet published).\n"
-                "Correct any fields, Save changes as many times as you need, then Publish.")
+                "Correct any fields, click Save Changes as many times as you need, then Publish.")
         else:
             self.createUI.stagingStatusLabel.text = (
                 f"Staged privately as {stagedNameWithOwner} — not yet public, not discoverable.\n"
-                "Review it on GitHub, then choose a destination and Publish, or Discard.")
+                "Review it on GitHub. When ready click Publish, or Discard to remove the staged repo.")
         # Passive duplicate-volume note (cached from staging — no network here): a shared SHA-256
         # means a byte-identical source volume already lives in another repo.
         stagingCtx = getattr(self.logic, "stagingContext", None) or {}
@@ -784,7 +760,7 @@ class CreateTabMixin:
         repeatedly before going live."""
         if not self._resumedForEdit:
             return
-        if not self._redistributionAcknowledged():
+        if self._redistributionRequired() and not self._redistributionAcknowledged():
             slicer.util.errorDisplay(
                 "Please confirm you have the right to allow redistribution of this data "
                 "(Section 6: Licensing) before updating the repository.",
@@ -808,9 +784,9 @@ class CreateTabMixin:
         self._rebaselineResumedNodes()
         repoName = self._stagedNameWithOwner
         if changed:
-            statusText = f"✓ Repository updated: {repoName} (still staged — not yet published)."
-            popupText = (f"'{repoName}' was updated.\n\nIt is still staged (private, not "
-                         "published). Keep editing and updating, or click Publish when ready.")
+            statusText = f"✓ Changes saved: {repoName} (still staged — not yet published)."
+            popupText = (f"'{repoName}' was saved.\n\nIt is still staged (private, not "
+                         "published). Keep editing and saving, or click Publish when ready.")
         else:
             statusText = "No changes to save — the repository already matches the form."
             popupText = "No changes to save — the repository already matches the form."
@@ -1000,7 +976,7 @@ class CreateTabMixin:
     def onPublish(self):
         """Take the staged repo live (make it public) where it already lives — the destination
         was fixed at create, so this no longer offers an org/personal choice or any transfer."""
-        if not self._redistributionAcknowledged():
+        if self._redistributionRequired() and not self._redistributionAcknowledged():
             slicer.util.errorDisplay(
                 "Please confirm you have the right to allow redistribution of this data "
                 "(Section 6: Licensing) before publishing.",
@@ -1111,7 +1087,7 @@ class CreateTabMixin:
                 slicer.util.errorDisplay(
                     "Automated checks must pass before this can be reviewed:\n\n"
                     f"{lines}\n\n"
-                    "Fix these, then click Make Public again to re-submit."
+                    "Fix these, then click Publish again to re-submit."
                     + (f"\n\nTracking issue: {final.get('issueUrl')}" if final.get("issueUrl") else ""),
                     windowTitle="Changes required before publishing")
             return
@@ -1127,14 +1103,14 @@ class CreateTabMixin:
             self.createUI.discardButton.enabled = False
             self.createUI.openRepository.enabled = False
             self.createUI.stagingStatusLabel.text = (
-                f"Submitted for review: {where} becomes public once approved.")
+                f"Submitted for review: {where} — once approved, you need to click Publish once more to make it public.")
             self.refreshStagedReposList(force=True)
             self._completeStepReset(
                 "Review request is successfully completed",
                 f"'{where}' has been submitted for review.\n\n"
                 f"Publishing is a two-step process. A request was emailed to {to}. Once a reviewer "
                 "approves, you'll get an email; then reopen this repo from your unpublished list (it "
-                "will be marked 'approved') and click Make Public again to do the final flip to public "
+                "will be marked 'approved') and click Publish again to do the final flip to public "
                 "— within 14 days of approval. Until then it stays private (reopening to make changes "
                 "will require requesting review again).")
             return
@@ -1155,7 +1131,7 @@ class CreateTabMixin:
             qt.QDesktopServices.openUrl(qt.QUrl(f"https://github.com/{final}"))
         self._completeStepReset(
             "Publishing is successfully completed",
-            f"{final} is now public and discoverable in the MorphoDepot organization.")
+            f"{final} is now public and discoverable.")
 
     def onDiscard(self):
         """Abandon the staged repo.  Deleting a repo needs the `delete_repo` token scope,
@@ -1196,10 +1172,14 @@ class CreateTabMixin:
         # When creating under the org, make the destination unmistakable at the top.
         if useOrg:
             repoName = accessionData['githubRepoName'][1].split("/")[-1]
+            archivalDocURL = ("https://github.com/MorphoDepot/docs/blob/main/"
+                              "MorphoDepot-archival-guidelines.md#two-kinds-of-dataset")
             headerLabel = qt.QLabel(
                 f"<b>This repository will be created in the MorphoDepot organization, as "
                 f"<code>{self.logic.morphoDepotOrg}/{repoName}</code>.</b><br>"
-                "Cancel if you'd rather create it under your own account.")
+                "Change the repository type to Short-term if you'd rather create it under "
+                f"your own account. <a href=\"{archivalDocURL}\">Archival vs. short-term &rarr;</a>")
+            headerLabel.setOpenExternalLinks(True)
             headerLabel.setWordWrap(True)
             headerLabel.setStyleSheet("color:#b35900;")
             layout.addWidget(headerLabel)
@@ -1251,8 +1231,8 @@ class CreateTabMixin:
             return f"{label}: <i>{value}</i><br>"
 
         summary += add_detail("GitHub Repository", accessionData['githubRepoName'][1])
-        summary += add_detail("Initial state", "Private staging repo on your personal account "
-                              "(made public — and transferred to an org if you choose — at Go-live)")
+        summary += add_detail("Initial state", "Created as a private repository; made public "
+                              "when you click Publish")
         summary += add_detail("Source Volume", sourceVolume.GetName())
         summary += add_detail("Color Table", colorTable.GetName())
         if sourceSegmentation:
@@ -1357,7 +1337,8 @@ class CreateTabMixin:
         form.questions["contrastEnhancement"].optionButtons["No"].click()
         form.questions["imageContents"].optionButtons["Whole specimen"].click()
         form.questions["githubRepoName"].answerText.text = repoName
-        form.questions["redistributionAcknowledgement"].optionButtons["I have the right to allow redistribution of this data."].click()
         self.createUI.shortTermRadio.checked = True  # top-level Q0 selector -> drives the hidden repoType question
+        # Short-term fill: the redistribution acknowledgement is archival-only and hidden here, so it
+        # is intentionally not ticked.
         # Contact email is no longer part of the accession form; it is entered in the widget's
         # Go-live section and submitted at publish.

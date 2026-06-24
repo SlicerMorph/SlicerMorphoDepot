@@ -37,7 +37,7 @@ from slicer.parameterNodeWrapper import (
 #
 
 from MorphoDepotLib.forms import (FormBaseQuestion, FormRadioQuestion, FormCheckBoxesQuestion,
-    FormTextQuestion, FormComboBoxQuestion, FormSpeciesQuestion)
+    FormTextQuestion, FormSpeciesQuestion)
 from MorphoDepotLib.accession_form import MorphoDepotAccessionForm
 from MorphoDepotLib.search_form import MorphoDepotSearchForm
 from MorphoDepotLib.screenshot_dialog import ScreenshotReviewDialog
@@ -356,7 +356,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.createUI.segmentationSelector.setMRMLScene(slicer.mrmlScene)
         self.createUI.segmentationSelector.noneEnabled = True
         self.createUI.segmentationSelector.noneDisplay = "Select a baseline segmentation (optional)"
-        self.createUI.segmentationSelector.toolTip = "Pick an baseline segmentation (optional)."
+        self.createUI.segmentationSelector.toolTip = "Pick a baseline segmentation (optional)."
 
         formLayout = self.createUI.inputsCollapsibleButton.layout()
         formLayout.addRow("Source volume:", self.createUI.inputSelector)
@@ -371,9 +371,6 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.createUI.createRepository.text = "Create (stage privately)"
         self.createUI.accessionForm = MorphoDepotAccessionForm(validationCallback=self._onAccessionFormValidated)
         self.createUI.accessionLayout.addWidget(self.createUI.accessionForm.topWidget)
-        # The destination dropdown is filled lazily the first time the Create tab is shown
-        # (see populateOwnerSelector / onCurrentTabChanged).
-        self.ownerSelectorPopulated = False
         # Auto-assign workflow availability is also resolved lazily on first Create-tab entry.
         self._workflowScopeChecked = False
         self._hasWorkflowScope = False
@@ -421,7 +418,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         # privately but not yet published — the recovery path after a crash / close / different
         # computer (no client state).  Double-click to load for editing; right-click for actions.
         self.createUI.stagedReposCollapsible = ctk.ctkCollapsibleButton()
-        self.createUI.stagedReposCollapsible.text = "Existing yet to be published (staged only) Repos"
+        self.createUI.stagedReposCollapsible.text = "Staged repositories — not yet published"
         self.createUI.stagedReposCollapsible.collapsed = False
         stagedReposLayout = qt.QVBoxLayout(self.createUI.stagedReposCollapsible)
         stagedReposLayout.setContentsMargins(4, 4, 4, 4)
@@ -459,10 +456,10 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         # REGION 2 action: "Update Repository (staged)" sits beside the form's "Create (stage
         # privately)" button (shown only when editing a reopened repo).  Both are form actions
         # and belong with the form — NOT in the Go-live section.
-        self.createUI.saveEditsButton = qt.QPushButton("Update Repository (staged)")
+        self.createUI.saveEditsButton = qt.QPushButton("Save Changes")
         self.createUI.saveEditsButton.toolTip = (
-            "Save your edits to the staged repository without publishing it. You can keep "
-            "editing and updating, then Publish when ready.")
+            "Save your changes to the staged repository without publishing it. You can keep "
+            "editing and saving, then Publish when ready.")
         self.createUI.saveEditsButton.visible = False
         createButtonIndex = self.createUI.verticalLayout.indexOf(self.createUI.createRepository)
         self.createUI.verticalLayout.insertWidget(createButtonIndex + 1, self.createUI.saveEditsButton)
@@ -515,6 +512,12 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             self.createUI.accessionForm.questions["repoType"].questionBox.hide()
         except Exception:
             pass
+        # Section 6 redistribution acknowledgement is archival-only; hide it until the repo type is
+        # set to Archival (the type selector toggles it via _onRepoTypeChanged).
+        try:
+            self.createUI.accessionForm.questions["redistributionAcknowledgement"].questionBox.hide()
+        except Exception:
+            pass
 
         # === REGION 3: Make Repository Public (shown only once a repo is staged) ===
         # Separated from the form above by a divider + bold centered header (the SAME treatment
@@ -524,7 +527,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.createUI.goLiveDivider.setFrameShape(qt.QFrame.HLine)
         self.createUI.goLiveDivider.setFrameShadow(qt.QFrame.Sunken)
         self.createUI.goLiveDivider.setLineWidth(2)
-        self.createUI.goLiveHeader = qt.QLabel("Make Repository Public (Publish)")
+        self.createUI.goLiveHeader = qt.QLabel("Make Repository Public")
         goLiveHeaderFont = self.createUI.goLiveHeader.font
         goLiveHeaderFont.setBold(True)
         goLiveHeaderFont.setPointSize(goLiveHeaderFont.pointSize() + 3)
@@ -547,17 +550,8 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.createUI.goLiveEmail = qt.QLineEdit()
         self.createUI.goLiveEmail.toolTip = emailTooltip
         goLiveLayout.addWidget(self.createUI.goLiveEmail)
-        # Publish destination (personal account or an organization); hidden unless the user is
-        # in at least one organization (populateOwnerSelector decides).
-        self.createUI.destinationQuestion = FormComboBoxQuestion("Publish destination:")
-        self.createUI.destinationQuestion.questionBox.toolTip = (
-            "When you click 'Make Public', the repository is made public under this owner. "
-            "Choose your personal account or an organization you belong to.")
-        self.createUI.destinationQuestion.questionBox.setVisible(False)
-        self.createUI.destinationPersonalLogin = ""
-        goLiveLayout.addWidget(self.createUI.destinationQuestion.questionBox)
         goLiveButtonsLayout = qt.QHBoxLayout()
-        self.createUI.publishButton = qt.QPushButton("Make Public")
+        self.createUI.publishButton = qt.QPushButton("Publish")
         self.createUI.publishButton.enabled = False
         self.createUI.discardButton = qt.QPushButton("Discard")
         self.createUI.discardButton.enabled = False
@@ -740,9 +734,8 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.updateRefreshButtonLabels()
 
         # The currentChanged signal is connected after the tab index is restored above, so
-        # populate the destination dropdown here if the Create tab is the active one at launch.
+        # refresh the staged-repos list here if the Create tab is the active one at launch.
         if self.tabWidget.currentIndex == self.createTabIndex:
-            self.populateOwnerSelector()
             self.refreshStagedReposList()
 
     def cleanup(self) -> None:
@@ -775,8 +768,6 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         qt.QSettings().setValue("MorphoDepot/tabIndex", index)
         self.updateRefreshButtonLabels()
         if index == self.createTabIndex:
-            if not self.ownerSelectorPopulated:
-                self.populateOwnerSelector()
             self._refreshAutoAssignAvailability()
             self._refreshArchivalAvailability()
             self.refreshStagedReposList()
@@ -945,7 +936,6 @@ class MorphoDepotTest(ScriptedLoadableModuleTest):
         form.questions["modality"].optionButtons["Micro CT (or synchrotron)"].click()
         form.questions["contrastEnhancement"].optionButtons["No"].click()
         form.questions["imageContents"].optionButtons["Whole specimen"].click()
-        form.questions["redistributionAcknowledgement"].optionButtons["I have the right to allow redistribution of this data."].click()
         form.questions["license"].optionButtons["CC BY 4.0 (requires attribution, allows commercial usage)"].click()
         form.questions["githubRepoName"].answerText.text = repoName
         repoNameWithOwner = f"{logic.morphoDepotTestingOrg}/{repoName}"

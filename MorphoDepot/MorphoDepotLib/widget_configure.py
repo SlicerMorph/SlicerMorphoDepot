@@ -91,8 +91,7 @@ class ConfigureTabMixin:
             self.configureUI.userEmailStatusLabel.visible = True
 
     def onAutoAssignHelp(self):
-        """Explain the auto-assign option in a popup.  Kept as a popup for now; the
-        'Open Documentation' button is where a proper docs page will be linked later."""
+        """Explain the auto-assign option in a popup.  The explanation is kept in-module."""
         msgBox = qt.QMessageBox()
         msgBox.setWindowTitle("Auto-assign new issues to their creators")
         msgBox.setIcon(qt.QMessageBox.Information)
@@ -105,12 +104,8 @@ class ConfigureTabMixin:
             "them — the person who reports or requests something is already the assignee.\n\n"
             "This requires your GitHub login to have the 'workflow' scope. The option is left "
             "disabled until that scope is present.")
-        openDocsButton = msgBox.addButton("Open Documentation", qt.QMessageBox.ActionRole)
         msgBox.addButton(qt.QMessageBox.Ok)
         msgBox.exec_()
-        if msgBox.clickedButton() == openDocsButton:
-            qt.QDesktopServices.openUrl(qt.QUrl(
-                "https://github.com/SlicerMorph/SlicerMorphoDepot?tab=readme-ov-file#morphodepot"))
 
     def onUserNameChanged(self, userName):
         if userName:

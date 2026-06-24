@@ -412,7 +412,7 @@ class ReleaseTabMixin:
             if not self._curateContributorsForRelease(nameWithOwner):
                 return
 
-        prompt = self.buildReleaseConfirmation(plan, baselineNode, colorTableNode)
+        prompt = self.buildReleaseConfirmation(plan, baselineNode, colorTableNode, nameWithOwner)
         if not (self.testingMode or slicer.util.confirmOkCancelDisplay(prompt, windowTitle=f"Make release {newTag}")):
             return
 
@@ -588,30 +588,26 @@ class ReleaseTabMixin:
             MDC.ensure_person(data, github=login, github_id=author.get("id"), source="non-member")
             MDC.add_contribution(data, issue=int(match.group(1)), by=login, release=stampRelease)
 
-    def buildReleaseConfirmation(self, plan, baselineNode, colorTableNode):
-        """Compose the OK/Cancel summary describing every action that will run during release."""
+    def buildReleaseConfirmation(self, plan, baselineNode, colorTableNode, nameWithOwner):
+        """Compose the OK/Cancel summary describing every action that will run during release.
+
+        Releases are archival/org-only (the Release tab lists only org repos), so this always
+        describes the reviewed flow: the release commit goes to a release-candidate branch and
+        the tag + DOI are cut by the App on approval -- main is untouched until then."""
+        tag = plan['newTag']
         lines = []
-        lines.append(f"Make release {plan['newTag']} for the loaded repository.")
+        lines.append(f"Make release {tag} for {nameWithOwner}.")
         lines.append("")
-        lines.append("If you click OK, the following will happen on main:")
-        lines.append(
-            f"• A pre-release-{plan['newTag']} archive branch will be created and pushed to GitHub, "
-            f"capturing the pre-release state of main (including all per-issue segmentations) "
-            f"so it stays browsable on the remote."
-        )
-        lines.append(f"• The selected segmentation '{baselineNode.GetName()}' will be saved as baseline.seg.nrrd (replacing any existing one).")
-        lines.append(f"• The selected color table '{colorTableNode.GetName()}' will be saved (replacing any existing one).")
+        lines.append("This release will package:")
+        lines.append(f"• Baseline segmentation '{baselineNode.GetName()}' → saved as baseline.seg.nrrd (replaces the current one).")
+        lines.append(f"• Color table '{colorTableNode.GetName()}' → replaces the current one.")
+        lines.append(f"• README.md → regenerated for {tag}.")
         if plan['archivedReadme']:
             lines.append(
-                f"• README.md will be moved to {plan['archivedReadme']} and a new README.md will be generated for {plan['newTag']}."
+                f"  ⚠ The new README.md is rebuilt from MorphoDepotAccession.json. Your current "
+                f"README.md is preserved as {plan['archivedReadme']}, but manual edits in it are NOT "
+                f"carried into the new one — copy anything you want to keep after the release."
             )
-            lines.append(
-                f"  ⚠ The new README.md is regenerated from MorphoDepotAccession.json — any manual edits in the current README.md "
-                f"will be preserved in {plan['archivedReadme']} but NOT carried into the new README.md. "
-                f"After the release, copy any sections you want to keep into the new README.md by hand."
-            )
-        else:
-            lines.append(f"• A new README.md will be generated for {plan['newTag']}.")
         if plan['newScreenshotNames']:
             lines.append(
                 f"• {len(plan['newScreenshotNames'])} new screenshot(s) will be added: "
@@ -621,16 +617,23 @@ class ReleaseTabMixin:
             lines.append("• No new screenshots will be added.")
         if plan['issueSegFiles']:
             lines.append(
-                f"• {len(plan['issueSegFiles'])} per-issue segmentation file(s) will be removed from the working tree "
-                f"(preserved in the pre-release-{plan['newTag']} branch and in git history): {', '.join(plan['issueSegFiles'])}."
+                f"• {len(plan['issueSegFiles'])} per-issue segmentation file(s) will be removed from "
+                f"the working tree (kept in git history): {', '.join(plan['issueSegFiles'])}."
             )
+        lines.append("")
+        # Release tab only lists org/archival repos (administratedRepoList); the short-term test path
+        # skips this dialog via testingMode, so the release described here is always the reviewed one.
+        lines.append("This is an archival repository, so the release is reviewed before it goes public:")
+        lines.append(f"  1. The release commit is pushed to a release-candidate-{tag} branch — main is left untouched.")
+        lines.append("  2. A review request is emailed to the MorphoDepot reviewers.")
         lines.append(
-            f"• These changes will be committed and pushed to origin/main, then the {plan['newTag']} "
-            f"release tag will be created at the same commit."
+            f"  3. On approval the release is cut automatically: main is archived as pre-release-{tag}, "
+            f"updated to the candidate, the {tag} tag is created, and a DOI is minted for the release."
         )
+        lines.append("  4. If changes are requested, you'll get an email; nothing is published until you re-submit and it's approved.")
         lines.append("")
         lines.append("No data is lost: prior versions of every changed file remain in git history, and clicking Cancel makes no changes at all.")
-        lines.append("If anything fails partway, you will be offered the chance to reset the local repo to its pre-release state or to keep the partial changes for manual inspection.")
+        lines.append("If anything fails partway, you will be offered the chance to reset the local repository to its pre-release state or to keep the partial changes for inspection.")
         return "\n".join(lines)
 
     def handleReleaseFailure(self, error):
