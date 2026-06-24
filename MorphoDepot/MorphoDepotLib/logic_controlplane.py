@@ -82,3 +82,15 @@ class ControlPlaneMixin:
                 detail = r.text
             raise RuntimeError(f"Control plane '{path}' failed ({r.status_code}): {detail}")
         return r.json()
+
+    def reviewStatus(self, repoNames):
+        """The caller's own per-repo review state {name: 'approved'|'pending'|'none'} from the control
+        plane, used to label the unpublished list.  Best-effort -> {} on any error so the list still
+        renders (e.g. a non-member, or the App being briefly unreachable)."""
+        if not repoNames:
+            return {}
+        try:
+            return self.controlPlaneRequest("repos/review-status", {"repos": list(repoNames)}) or {}
+        except Exception as e:
+            logging.warning(f"Could not fetch review status: {e}")
+            return {}
