@@ -1172,8 +1172,8 @@ class CreateTabMixin:
         # When creating under the org, make the destination unmistakable at the top.
         if useOrg:
             repoName = accessionData['githubRepoName'][1].split("/")[-1]
-            # TODO: confirm the published guidelines URL (archival vs. short-term).
-            archivalDocURL = "https://morphodepot.org/docs/repository-types"
+            archivalDocURL = ("https://github.com/MorphoDepot/docs/blob/main/"
+                              "MorphoDepot-archival-guidelines.md#two-kinds-of-dataset")
             headerLabel = qt.QLabel(
                 f"<b>This repository will be created in the MorphoDepot organization, as "
                 f"<code>{self.logic.morphoDepotOrg}/{repoName}</code>.</b><br>"
