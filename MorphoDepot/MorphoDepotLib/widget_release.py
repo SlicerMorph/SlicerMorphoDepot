@@ -618,10 +618,11 @@ class ReleaseTabMixin:
         if plan['issueSegFiles']:
             lines.append(
                 f"• {len(plan['issueSegFiles'])} per-issue segmentation file(s) will be removed from "
-                f"the working tree (kept in git history and in the pre-release-{tag} archive): "
-                f"{', '.join(plan['issueSegFiles'])}."
+                f"the working tree (kept in git history): {', '.join(plan['issueSegFiles'])}."
             )
         lines.append("")
+        # Release tab only lists org/archival repos (administratedRepoList); the short-term test path
+        # skips this dialog via testingMode, so the release described here is always the reviewed one.
         lines.append("This is an archival repository, so the release is reviewed before it goes public:")
         lines.append(f"  1. The release commit is pushed to a release-candidate-{tag} branch — main is left untouched.")
         lines.append("  2. A review request is emailed to the MorphoDepot reviewers.")
