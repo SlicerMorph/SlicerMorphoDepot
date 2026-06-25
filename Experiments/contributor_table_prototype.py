@@ -1,6 +1,6 @@
 """MorphoDepot — contributor data entry via Slicer table nodes (PROTOTYPE / NON-PRODUCTION).
 
-NOT production code. The shipped implementation lives in `MorphoDepot/MorphoDepotContributors.py`;
+NOT production code. The shipped implementation lives in `MorphoDepot/MorphoDepotLib/contributors.py`;
 this file is a kept exploration only. The hardcoded `REPO` below is a throwaway example.
 
 Investigates using Slicer's native table functionality (vtkMRMLTableNode + qMRMLTableView,

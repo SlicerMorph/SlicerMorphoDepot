@@ -800,7 +800,7 @@ class CreateTabMixin:
         re-types info we already have (every archival creator is a member).  Org owners can read the
         owners-only onboarding-records repo; for others this 404s and we fall back to the GitHub
         profile name.  The App authoritatively re-enriches every member at mint."""
-        import MorphoDepotContributors as MDC
+        import MorphoDepotLib.contributors as MDC
         github = person.get("github")
         if not github or person.get("name"):
             return
@@ -915,7 +915,7 @@ class CreateTabMixin:
         the curator has write).  Returns False to abort the publish.  Loads any existing
         CONTRIBUTORS.json so names are never re-entered (org-design Sec.9.6/9.7)."""
         import base64
-        import MorphoDepotContributors as MDC
+        import MorphoDepotLib.contributors as MDC
         text, existingSha = self._readRepoFileViaApi(nameWithOwner, "CONTRIBUTORS.json")
         try:
             data = json.loads(text) if text else MDC.new_record(nameWithOwner)
