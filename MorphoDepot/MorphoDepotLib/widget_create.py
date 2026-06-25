@@ -577,6 +577,27 @@ class CreateTabMixin:
                 if colorTable.GetTerminologyAsString(colorIndex) == "~^^~^^~^^~~^^~^^~":
                     slicer.util.errorDisplay(f"Selected Color table is missing terminology for index {colorIndex}, {colorTable.GetColorName(colorIndex)}", windowTitle="Missing Terminology")
                     return None
+            # Advisory GBIF taxon check for archival biological specimens.  Unlike the color-table
+            # rules above this NEVER rejects: there are legitimate reasons a valid name is absent
+            # from GBIF (recent reclassification, a newly described species, indexing lag), so it
+            # only flags the discrepancy and lets the user proceed -- a reviewer follows up.  Skipped
+            # in testing mode and silently passes if GBIF is unreachable (see _gbifTaxonStatus).
+            if not self.testingMode and accessionData.get("subjectType", ["", ""])[1] == "Biological specimen":
+                slicer.util.showStatusMessage("Checking taxon name in GBIF...")
+                taxonIssue = self._gbifTaxonStatus(accessionData.get("species", ["", ""])[1])
+                slicer.util.showStatusMessage("")
+                if taxonIssue and not slicer.util.confirmOkCancelDisplay(
+                        taxonIssue + "\n\n"
+                        "This is not necessarily a problem: a recent name change, a newly described "
+                        "species, or a name GBIF has not yet indexed can all cause it. It can also be "
+                        "a typo or an outdated name.\n\n"
+                        "Please double-check the name and, if it needs fixing, use the 'Search taxon "
+                        "in GBIF' button to look it up and insert the exact GBIF spelling.\n\n"
+                        "You can continue staging now regardless. Since this is an archival "
+                        "repository, a reviewer may follow up about this taxon during review.\n\n"
+                        "Click OK to continue staging, or Cancel to go back and edit the species.",
+                        windowTitle="Taxon not verified in GBIF"):
+                    return None
         else:
             validTerminology = True
             for colorIndex in range(1, colorTable.GetNumberOfColors()):

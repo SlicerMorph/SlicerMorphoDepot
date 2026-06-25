@@ -121,21 +121,52 @@ class FormComboBoxQuestion(FormBaseQuestion):
 class FormSpeciesQuestion(FormTextQuestion):
     def __init__(self, question, validator):
         super().__init__(question, validator)
-        self.checkSpeciesButton = qt.QPushButton("Check species")
-        self.checkSpeciesButton.connect("clicked()", self.onCheckSpecies)
-        self.questionLayout.addWidget(self.checkSpeciesButton)
-        self.searchButton = qt.QPushButton()
+        # Browse the GBIF backbone taxonomy and pick a name; clicking a result fills the field
+        # and shows its lineage in speciesInfo below.
+        self.searchButton = qt.QPushButton("Search taxon in GBIF")
         self.searchButton.setIcon(qt.QIcon(qt.QPixmap(":/Icons/Search.png")))
+        self.searchButton.setToolTip("Browse the GBIF backbone taxonomy and pick a species name to fill the field.")
         self.searchButton.connect("clicked()", self.onSearchSpecies)
         self.questionLayout.addWidget(self.searchButton)
         self.speciesInfo = qt.QLabel()
         self.questionLayout.addWidget(self.speciesInfo)
         self.searchDialog = None
 
+    @staticmethod
+    def _normalizeGbifResult(result):
+        """Flatten a GBIF name match into the flat keys this form displays.
+
+        The search dialog uses name_suggest(), which returns a *flat* dict with
+        matchType/rank/canonicalName/kingdom/... at the top level.  GBIF's newer *nested*
+        match format ({'usage': {...}, 'classification': [...], 'diagnostics': {...}}) is
+        also accepted so the lineage display is robust to pygbif version differences."""
+        if not isinstance(result, dict):
+            return {}
+        # The new nested format always carries one of these keys; the flat format never does.
+        isNested = any(key in result for key in ("diagnostics", "usage", "classification"))
+        if not isNested:
+            return result
+        flat = {}
+        flat["matchType"] = (result.get("diagnostics") or {}).get("matchType", "NONE")
+        usage = result.get("usage") or {}
+        flat["canonicalName"] = usage.get("canonicalName") or usage.get("name")
+        flat["rank"] = usage.get("rank")
+        for entry in result.get("classification") or []:
+            rank = (entry.get("rank") or "").lower()
+            if rank:
+                flat[rank] = entry.get("name")  # kingdom, phylum, class, order, family, genus, species
+        # Whether GBIF's classification array carries the SPECIES entry varies across responses;
+        # if the loop above didn't fill the species row, fall back to the matched usage name so
+        # it is never left blank.
+        if not flat.get("species") and (flat.get("rank") or "").upper() == "SPECIES":
+            flat["species"] = flat["canonicalName"]
+        return flat
+
     def _setSpeciesInfoLabel(self, result):
+        result = self._normalizeGbifResult(result)
         requiredKeys = ['matchType', 'rank', 'canonicalName', 'kingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species']
         for key in requiredKeys:
-            if key not in result:
+            if key not in result or result[key] is None:
                 result[key] = "missing"
         if result['matchType'] == "NONE":
             labelText = "No match"
@@ -184,11 +215,6 @@ class FormSpeciesQuestion(FormTextQuestion):
         result = item.data(qt.Qt.UserRole)
         self.answerText.text = result['canonicalName']
         self.searchDialog.hide()
-        self._setSpeciesInfoLabel(result)
-
-    def onCheckSpecies(self):
-        import pygbif
-        result = pygbif.species.name_backbone(self.answerText.text)
         self._setSpeciesInfoLabel(result)
 
     def answer(self):

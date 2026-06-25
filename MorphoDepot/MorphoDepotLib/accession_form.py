@@ -67,7 +67,7 @@ class MorphoDepotAccessionForm():
         "species" : (
             "What is your specimen's species?",
             "",
-            "Enter a valid genus and species for your specimen and use the 'Check species' button to confirm.  If unsure, use the GBIF web page to search"
+            "Enter a valid genus and species for your specimen.  If unsure, use the 'Search taxon in GBIF' button to look it up and pick the correct name."
         ),
         "biologicalSex" : (
             "What is your specimen's sex?",
@@ -141,6 +141,11 @@ class MorphoDepotAccessionForm():
             self.scrollArea = qt.QScrollArea()
             self.scrollArea.setWidget(self.form)
             self.scrollArea.setWidgetResizable(True)
+            # A QScrollArea reports a near-zero minimum height, so when this widget is itself
+            # nested inside Slicer's (already scrolling) module panel, the surrounding layout
+            # happily shrinks it to a sliver and the form never expands.  Force a usable
+            # minimum height so the box always shows several rows and scrolls internally.
+            self.scrollArea.setMinimumHeight(400)
             self.topWidget = self.scrollArea
         else:
             self.topWidget = self.form
