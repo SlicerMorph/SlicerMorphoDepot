@@ -155,6 +155,10 @@ class FormSpeciesQuestion(FormTextQuestion):
             rank = (entry.get("rank") or "").lower()
             if rank:
                 flat[rank] = entry.get("name")  # kingdom, phylum, class, order, family, genus, species
+        # GBIF's classification normally includes the species entry, but if a response omits it,
+        # fall back to the matched usage name so the species row is never left blank.
+        if not flat.get("species") and (flat.get("rank") or "").upper() == "SPECIES":
+            flat["species"] = flat["canonicalName"]
         return flat
 
     def _setSpeciesInfoLabel(self, result):

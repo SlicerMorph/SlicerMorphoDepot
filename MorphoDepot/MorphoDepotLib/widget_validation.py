@@ -30,7 +30,16 @@ class ValidationMixin:
             return None
         try:
             import pygbif
-            result = pygbif.species.name_backbone(species)
+            import socket
+            # name_backbone() runs synchronously on the Qt UI thread and pygbif uses requests,
+            # which has no default timeout -- so a slow/hung GBIF server would freeze Slicer.
+            # Cap the wait with a temporary socket timeout (restored in finally).
+            previousTimeout = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(8)
+            try:
+                result = pygbif.species.name_backbone(species)
+            finally:
+                socket.setdefaulttimeout(previousTimeout)
         except Exception as e:
             logging.warning(f"GBIF taxon check skipped for '{species}': {e}")
             return None
@@ -43,12 +52,14 @@ class ValidationMixin:
         canonical = usage.get("canonicalName") or usage.get("name") or result.get("canonicalName") or ""
         rank = usage.get("rank") or result.get("rank") or ""
         isSynonym = bool(result.get("synonym"))
-        acceptedName = accepted.get("canonicalName") or accepted.get("name") or canonical
+        # Only the real accepted name (never the synonym itself) -- so we don't emit the
+        # self-referential "X is a synonym of X" when GBIF omits acceptedUsage.
+        acceptedName = accepted.get("canonicalName") or accepted.get("name") or ""
         if matchType == "NONE":
             return f"'{species}' was not found in the GBIF backbone taxonomy."
         if rank and rank != "SPECIES":
             return f"GBIF could match '{species}' only to {rank.lower()} '{canonical}', not to a species."
-        if isSynonym and acceptedName:
+        if isSynonym and acceptedName and acceptedName.strip().lower() != species.lower():
             return f"GBIF lists '{species}' as a synonym of the accepted name '{acceptedName}'."
         if canonical and canonical.strip().lower() != species.lower():
             return f"GBIF has no exact match for '{species}'. Its closest accepted name is '{canonical}'."

@@ -583,7 +583,9 @@ class CreateTabMixin:
             # only flags the discrepancy and lets the user proceed -- a reviewer follows up.  Skipped
             # in testing mode and silently passes if GBIF is unreachable (see _gbifTaxonStatus).
             if not self.testingMode and accessionData.get("subjectType", ["", ""])[1] == "Biological specimen":
+                slicer.util.showStatusMessage("Checking taxon name in GBIF...")
                 taxonIssue = self._gbifTaxonStatus(accessionData.get("species", ["", ""])[1])
+                slicer.util.showStatusMessage("")
                 if taxonIssue and not slicer.util.confirmOkCancelDisplay(
                         taxonIssue + "\n\n"
                         "This is not necessarily a problem: a recent name change, a newly described "
