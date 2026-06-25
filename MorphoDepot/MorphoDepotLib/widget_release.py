@@ -500,7 +500,7 @@ class ReleaseTabMixin:
         Blocks only when a cited author has no real name; contributors with no name are credited by
         handle. See org-design Sec.9.6 / 9.7.
         """
-        import MorphoDepotContributors as MDC
+        import MorphoDepotLib.contributors as MDC
         repoDir = self.logic.localRepo.working_dir
         contribPath = os.path.join(repoDir, "CONTRIBUTORS.json")
         try:
@@ -567,7 +567,7 @@ class ReleaseTabMixin:
         to this release.  Older PRs (first seen now because the gather never ran before) are recorded
         with `release=None` rather than being mis-attributed to the current tag."""
         import re
-        import MorphoDepotContributors as MDC
+        import MorphoDepotLib.contributors as MDC
         issueBranch = re.compile(r"^issue-(\d+)$")
         releases = self.logic.ghJSON(
             ["release", "list", "--repo", nameWithOwner, "--json", "publishedAt"]) or []

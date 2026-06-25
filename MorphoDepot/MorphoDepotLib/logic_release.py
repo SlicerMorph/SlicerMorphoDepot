@@ -190,7 +190,7 @@ class ReleaseMixin:
         # Contributors section, generated from CONTRIBUTORS.json (written just before this during the
         # release; org-design Sec.9.6). The DOI block is added separately by the App at mint time.
         try:
-            import MorphoDepotContributors as MDC
+            import MorphoDepotLib.contributors as MDC
             contribPath = os.path.join(repoDir, "CONTRIBUTORS.json")
             if os.path.exists(contribPath):
                 creditMarkdown = MDC.render_markdown(MDC.load(contribPath))

@@ -4,11 +4,13 @@ set(MODULE_NAME MorphoDepot)
 #-----------------------------------------------------------------------------
 set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}.py
-  ${MODULE_NAME}Contributors.py
   # MorphoDepotLib sub-package: MorphoDepot.py imports every one of these at load time, so they
-  # must be packaged/installed alongside the main script or the module fails to import.
+  # must be packaged/installed alongside the main script or the module fails to import.  Helper
+  # modules belong HERE (in the sub-package), never at the top level next to MorphoDepot.py —
+  # Slicer's factory scans top-level scripts and would register a bare helper as a broken module.
   ${MODULE_NAME}Lib/__init__.py
   ${MODULE_NAME}Lib/accession_form.py
+  ${MODULE_NAME}Lib/contributors.py
   ${MODULE_NAME}Lib/forms.py
   ${MODULE_NAME}Lib/logic_accession.py
   ${MODULE_NAME}Lib/logic_contribute.py
