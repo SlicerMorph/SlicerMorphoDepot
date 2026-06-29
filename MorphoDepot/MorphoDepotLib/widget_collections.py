@@ -53,7 +53,6 @@ class CollectionsTabMixin:
         ui.membersList.setToolTip("Member repositories in this collection.")
         ui.membersList.setSelectionMode(qt.QAbstractItemView.ExtendedSelection)
         createLayout.addWidget(ui.membersList)
-        self._fitCollectionList(ui.membersList)
 
         ui.removeMemberButton = qt.QPushButton("Remove selected")
         createLayout.addWidget(ui.removeMemberButton)
@@ -78,7 +77,6 @@ class CollectionsTabMixin:
         ui.existingList = qt.QListWidget()
         ui.existingList.setToolTip("Existing collections (read-only). Click Refresh to load.")
         existingLayout.addWidget(ui.existingList)
-        self._fitCollectionList(ui.existingList)
 
         # Display-text -> nameWithOwner map for the corpus combo.
         self._collectionCorpus = {}
@@ -90,14 +88,6 @@ class CollectionsTabMixin:
         ui.createButton.connect("clicked()", self.onCreateCollection)
         ui.titleEdit.connect("textChanged(QString)", lambda _t: self._updateCollectionCreateEnabled())
         ui.membersList.connect("itemSelectionChanged()", lambda: None)
-
-    def _fitCollectionList(self, listWidget, maxRows=10):
-        """Size a list to its contents, from 1 row (empty) up to ``maxRows`` — so an empty or
-        short list never leaves a large blank box.  Beyond ``maxRows`` a scrollbar appears."""
-        rowH = qt.QFontMetrics(listWidget.font).lineSpacing() + 4
-        rows = min(max(listWidget.count, 1), maxRows)
-        listWidget.setFixedHeight(rows * rowH + 8)
-        listWidget.setVerticalScrollBarPolicy(qt.Qt.ScrollBarAsNeeded)
 
     # --- Handlers ---
 
@@ -130,7 +120,6 @@ class CollectionsTabMixin:
                 f"{c['title']}  ({len(c.get('memberRefs', []))} members){curator}  [{c['nameWithOwner']}]")
         if not collections:
             ui.existingList.addItem("No collections yet.")
-        self._fitCollectionList(ui.existingList)
 
         ui.createStatus.text = f"Loaded {len(corpus)} repositories, {len(collections)} collections."
 
@@ -153,14 +142,12 @@ class CollectionsTabMixin:
         ui.membersList.addItem(nwo)
         ui.repoCombo.setCurrentText("")
         ui.createStatus.text = ""
-        self._fitCollectionList(ui.membersList)
         self._updateCollectionCreateEnabled()
 
     def onCollectionRemoveMember(self):
         ui = self.collectionsUI
         for item in ui.membersList.selectedItems():
             ui.membersList.takeItem(ui.membersList.row(item))
-        self._fitCollectionList(ui.membersList)
         self._updateCollectionCreateEnabled()
 
     def _updateCollectionCreateEnabled(self):
@@ -195,6 +182,5 @@ class CollectionsTabMixin:
         ui.titleEdit.text = ""
         ui.descEdit.text = ""
         ui.membersList.clear()
-        self._fitCollectionList(ui.membersList)
         self._updateCollectionCreateEnabled()
         self.onCollectionsRefresh()
