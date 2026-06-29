@@ -67,17 +67,8 @@ class CollectionsTabMixin:
         # --- Existing Collections ---
         existingLayout = ui.existingCollapsibleButton.layout()
         ui.existingList = qt.QListWidget()
-        ui.existingList.setToolTip("Published collections. Double-click to open. Click Refresh to load.")
+        ui.existingList.setToolTip("Existing collections (read-only). Click Refresh to load.")
         existingLayout.addWidget(ui.existingList)
-
-        ui.draftsLabel = qt.QLabel("Your unpublished drafts:")
-        existingLayout.addWidget(ui.draftsLabel)
-        ui.draftsList = qt.QListWidget()
-        ui.draftsList.setToolTip("Private collections you created but have not published yet. "
-                                 "Double-click to open on GitHub; select one and Publish to make it public.")
-        existingLayout.addWidget(ui.draftsList)
-        ui.publishButton = qt.QPushButton("Publish selected draft")
-        existingLayout.addWidget(ui.publishButton)
 
         # Display-text -> nameWithOwner map for the corpus combo.
         self._collectionCorpus = {}
@@ -89,9 +80,6 @@ class CollectionsTabMixin:
         ui.createButton.connect("clicked()", self.onCreateCollection)
         ui.existingList.connect("itemDoubleClicked(QListWidgetItem*)",
                                 self.onExistingCollectionDoubleClicked)
-        ui.draftsList.connect("itemDoubleClicked(QListWidgetItem*)",
-                              self.onExistingCollectionDoubleClicked)
-        ui.publishButton.connect("clicked()", self.onPublishDraft)
 
     # --- Handlers ---
 
@@ -128,24 +116,7 @@ class CollectionsTabMixin:
         if not collections:
             ui.existingList.addItem("No collections yet.")
 
-        # The member's own unpublished (private) drafts, listed via gh (RepoClerk only sees public).
-        try:
-            drafts = self.logic.myDraftCollections()
-        except Exception as e:
-            drafts = []
-            logging.warning(f"Could not list draft collections: {e}")
-        ui.draftsList.clear()
-        for d in drafts:
-            item = qt.QListWidgetItem(f"{d['name']}  [{d['nameWithOwner']}]")
-            item.setData(qt.Qt.UserRole, d["nameWithOwner"])
-            item.setToolTip(f"Double-click to open https://github.com/{d['nameWithOwner']}")
-            ui.draftsList.addItem(item)
-        if not drafts:
-            ui.draftsList.addItem("No unpublished drafts.")
-        ui.publishButton.enabled = bool(drafts)
-
-        ui.createStatus.text = (
-            f"Loaded {len(corpus)} repositories, {len(collections)} published, {len(drafts)} draft(s).")
+        ui.createStatus.text = f"Loaded {len(corpus)} repositories, {len(collections)} collections."
 
     def _resolveComboToNwo(self, text):
         text = (text or "").strip()
@@ -173,30 +144,6 @@ class CollectionsTabMixin:
         if nwo:
             qt.QDesktopServices.openUrl(qt.QUrl(f"https://github.com/{nwo}"))
 
-    def onPublishDraft(self):
-        """Publish the selected draft collection (flip it to public)."""
-        ui = self.collectionsUI
-        items = ui.draftsList.selectedItems()
-        nwo = items[0].data(qt.Qt.UserRole) if items else None
-        if not nwo:
-            ui.createStatus.text = "Select one of your drafts to publish."
-            return
-        ui.publishButton.enabled = False
-        ui.createStatus.text = f"Publishing {nwo}..."
-        qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
-        slicer.app.processEvents()
-        try:
-            self.logic.publishCollection(nwo)
-        except Exception as e:
-            ui.createStatus.text = f"Failed to publish {nwo}: {e}"
-            logging.error(f"publishCollection failed: {e}")
-            ui.publishButton.enabled = True
-            return
-        finally:
-            qt.QApplication.restoreOverrideCursor()
-        ui.createStatus.text = f"Published {nwo}. It will appear on the dashboard shortly."
-        self.onCollectionsRefresh()
-
     def onCollectionRemoveMember(self):
         ui = self.collectionsUI
         for item in ui.membersList.selectedItems():
@@ -223,8 +170,7 @@ class CollectionsTabMixin:
             qt.QApplication.restoreOverrideCursor()
 
         ui.createStatus.text = (
-            f"Created {nwo} as a private draft. Review it, then use 'Publish selected draft' "
-            "above to make it public.")
+            f"Created {nwo} (public). It will appear on the RepoClerk dashboard shortly.")
         ui.titleEdit.text = ""
         ui.descEdit.text = ""
         ui.membersList.clear()

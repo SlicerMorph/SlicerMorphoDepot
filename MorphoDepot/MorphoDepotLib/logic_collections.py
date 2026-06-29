@@ -137,13 +137,14 @@ class CollectionsMixin:
         self.gh(args)
 
     def createCollection(self, title, description, memberRefs):
-        """Create an in-org collection repo as a **private draft**: private repo + canonical
-        README + CURATOR + the ``morphodepot``/``md-collection`` topics.  ``memberRefs`` are URLs
+        """Create an in-org collection repo: public repo + canonical README + CURATOR + the
+        ``morphodepot``/``md-collection`` topics, then notify RepoClerk.  ``memberRefs`` are URLs
         or owner/repo strings; at least two must resolve.  Returns the nameWithOwner.
 
-        Mirrors the dataset staging model: the member assembles the collection privately, then
-        publishes it themselves via :meth:`publishCollection` (the org allows a member with
-        repo-admin to change visibility).  RepoClerk only renders it once it is published.
+        Created **public** so it is immediately visible to everyone (and to RepoClerk).  The org
+        permits members to create public repositories, so this works for ANY member, not just
+        owners — no owner publish step.  An org owner can still delete or unpublish a collection
+        after the fact.
         """
         title = (title or "").strip()
         if not title:
@@ -161,10 +162,10 @@ class CollectionsMixin:
         slug = self.uniqueCollectionSlug(title)
         nameWithOwner = f"{self.morphoDepotOrg}/{slug}"
 
-        self.progressMethod(f"Creating collection {nameWithOwner} (private draft)...")
+        self.progressMethod(f"Creating collection {nameWithOwner} (public)...")
         # --add-readme initializes a default branch, so the contents API below can write to it
         # (a brand-new empty repo has no branch and the PUT would 404 "branch not found").
-        self.gh(["repo", "create", nameWithOwner, "--private", "--disable-wiki",
+        self.gh(["repo", "create", nameWithOwner, "--public", "--disable-wiki",
                  "--add-readme", "--description", title])
 
         # Grant the creator's {login}-team Write (mirrors dataset creation; best-effort).
@@ -184,23 +185,9 @@ class CollectionsMixin:
         self.gh(["repo", "edit", nameWithOwner,
                  "--add-topic", DISCOVERY_TOPIC, "--add-topic", COLLECTION_TOPIC])
 
-        return nameWithOwner
-
-    def myDraftCollections(self):
-        """Unpublished (private) collection repos in the org that the user can see — i.e. their
-        own drafts (a regular member only sees the private repos they admin).  Returns a list of
-        {nameWithOwner, name}."""
-        repos = self.ghJSON(["repo", "list", self.morphoDepotOrg,
-                             "--topic", COLLECTION_TOPIC, "--visibility", "private",
-                             "--limit", "200", "--json", "nameWithOwner,name"]) or []
-        return [{"nameWithOwner": r["nameWithOwner"], "name": r.get("name", "")}
-                for r in repos if isinstance(r, dict) and r.get("nameWithOwner")]
-
-    def publishCollection(self, nameWithOwner):
-        """Publish a draft collection: flip it to public (a member with repo-admin may change
-        visibility — the org enables this for staging/review), then notify RepoClerk to render it."""
-        self.setRepoVisibility(nameWithOwner, public=True)
         try:
             self.notifyRepoClerk(nameWithOwner)
         except Exception as e:
             logging.warning(f"Could not notify RepoClerk for {nameWithOwner}: {e}")
+
+        return nameWithOwner
