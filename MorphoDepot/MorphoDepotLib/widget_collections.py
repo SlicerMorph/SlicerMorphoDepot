@@ -65,7 +65,6 @@ class CollectionsTabMixin:
         createLayout.addWidget(ui.makePublicCheck)
 
         ui.createButton = qt.QPushButton("Create Collection")
-        ui.createButton.enabled = False
         createLayout.addWidget(ui.createButton)
 
         ui.createStatus = qt.QLabel("")
@@ -86,8 +85,6 @@ class CollectionsTabMixin:
         ui.addMemberButton.connect("clicked()", self.onCollectionAddMember)
         ui.removeMemberButton.connect("clicked()", self.onCollectionRemoveMember)
         ui.createButton.connect("clicked()", self.onCreateCollection)
-        ui.titleEdit.connect("textChanged(QString)", lambda _t: self._updateCollectionCreateEnabled())
-        ui.membersList.connect("itemSelectionChanged()", lambda: None)
 
     # --- Handlers ---
 
@@ -142,17 +139,11 @@ class CollectionsTabMixin:
         ui.membersList.addItem(nwo)
         ui.repoCombo.setCurrentText("")
         ui.createStatus.text = ""
-        self._updateCollectionCreateEnabled()
 
     def onCollectionRemoveMember(self):
         ui = self.collectionsUI
         for item in ui.membersList.selectedItems():
             ui.membersList.takeItem(ui.membersList.row(item))
-        self._updateCollectionCreateEnabled()
-
-    def _updateCollectionCreateEnabled(self):
-        ui = self.collectionsUI
-        ui.createButton.enabled = bool(ui.titleEdit.text.strip()) and ui.membersList.count >= 2
 
     def onCreateCollection(self):
         ui = self.collectionsUI
@@ -170,7 +161,7 @@ class CollectionsTabMixin:
         except Exception as e:
             ui.createStatus.text = f"Failed to create collection: {e}"
             logging.error(f"createCollection failed: {e}")
-            self._updateCollectionCreateEnabled()
+            ui.createButton.enabled = True
             return
         finally:
             qt.QApplication.restoreOverrideCursor()
@@ -182,5 +173,5 @@ class CollectionsTabMixin:
         ui.titleEdit.text = ""
         ui.descEdit.text = ""
         ui.membersList.clear()
-        self._updateCollectionCreateEnabled()
+        ui.createButton.enabled = True
         self.onCollectionsRefresh()
