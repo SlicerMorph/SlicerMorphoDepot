@@ -11,6 +11,7 @@ posture.  Governance is deliberately simple: one ``CURATOR`` (the creator) for a
 else contributes via a standard fork-and-PR.
 """
 import base64
+import json
 import logging
 import re
 import unicodedata
@@ -102,6 +103,23 @@ class CollectionsMixin:
         if name.endswith(".git"):
             name = name[:-4]
         return f"{owner}/{name.rstrip('.,);:')}"
+
+    def isMorphoDepotRepo(self, nameWithOwner):
+        """True only if ``nameWithOwner`` is a MorphoDepot DATASET repo — it exists and carries the
+        ``morphodepot`` topic but NOT the ``md-collection`` topic (a collection is not itself a
+        valid member).  Checked live via gh (the repo's topics); False on any error or missing
+        topic, so a non-MorphoDepot URL or a typo is rejected."""
+        try:
+            out = self.gh(["api", f"repos/{nameWithOwner}/topics", "--jq", ".names"],
+                          quietErrors=True)
+        except RuntimeError:
+            return False
+        try:
+            names = json.loads(out) if out else []
+        except Exception:
+            names = []
+        names = names or []
+        return DISCOVERY_TOPIC in names and COLLECTION_TOPIC not in names
 
     # --- Creation ---
 

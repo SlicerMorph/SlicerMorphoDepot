@@ -134,6 +134,16 @@ class CollectionsTabMixin:
         if nwo in existing:
             ui.createStatus.text = f"{nwo} is already in the collection."
             return
+        # Corpus picks are already known MorphoDepot repos; a pasted URL/owner-name must be verified
+        # to actually be a MorphoDepot dataset repo (carries the 'morphodepot' topic) before adding.
+        if nwo not in self._collectionCorpus.values():
+            ui.createStatus.text = f"Checking {nwo}…"
+            slicer.app.processEvents()
+            if not self.logic.isMorphoDepotRepo(nwo):
+                ui.createStatus.text = (
+                    f"{nwo} is not a MorphoDepot repository (it must carry the 'morphodepot' "
+                    "topic). Only MorphoDepot dataset repositories can be added.")
+                return
         ui.membersList.addItem(nwo)
         ui.repoCombo.setCurrentText("")
         ui.createStatus.text = ""
