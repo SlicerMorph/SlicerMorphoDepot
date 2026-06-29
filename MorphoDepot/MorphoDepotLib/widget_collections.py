@@ -76,6 +76,10 @@ class CollectionsTabMixin:
         existingLayout = ui.existingCollapsibleButton.layout()
         ui.existingList = qt.QListWidget()
         ui.existingList.setToolTip("Existing collections (read-only). Click Refresh to load.")
+        # Show at most ~10 rows; a vertical scrollbar appears when there are more.
+        rowHeight = qt.QFontMetrics(ui.existingList.font).lineSpacing() + 4
+        ui.existingList.setMaximumHeight(rowHeight * 10 + 8)
+        ui.existingList.setVerticalScrollBarPolicy(qt.Qt.ScrollBarAsNeeded)
         existingLayout.addWidget(ui.existingList)
 
         # Display-text -> nameWithOwner map for the corpus combo.
