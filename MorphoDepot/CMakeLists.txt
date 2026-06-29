@@ -13,6 +13,7 @@ set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}Lib/contributors.py
   ${MODULE_NAME}Lib/forms.py
   ${MODULE_NAME}Lib/logic_accession.py
+  ${MODULE_NAME}Lib/logic_collections.py
   ${MODULE_NAME}Lib/logic_contribute.py
   ${MODULE_NAME}Lib/logic_controlplane.py
   ${MODULE_NAME}Lib/logic_deps.py
@@ -25,6 +26,7 @@ set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}Lib/screenshot_dialog.py
   ${MODULE_NAME}Lib/search_form.py
   ${MODULE_NAME}Lib/widget_annotate.py
+  ${MODULE_NAME}Lib/widget_collections.py
   ${MODULE_NAME}Lib/widget_configure.py
   ${MODULE_NAME}Lib/widget_create.py
   ${MODULE_NAME}Lib/widget_release.py
@@ -36,6 +38,7 @@ set(MODULE_PYTHON_SCRIPTS
 set(MODULE_PYTHON_RESOURCES
   Resources/Icons/${MODULE_NAME}.png
   Resources/UI/${MODULE_NAME}Annotate.ui
+  Resources/UI/${MODULE_NAME}Collections.ui
   Resources/UI/${MODULE_NAME}Create.ui
   Resources/UI/${MODULE_NAME}Configure.ui
   Resources/UI/${MODULE_NAME}Release.ui

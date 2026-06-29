@@ -51,12 +51,14 @@ from MorphoDepotLib.logic_contribute import ContributeMixin
 from MorphoDepotLib.logic_release import ReleaseMixin
 from MorphoDepotLib.logic_accession import AccessionMixin
 from MorphoDepotLib.logic_search import SearchMixin
+from MorphoDepotLib.logic_collections import CollectionsMixin
 from MorphoDepotLib.widget_create import CreateTabMixin
 from MorphoDepotLib.widget_configure import ConfigureTabMixin
 from MorphoDepotLib.widget_annotate import AnnotateTabMixin
 from MorphoDepotLib.widget_review import ReviewTabMixin
 from MorphoDepotLib.widget_release import ReleaseTabMixin
 from MorphoDepotLib.widget_search import SearchTabMixin
+from MorphoDepotLib.widget_collections import CollectionsTabMixin
 from MorphoDepotLib.widget_validation import ValidationMixin
 
 
@@ -150,7 +152,7 @@ class EnableModuleMixin:
         return True
 
 
-class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, EnableModuleMixin, ValidationMixin, CreateTabMixin, ConfigureTabMixin, AnnotateTabMixin, ReviewTabMixin, ReleaseTabMixin, SearchTabMixin):
+class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, EnableModuleMixin, ValidationMixin, CreateTabMixin, ConfigureTabMixin, AnnotateTabMixin, ReviewTabMixin, ReleaseTabMixin, SearchTabMixin, CollectionsTabMixin):
     """Uses ScriptedLoadableModuleWidget base class, available at:
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
     """
@@ -215,6 +217,12 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         uiWidget.setMRMLScene(slicer.mrmlScene)
         self.createTabIndex = self.tabWidget.addTab(uiWidget, "Create")
         self.createUI = slicer.util.childWidgetVariables(uiWidget)
+
+        uiWidget = slicer.util.loadUI(os.path.normpath(self.resourcePath("UI/MorphoDepotCollections.ui")))
+        uiWidget.setMRMLScene(slicer.mrmlScene)
+        self.tabWidget.addTab(uiWidget, "Collections")
+        self.collectionsUI = slicer.util.childWidgetVariables(uiWidget)
+        self.setupCollectionsTab()
 
         uiWidget = slicer.util.loadUI(os.path.normpath(self.resourcePath("UI/MorphoDepotRelease.ui")))
         uiWidget.setMRMLScene(slicer.mrmlScene)
@@ -772,7 +780,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             self._refreshArchivalAvailability()
             self.refreshStagedReposList()
 
-class MorphoDepotLogic(ScriptedLoadableModuleLogic, DepsMixin, GitHubMixin, ControlPlaneMixin, ObjectStoreMixin, RepoClerkMixin, RepoMixin, ContributeMixin, ReleaseMixin, AccessionMixin, SearchMixin):
+class MorphoDepotLogic(ScriptedLoadableModuleLogic, DepsMixin, GitHubMixin, ControlPlaneMixin, ObjectStoreMixin, RepoClerkMixin, RepoMixin, ContributeMixin, ReleaseMixin, AccessionMixin, SearchMixin, CollectionsMixin):
     """This class should implement all the actual
     computation done by your module.  The interface
     should be such that other python code can import
