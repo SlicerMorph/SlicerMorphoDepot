@@ -136,13 +136,15 @@ class CollectionsMixin:
             pass  # file does not exist yet -> plain create
         self.gh(args)
 
-    def createCollection(self, title, description, memberRefs, makePublic=False):
-        """Create an in-org collection repo: empty private repo + canonical README + CURATOR +
-        the ``morphodepot``/``md-collection`` topics, then notify RepoClerk.  ``memberRefs`` are
-        URLs or owner/repo strings; at least two must resolve.  Returns the nameWithOwner.
+    def createCollection(self, title, description, memberRefs):
+        """Create an in-org collection repo: public repo + canonical README + CURATOR + the
+        ``morphodepot``/``md-collection`` topics, then notify RepoClerk.  ``memberRefs`` are URLs
+        or owner/repo strings; at least two must resolve.  Returns the nameWithOwner.
 
-        Created **private**.  ``makePublic`` attempts to flip it public — which succeeds only for
-        an org owner; a regular member's collection stays private for an owner to publish.
+        Created **public** so it is immediately visible to everyone (and to RepoClerk).  The org
+        permits members to create public repositories, so this works for ANY member, not just
+        owners — no owner publish step.  An org owner can still delete or unpublish a collection
+        after the fact.
         """
         title = (title or "").strip()
         if not title:
@@ -160,10 +162,10 @@ class CollectionsMixin:
         slug = self.uniqueCollectionSlug(title)
         nameWithOwner = f"{self.morphoDepotOrg}/{slug}"
 
-        self.progressMethod(f"Creating collection {nameWithOwner} (private)...")
+        self.progressMethod(f"Creating collection {nameWithOwner} (public)...")
         # --add-readme initializes a default branch, so the contents API below can write to it
         # (a brand-new empty repo has no branch and the PUT would 404 "branch not found").
-        self.gh(["repo", "create", nameWithOwner, "--private", "--disable-wiki",
+        self.gh(["repo", "create", nameWithOwner, "--public", "--disable-wiki",
                  "--add-readme", "--description", title])
 
         # Grant the creator's {login}-team Write (mirrors dataset creation; best-effort).
@@ -182,13 +184,6 @@ class CollectionsMixin:
 
         self.gh(["repo", "edit", nameWithOwner,
                  "--add-topic", DISCOVERY_TOPIC, "--add-topic", COLLECTION_TOPIC])
-
-        if makePublic:
-            try:
-                self.setRepoVisibility(nameWithOwner, public=True)
-            except Exception as e:
-                logging.warning(
-                    f"Could not make {nameWithOwner} public (an org owner must publish it): {e}")
 
         try:
             self.notifyRepoClerk(nameWithOwner)

@@ -57,13 +57,6 @@ class CollectionsTabMixin:
         ui.removeMemberButton = qt.QPushButton("Remove selected")
         createLayout.addWidget(ui.removeMemberButton)
 
-        ui.makePublicCheck = qt.QCheckBox("Make public now (org owners only)")
-        ui.makePublicCheck.checked = True
-        ui.makePublicCheck.setToolTip(
-            "Org owners can publish immediately. For other members the collection is created "
-            "private and an owner publishes it.")
-        createLayout.addWidget(ui.makePublicCheck)
-
         ui.createButton = qt.QPushButton("Create Collection")
         createLayout.addWidget(ui.createButton)
 
@@ -161,14 +154,13 @@ class CollectionsTabMixin:
         title = ui.titleEdit.text.strip()
         description = ui.descEdit.text.strip()
         members = [ui.membersList.item(i).text() for i in range(ui.membersList.count)]
-        makePublic = ui.makePublicCheck.checked
 
         ui.createButton.enabled = False
         ui.createStatus.text = "Creating collection..."
         qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
         slicer.app.processEvents()
         try:
-            nwo = self.logic.createCollection(title, description, members, makePublic=makePublic)
+            nwo = self.logic.createCollection(title, description, members)
         except Exception as e:
             ui.createStatus.text = f"Failed to create collection: {e}"
             logging.error(f"createCollection failed: {e}")
@@ -177,10 +169,8 @@ class CollectionsTabMixin:
         finally:
             qt.QApplication.restoreOverrideCursor()
 
-        vis = "public" if makePublic else "private"
         ui.createStatus.text = (
-            f"Created {nwo} ({vis}). RepoClerk will render it shortly. "
-            "If it was created private, an org owner can publish it.")
+            f"Created {nwo} (public). It will appear on the RepoClerk dashboard shortly.")
         ui.titleEdit.text = ""
         ui.descEdit.text = ""
         ui.membersList.clear()
