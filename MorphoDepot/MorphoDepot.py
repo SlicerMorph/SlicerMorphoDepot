@@ -218,12 +218,6 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.createTabIndex = self.tabWidget.addTab(uiWidget, "Create")
         self.createUI = slicer.util.childWidgetVariables(uiWidget)
 
-        uiWidget = slicer.util.loadUI(os.path.normpath(self.resourcePath("UI/MorphoDepotCollections.ui")))
-        uiWidget.setMRMLScene(slicer.mrmlScene)
-        self.tabWidget.addTab(uiWidget, "Collections")
-        self.collectionsUI = slicer.util.childWidgetVariables(uiWidget)
-        self.setupCollectionsTab()
-
         uiWidget = slicer.util.loadUI(os.path.normpath(self.resourcePath("UI/MorphoDepotRelease.ui")))
         uiWidget.setMRMLScene(slicer.mrmlScene)
         if self.includeReleaseUI:
@@ -235,6 +229,13 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             self.tabWidget.addTab(self.adminTab, "Admin")
         self.adminTabIndex = self.tabWidget.indexOf(self.adminTab)
         self.adminUI = {} # for future use
+
+        # Collections tab — added last so it sits at the right-most position.
+        uiWidget = slicer.util.loadUI(os.path.normpath(self.resourcePath("UI/MorphoDepotCollections.ui")))
+        uiWidget.setMRMLScene(slicer.mrmlScene)
+        self.tabWidget.addTab(uiWidget, "Collections")
+        self.collectionsUI = slicer.util.childWidgetVariables(uiWidget)
+        self.setupCollectionsTab()
 
         # restore last tab index
         tabIndex = slicer.util.settingsValue("MorphoDepot/tabIndex", 0, converter=int)

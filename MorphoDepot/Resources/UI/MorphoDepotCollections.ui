@@ -19,16 +19,16 @@
     </widget>
    </item>
    <item>
-    <widget class="ctkCollapsibleButton" name="createCollapsibleButton">
+    <widget class="ctkCollapsibleButton" name="existingCollapsibleButton">
      <property name="text">
-      <string>Create a Collection</string>
+      <string>Existing Collections</string>
      </property>
-     <layout class="QVBoxLayout" name="createLayout">
+     <layout class="QVBoxLayout" name="existingLayout">
      </layout>
     </widget>
    </item>
    <item>
-    <widget class="ctkCollapsibleButton" name="existingCollapsibleButton">
+    <widget class="ctkCollapsibleButton" name="createCollapsibleButton">
      <property name="sizePolicy">
       <sizepolicy hsizetype="Minimum" vsizetype="Preferred">
        <horstretch>0</horstretch>
@@ -36,9 +36,9 @@
       </sizepolicy>
      </property>
      <property name="text">
-      <string>Existing Collections</string>
+      <string>Create a Collection</string>
      </property>
-     <layout class="QVBoxLayout" name="existingLayout">
+     <layout class="QVBoxLayout" name="createLayout">
      </layout>
     </widget>
    </item>
