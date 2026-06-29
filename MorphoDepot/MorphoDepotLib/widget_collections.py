@@ -85,6 +85,8 @@ class CollectionsTabMixin:
         ui.addMemberButton.connect("clicked()", self.onCollectionAddMember)
         ui.removeMemberButton.connect("clicked()", self.onCollectionRemoveMember)
         ui.createButton.connect("clicked()", self.onCreateCollection)
+        ui.existingList.connect("itemDoubleClicked(QListWidgetItem*)",
+                                self.onExistingCollectionDoubleClicked)
 
     # --- Handlers ---
 
@@ -113,8 +115,11 @@ class CollectionsTabMixin:
         ui.existingList.clear()
         for c in collections:
             curator = f" — curated by @{c['curator']}" if c.get("curator") else ""
-            ui.existingList.addItem(
+            item = qt.QListWidgetItem(
                 f"{c['title']}  ({len(c.get('memberRefs', []))} members){curator}  [{c['nameWithOwner']}]")
+            item.setData(qt.Qt.UserRole, c["nameWithOwner"])
+            item.setToolTip(f"Double-click to open https://github.com/{c['nameWithOwner']}")
+            ui.existingList.addItem(item)
         if not collections:
             ui.existingList.addItem("No collections yet.")
 
@@ -139,6 +144,12 @@ class CollectionsTabMixin:
         ui.membersList.addItem(nwo)
         ui.repoCombo.setCurrentText("")
         ui.createStatus.text = ""
+
+    def onExistingCollectionDoubleClicked(self, item):
+        """Open the collection's GitHub repository page in the browser."""
+        nwo = item.data(qt.Qt.UserRole)
+        if nwo:
+            qt.QDesktopServices.openUrl(qt.QUrl(f"https://github.com/{nwo}"))
 
     def onCollectionRemoveMember(self):
         ui = self.collectionsUI
