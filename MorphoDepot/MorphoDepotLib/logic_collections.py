@@ -11,6 +11,7 @@ posture.  Governance is deliberately simple: one ``CURATOR`` (the creator) for a
 else contributes via a standard fork-and-PR.
 """
 import base64
+import difflib
 import json
 import logging
 import re
@@ -19,6 +20,37 @@ import unicodedata
 COLLECTION_TOPIC = "md-collection"
 DISCOVERY_TOPIC = "morphodepot"
 SLUG_MAX_LEN = 40
+
+# Filler words ignored when fuzzily comparing collection titles for near-duplicates.
+_TITLE_STOPWORDS = {"the", "of", "a", "an", "and", "or", "for", "in", "on", "to", "with",
+                    "repo", "repos", "repository", "repositories"}
+
+
+def _normalize_title_tokens(title):
+    """Lowercase, strip punctuation/diacritics/stopwords and crudely de-pluralize a title into a
+    set of significant word tokens, so word order and trivial variations don't matter."""
+    text = unicodedata.normalize("NFKD", title or "").encode("ascii", "ignore").decode("ascii").lower()
+    tokens = set()
+    for w in re.findall(r"[a-z0-9]+", text):
+        if w in _TITLE_STOPWORDS:
+            continue
+        if len(w) > 3 and w.endswith("es"):
+            w = w[:-2]
+        elif len(w) > 3 and w.endswith("s"):
+            w = w[:-1]
+        tokens.add(w)
+    return tokens
+
+
+def _title_similarity(a, b):
+    """0..1 similarity between two titles — the max of token-set (Jaccard) and sequence-ratio
+    similarity over the normalized tokens, so reordered words and small edits both score high."""
+    ta, tb = _normalize_title_tokens(a), _normalize_title_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    jaccard = len(ta & tb) / len(ta | tb)
+    seq = difflib.SequenceMatcher(None, " ".join(sorted(ta)), " ".join(sorted(tb))).ratio()
+    return max(jaccard, seq)
 
 
 class CollectionsMixin:
@@ -47,6 +79,31 @@ class CollectionsMixin:
                     "memberRefs": block.get("memberRefs", []),
                 })
         out.sort(key=lambda c: (c["title"] or "").lower())
+        return out
+
+    def existingCollectionTitles(self):
+        """All collection repos in the org, live via gh, as [{nameWithOwner, title}].  Uses the
+        repo description (set to the title at creation) so the duplicate check is NOT subject to
+        RepoClerk journal lag — a just-created collection is seen immediately."""
+        repos = self.ghJSON(["repo", "list", self.morphoDepotOrg, "--topic", COLLECTION_TOPIC,
+                            "--limit", "500", "--json", "nameWithOwner,description"]) or []
+        out = []
+        for r in repos:
+            if isinstance(r, dict) and r.get("nameWithOwner"):
+                title = (r.get("description") or "").strip() or r["nameWithOwner"].split("/")[-1]
+                out.append({"nameWithOwner": r["nameWithOwner"], "title": title})
+        return out
+
+    def similarCollections(self, title, threshold=0.6):
+        """Existing collections whose title is fuzzily similar to ``title`` (token-set + sequence
+        similarity, order-independent, plurals/filler-words folded), most-similar first.  Catches
+        e.g. 'Random Collection' vs 'random collections' vs 'random repo collection'."""
+        out = []
+        for c in self.existingCollectionTitles():
+            sim = _title_similarity(title, c["title"])
+            if sim >= threshold:
+                out.append({**c, "similarity": round(sim, 2)})
+        out.sort(key=lambda c: c["similarity"], reverse=True)
         return out
 
     def datasetRepoCorpus(self):

@@ -165,6 +165,25 @@ class CollectionsTabMixin:
         description = ui.descEdit.text.strip()
         members = [ui.membersList.item(i).text() for i in range(ui.membersList.count)]
 
+        # Fuzzy duplicate-collection check — warn (don't block, since fuzzy can false-positive)
+        # and let the user decide. Catches near-duplicate titles, not just exact ones.
+        if title:
+            try:
+                similar = self.logic.similarCollections(title)
+            except Exception as e:
+                similar = []
+                logging.warning(f"Similar-collection check failed: {e}")
+            if similar:
+                listing = "\n".join(f"  • {c['title']}   ({c['nameWithOwner']})"
+                                    for c in similar[:5])
+                if not slicer.util.confirmYesNoDisplay(
+                        f"A similar collection already exists:\n\n{listing}\n\n"
+                        "Consider adding your repositories to it instead. "
+                        "Create a new collection anyway?",
+                        windowTitle="Possible duplicate collection"):
+                    ui.createStatus.text = "Cancelled — a similar collection already exists."
+                    return
+
         ui.createButton.enabled = False
         ui.createStatus.text = "Creating collection..."
         qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
