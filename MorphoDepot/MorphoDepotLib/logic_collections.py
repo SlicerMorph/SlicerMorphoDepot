@@ -1,9 +1,12 @@
 """MorphoDepotLogic CollectionsMixin — create and list curated "repo of repos" collections.
 
-A *collection* is a MorphoDepot org repository tagged ``md-collection`` whose README's first
-line is the collection title and whose body lists member dataset repositories.  RepoClerk parses
-that README and renders the collection as a gallery + screenshot slide deck.  See
-SlicerMorph/SlicerMorphoDepot#180 (this tab) and MorphoDepot/RepoClerk#411 (rendering).
+A *collection* is a MorphoDepot org repository tagged ``md-collection`` whose **description** holds
+the title (PR-proof repo metadata — only repo-admins can change it) and whose README lists the
+member dataset repositories.  RepoClerk reads the description for the title and parses the README
+for members, rendering a gallery + screenshot slide deck.  The repo name itself is an opaque
+``collection-<hash>`` — it carries no meaning, so it never needs to be a (lossy, collision-prone)
+truncation of a human title.  See SlicerMorph/SlicerMorphoDepot#180 (this tab) and
+MorphoDepot/RepoClerk#411 (rendering).
 
 The whole flow runs with the member's OWN ``gh`` (they create private in-org repos and are repo
 admin of their own creation) — no App/Administration privilege, consistent with the admin-free
@@ -15,11 +18,11 @@ import difflib
 import json
 import logging
 import re
+import secrets
 import unicodedata
 
 COLLECTION_TOPIC = "md-collection"
 DISCOVERY_TOPIC = "morphodepot"
-SLUG_MAX_LEN = 40
 
 # Filler words ignored when fuzzily comparing collection titles for near-duplicates.
 _TITLE_STOPWORDS = {"the", "of", "a", "an", "and", "or", "for", "in", "on", "to", "with",
@@ -123,28 +126,17 @@ class CollectionsMixin:
             corpus[nwo] = {"nameWithOwner": nwo, "species": species}
         return corpus
 
-    # --- Slug / reference normalization ---
+    # --- Repo name / reference normalization ---
 
-    @staticmethod
-    def slugifyTitle(title):
-        """Derive a short, URL-safe repo slug from a free-text collection title (diacritics
-        stripped, lowercased, non-alphanumerics collapsed to hyphens, length-capped on a word
-        boundary)."""
-        text = unicodedata.normalize("NFKD", title or "").encode("ascii", "ignore").decode("ascii")
-        text = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-        if len(text) > SLUG_MAX_LEN:
-            text = text[:SLUG_MAX_LEN].rsplit("-", 1)[0] or text[:SLUG_MAX_LEN]
-        return text or "collection"
-
-    def uniqueCollectionSlug(self, title):
-        """A slug for ``title`` that does not collide with an existing repo in the org."""
-        base = self.slugifyTitle(title)
-        slug, n = base, 2
-        while self.repoExists(f"{self.morphoDepotOrg}/{slug}"):
-            suffix = f"-{n}"
-            slug = (base[:SLUG_MAX_LEN - len(suffix)].rstrip("-") or base) + suffix
-            n += 1
-        return slug
+    def newCollectionSlug(self):
+        """A fresh, unique, opaque repo name for a collection: ``collection-`` + 8 random hex
+        chars.  Deliberately meaningless — the title lives authoritatively (and PR-proof) in the
+        repo *description* — so the name only needs to be unique and recognizable as a collection,
+        never a (lossy, collision-prone) truncation of a human-readable title."""
+        while True:
+            slug = "collection-" + secrets.token_hex(4)
+            if not self.repoExists(f"{self.morphoDepotOrg}/{slug}"):
+                return slug
 
     @staticmethod
     def normalizeRepoRef(ref):
@@ -190,8 +182,9 @@ class CollectionsMixin:
         lines += ["## Member repositories", ""]
         lines += [f"- https://github.com/{nwo}" for nwo in memberNwos]
         lines += ["",
-                  "<!-- Created with the MorphoDepot extension. Add or remove member repositories "
-                  "in the list above (one per line); RepoClerk re-renders the gallery on update. -->",
+                  "<!-- Created with the MorphoDepot extension. The collection TITLE is the repo "
+                  "description (edit it in repo settings; a pull request cannot change it). Add or "
+                  "remove member repositories in the list above; RepoClerk re-renders on update. -->",
                   ""]
         return "\n".join(lines)
 
@@ -234,7 +227,7 @@ class CollectionsMixin:
             raise ValueError("A collection needs at least two member repositories.")
 
         me = self.whoami()
-        slug = self.uniqueCollectionSlug(title)
+        slug = self.newCollectionSlug()
         nameWithOwner = f"{self.morphoDepotOrg}/{slug}"
 
         self.progressMethod(f"Creating collection {nameWithOwner} (public)...")
