@@ -179,6 +179,9 @@ class RepoClerkMixin:
                         "owner": {"login": j["nameWithOwner"].split("/")[0]},
                         "pushedAt": j.get("pushedAt", ""),
                         "curator": j.get("curator"),
+                        # A collection ("repo of repos", md-collection topic) carries this journal
+                        # key; surface it so the Release tab can exclude collections (not releasable).
+                        "isCollection": bool(j.get("collection")),
                         "issues": {"totalCount": len(openIssues), "nodes": issueNodes},
                         "pullRequests": {"totalCount": len(openPRs), "nodes": prNodes},
                     })

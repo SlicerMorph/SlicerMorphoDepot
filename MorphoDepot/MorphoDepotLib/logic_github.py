@@ -257,18 +257,23 @@ class GitHubMixin:
         return issueList
 
     def administratedRepoList(self):
-        # Releases are ARCHIVAL-ONLY (org-design Sec.9.6): only org repos the user curates can be
-        # released, so the Release tab lists only those.  Personal short-term repos are excluded —
-        # they cannot be released, and showing them is misleading.  A member's archival repo is owned
-        # by the MorphoDepot org (owner != me); the journaled CURATOR (RepoClerk schema v3) is the
-        # authoritative "this is mine to release" signal.  (curator is None on pre-v3 journals, so an
-        # org repo lights up once RepoClerk re-drains with the field.)
+        # Releases are ARCHIVAL-ONLY (org-design Sec.9.6): only MorphoDepot-org repos the user
+        # curates can be released, so the Release tab lists exactly those.  Excluded: personal
+        # short-term repos (owner == me) AND repos in OTHER orgs the user belongs to (e.g. the
+        # MorphoDepotTesting scratch org) — neither is releasable here, both are just noise.  Also
+        # excluded: collections (md-collection "repos of repos", flagged in the journal), which carry
+        # no segmentation payload and cannot be released.  The journaled CURATOR (RepoClerk schema v3)
+        # is the authoritative "this is mine to release" signal.  (curator is None on pre-v3 journals,
+        # so an org repo lights up once RepoClerk re-drains with the field.)
         me = self.whoami()
         returnRepos = []
         for repo in self.morphoRepos():
             ownerLogin = repo['owner']['login']
-            isArchival = ownerLogin != me           # archival repos live in the org, not on my account
-            if isArchival and repo.get('curator') == me:
+            if ownerLogin != self.morphoDepotOrg:   # only the MorphoDepot org — not me, not other orgs
+                continue
+            if repo.get('isCollection'):             # collections are not releasable
+                continue
+            if repo.get('curator') == me:
                 repo['nameWithOwner'] = f"{ownerLogin}/{repo['name']}"
                 returnRepos.append(repo)
         return returnRepos
