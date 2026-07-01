@@ -69,11 +69,12 @@ class ControlPlaneMixin:
                 # can't silently lock out a real member until the next module reload.
                 return "unknown"
         except Exception as e:
-            # A 404 from this endpoint is authoritative: the user is not a member of the org.  Any
-            # other failure (network, missing read:org scope) is genuinely 'unknown'.  Do NOT cache
-            # 'unknown' — it would also evict a prior confirmed result, and a transient failure must
-            # re-check on the next call rather than stick.
-            if "404" in str(e) or "Not Found" in str(e):
+            # A 404 from this endpoint is authoritative: the user is not a member of the org (gh
+            # prints the literal "HTTP 404" on its non-zero exit).  Any other failure (network,
+            # missing read:org scope) is genuinely 'unknown'.  Do NOT cache 'unknown' — it would
+            # also evict a prior confirmed result, and a transient failure must re-check on the next
+            # call rather than stick.
+            if "HTTP 404" in str(e):
                 status = "non_member"
             else:
                 logging.warning(f"Membership check failed (status unknown): {e}")
