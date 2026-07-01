@@ -142,7 +142,12 @@ class CollectionsTabMixin:
         if nwo not in self._collectionCorpus.values():
             ui.createStatus.text = f"Checking {nwo}…"
             slicer.app.processEvents()
-            if not self.logic.isMorphoDepotRepo(nwo):
+            qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
+            try:
+                isMorphoDepot = self.logic.isMorphoDepotRepo(nwo)
+            finally:
+                qt.QApplication.restoreOverrideCursor()
+            if not isMorphoDepot:
                 ui.createStatus.text = (
                     f"{nwo} is not a MorphoDepot repository (it must carry the 'morphodepot' "
                     "topic). Only MorphoDepot dataset repositories can be added.")
