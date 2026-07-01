@@ -59,7 +59,15 @@ class ControlPlaneMixin:
             # is_active_member semantics).
             state = (self.gh(["api", f"/user/memberships/orgs/{org}", "--jq", ".state"],
                              quietErrors=True) or "").strip()
-            status = "member" if state == "active" else "non_member"
+            if state == "active":
+                status = "member"
+            elif state:
+                status = "non_member"
+            else:
+                # exit 0 but no state (a 200 with an unexpected JSON shape) is indeterminate, NOT a
+                # confirmed non-member — return 'unknown' without caching, so a malformed response
+                # can't silently lock out a real member until the next module reload.
+                return "unknown"
         except Exception as e:
             # A 404 from this endpoint is authoritative: the user is not a member of the org.  Any
             # other failure (network, missing read:org scope) is genuinely 'unknown'.  Do NOT cache
