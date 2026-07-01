@@ -219,12 +219,19 @@ class SearchTabMixin:
 
         menu = qt.QMenu()
         openRepoAction = menu.addAction("Open Repository Page")
+        copyUrlAction = menu.addAction("Copy Repository URL")
         previewAction = menu.addAction("Preview in Slicer")
 
         action = menu.exec_(self.searchUI.resultsTable.mapToGlobal(point))
 
         if action == openRepoAction:
             qt.QDesktopServices.openUrl(qt.QUrl(f"https://github.com/{fullRepoName}"))
+        elif action == copyUrlAction:
+            # Copy the GitHub URL so it can be pasted straight into the Collections member
+            # picker (which accepts a URL or owner/name) -- avoids retyping and typos.
+            url = f"https://github.com/{fullRepoName}"
+            qt.QApplication.clipboard().setText(url)
+            slicer.util.showStatusMessage(f"Copied {url} to clipboard", 3000)
         elif action == previewAction:
             self.previewRepository(fullRepoName)
 
