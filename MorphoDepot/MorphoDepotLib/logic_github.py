@@ -44,6 +44,10 @@ class GitHubMixin:
             commandList = command
         else:
             raise TypeError("gh command must be a string or list")
+        # A `gh auth switch` changes the active account, so any cached whoami() is now stale.
+        # Invalidate here so no call site (e.g. the self-test's switchUser) has to know about it.
+        if "auth" in commandList and "switch" in commandList:
+            self._whoamiCache = None
         self.progressMethod(" ".join(commandList))
         fullCommandList = [self.ghExecutablePath] + commandList
 
@@ -137,14 +141,22 @@ class GitHubMixin:
                 return "workflow" in scopes
         return False
 
-    def whoami(self):
-        """ Get the active gh login.  Parse the '... account <login> ...' token by regex (robust to
-        gh's status-line wording) rather than a fixed word index; fall back to the stable API."""
+    def whoami(self, refresh=False):
+        """ Get the active gh login.  Cached for the session: the active gh account does not change
+        mid-session for a normal user (and the module never switches it programmatically), so hot
+        paths like the per-tab-switch button relabeling don't spawn `gh auth status` every time.
+        A module reload recreates this logic instance and clears the cache; pass refresh=True to
+        force a re-read after a deliberate account switch.  Parses the '... account <login> ...'
+        token by regex (robust to gh's status-line wording) rather than a fixed word index; falls
+        back to the stable API."""
+        if not refresh and getattr(self, "_whoamiCache", None):
+            return self._whoamiCache
         status = self.gh("auth status --active") or ""
         match = re.search(r"account\s+(\S+)", status)
-        if match:
-            return match.group(1)
-        return self.gh("api user --jq .login").strip()
+        who = match.group(1) if match else self.gh("api user --jq .login").strip()
+        if who:
+            self._whoamiCache = who
+        return who
 
     def ghUserProfile(self):
         """Return {login, name, email} for the active gh account.
