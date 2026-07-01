@@ -38,9 +38,15 @@ class ControlPlaneMixin:
         return base
 
     def orgMembershipStatus(self, org=None):
-        """Tri-state membership against the MorphoDepot org via the App control plane (`/me`):
-        'member' | 'non_member' | 'unknown' (could not determine — App unreachable / invalid token).
-        The App verifies membership with its OWN token, so the user's gh token needs no org scope.
+        """Tri-state membership against the MorphoDepot org, asked DIRECTLY of GitHub via
+        `gh api /user/memberships/orgs/{org}`:
+        'member' | 'non_member' | 'unknown' (could not determine — GitHub unreachable, or the token
+        lacks read:org).  GitHub is authoritative and fast (~0.5s).  This deliberately does NOT go
+        through the control-plane App: the App's `/me` only proxied this same GitHub endpoint with
+        its own token (to spare the user's token an org scope), but `gh auth login` already grants
+        read:org, and the App's host is intermittently 20-40s just to accept a TCP connection —
+        which froze the UI thread for that long on every Create-tab activation.  (The App is still
+        used elsewhere — e.g. to read the member's private contact email.)
         Caches only a CONFIRMED result; 'unknown' is never trusted from cache, so a transient failure
         re-checks (and never reports a real member's outage as a membership problem)."""
         org = org or self.morphoDepotOrg
@@ -48,13 +54,22 @@ class ControlPlaneMixin:
         if cache is not None and cache[0] == org and cache[1] in ("member", "non_member"):
             return cache[1]
         try:
-            info = self.controlPlaneRequest("me", {})
-            status = "member" if bool(info.get("is_member")) else "non_member"
+            # GitHub returns the caller's OWN membership: state 'active' (full member) or 'pending'
+            # (invited, not yet accepted — treated as not-yet-a-member, matching the App's prior
+            # is_active_member semantics).
+            state = (self.gh(["api", f"/user/memberships/orgs/{org}", "--jq", ".state"],
+                             quietErrors=True) or "").strip()
+            status = "member" if state == "active" else "non_member"
         except Exception as e:
-            # Do NOT cache 'unknown' (it would also evict a prior confirmed result) — a transient
-            # failure must re-check on the next call rather than stick.
-            logging.warning(f"Membership check failed (status unknown): {e}")
-            return "unknown"
+            # A 404 from this endpoint is authoritative: the user is not a member of the org.  Any
+            # other failure (network, missing read:org scope) is genuinely 'unknown'.  Do NOT cache
+            # 'unknown' — it would also evict a prior confirmed result, and a transient failure must
+            # re-check on the next call rather than stick.
+            if "404" in str(e) or "Not Found" in str(e):
+                status = "non_member"
+            else:
+                logging.warning(f"Membership check failed (status unknown): {e}")
+                return "unknown"
         self._orgMemberCache = (org, status)
         return status
 
@@ -62,8 +77,8 @@ class ControlPlaneMixin:
         """True only when membership is CONFIRMED.  Boolean callers treat 'unknown' as non-member;
         the create path uses orgMembershipStatus() directly to distinguish 'not a member' from
         'could not verify' so a transient outage is never reported as a membership problem.  (Asks
-        the App `/me`, which checks membership with the App token — the user's gh token needs no
-        org scope.  Reload the module after switching gh accounts or joining the org.)"""
+        GitHub directly via orgMembershipStatus(); reload the module after switching gh accounts or
+        joining the org so the cached result refreshes.)"""
         return self.orgMembershipStatus(org) == "member"
 
     def controlPlaneRequest(self, path, body):
