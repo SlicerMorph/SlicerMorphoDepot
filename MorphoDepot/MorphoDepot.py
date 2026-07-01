@@ -220,8 +220,9 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
 
         uiWidget = slicer.util.loadUI(os.path.normpath(self.resourcePath("UI/MorphoDepotRelease.ui")))
         uiWidget.setMRMLScene(slicer.mrmlScene)
+        self.releaseTabIndex = None
         if self.includeReleaseUI:
-            self.tabWidget.addTab(uiWidget, "Release")
+            self.releaseTabIndex = self.tabWidget.addTab(uiWidget, "Release")
         self.releaseUI = slicer.util.childWidgetVariables(uiWidget)
 
         self.adminTab = qt.QScrollArea()
@@ -772,6 +773,31 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                 self.tabWidget.setTabEnabled(tabIndex, moduleEnabled)
             else:
                 self.tabWidget.setTabEnabled(tabIndex, True)
+        self._applyOrgMemberGating(moduleEnabled)
+
+    def _applyOrgMemberGating(self, moduleEnabled):
+        """Gray out the org-member-only surfaces (the whole Release tab and the Collections
+        'Create a Collection' section) for a CONFIRMED non-member.  Fails OPEN on 'unknown' (App
+        unreachable) so a transient outage never locks out a real member; only relevant once the
+        module is enabled (otherwise everything is already grayed).  Re-applied on every enter()
+        because the loop above re-enables tabs; membership is cached, so this is cheap after the
+        first check.  Normal users are signed in to gh before use and don't switch accounts, so a
+        change (e.g. joining the org) takes effect on the next Slicer restart."""
+        if not moduleEnabled:
+            return
+        nonMember = False
+        try:
+            nonMember = (self.logic.orgMembershipStatus() == "non_member")
+        except Exception as e:
+            logging.warning(f"Org membership check failed; leaving member-only surfaces enabled: {e}")
+        joinHint = ("Available to MorphoDepot organization members. "
+                    "Join at https://join.morphodepot.org, then restart Slicer.")
+        if self.releaseTabIndex is not None:
+            self.tabWidget.setTabEnabled(self.releaseTabIndex, not nonMember)
+            self.tabWidget.setTabToolTip(self.releaseTabIndex, joinHint if nonMember else "")
+        # Collections: keep the "Existing Collections" list browsable; gray only the create section.
+        self.collectionsUI.createCollapsibleButton.enabled = not nonMember
+        self.collectionsUI.createCollapsibleButton.setToolTip(joinHint if nonMember else "")
 
     def onCurrentTabChanged(self,index):
         qt.QSettings().setValue("MorphoDepot/tabIndex", index)
