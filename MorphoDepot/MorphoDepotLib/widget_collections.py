@@ -88,6 +88,7 @@ class CollectionsTabMixin:
         ui = self.collectionsUI
         ui.createStatus.text = "Loading repositories from RepoClerk..."
         slicer.app.processEvents()
+        qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
         try:
             corpus = self.logic.datasetRepoCorpus()
             collections = self.logic.collectionRepos()
@@ -95,6 +96,8 @@ class CollectionsTabMixin:
             ui.createStatus.text = f"Could not load repository data: {e}"
             logging.warning(f"Collections refresh failed: {e}")
             return
+        finally:
+            qt.QApplication.restoreOverrideCursor()
 
         ui.repoCombo.clear()
         self._collectionCorpus = {}
@@ -165,43 +168,46 @@ class CollectionsTabMixin:
         description = ui.descEdit.text.strip()
         members = [ui.membersList.item(i).text() for i in range(ui.membersList.count)]
 
-        # Fuzzy duplicate-collection check — warn (don't block, since fuzzy can false-positive)
-        # and let the user decide. Catches near-duplicate titles, not just exact ones.
-        if title:
-            try:
-                similar = self.logic.similarCollections(title)
-            except Exception as e:
-                similar = []
-                logging.warning(f"Similar-collection check failed: {e}")
-            if similar:
-                listing = "\n".join(f"  • {c['title']}   ({c['nameWithOwner']})"
-                                    for c in similar[:5])
-                if not slicer.util.confirmYesNoDisplay(
-                        f"A similar collection already exists:\n\n{listing}\n\n"
-                        "Consider adding your repositories to it instead. "
-                        "Create a new collection anyway?",
-                        windowTitle="Possible duplicate collection"):
-                    ui.createStatus.text = "Cancelled — a similar collection already exists."
-                    return
-
+        # Disable the button and show a wait cursor up front — the fuzzy-duplicate check below
+        # already makes a live `gh` call, so guard against double-submits and freeze-looking UI
+        # from the very first network round-trip.
         ui.createButton.enabled = False
         ui.createStatus.text = "Creating collection..."
         qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
         slicer.app.processEvents()
         try:
+            # Fuzzy near-duplicate title check — warn (don't block; fuzzy can false-positive).
+            if title:
+                try:
+                    similar = self.logic.similarCollections(title)
+                except Exception as e:
+                    similar = []
+                    logging.warning(f"Similar-collection check failed: {e}")
+                if similar:
+                    listing = "\n".join(f"  • {c['title']}   ({c['nameWithOwner']})"
+                                        for c in similar[:5])
+                    qt.QApplication.restoreOverrideCursor()  # normal cursor for the modal
+                    proceed = slicer.util.confirmYesNoDisplay(
+                        f"A similar collection already exists:\n\n{listing}\n\n"
+                        "Consider adding your repositories to it instead. "
+                        "Create a new collection anyway?",
+                        windowTitle="Possible duplicate collection")
+                    qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
+                    if not proceed:
+                        ui.createStatus.text = "Cancelled — a similar collection already exists."
+                        return
             nwo = self.logic.createCollection(title, description, members)
         except Exception as e:
             ui.createStatus.text = f"Failed to create collection: {e}"
             logging.error(f"createCollection failed: {e}")
-            ui.createButton.enabled = True
             return
         finally:
             qt.QApplication.restoreOverrideCursor()
+            ui.createButton.enabled = True
 
         ui.createStatus.text = (
             f"Created {nwo} (public). It will appear on the RepoClerk dashboard shortly.")
         ui.titleEdit.text = ""
         ui.descEdit.text = ""
         ui.membersList.clear()
-        ui.createButton.enabled = True
         self.onCollectionsRefresh()

@@ -236,22 +236,35 @@ class CollectionsMixin:
         self.gh(["repo", "create", nameWithOwner, "--public", "--disable-wiki",
                  "--add-readme", "--description", title])
 
-        # Grant the creator's {login}-team Write (mirrors dataset creation; best-effort).
-        teamSlug = f"{me}-team".lower()
+        # Everything after repo creation must succeed for the repo to be a usable, discoverable
+        # collection.  If any critical step fails, roll back the orphaned public repo so we don't
+        # leave behind an undiscoverable repo (no md-collection topic) with an opaque name the user
+        # can't find.  (README/CURATOR/topics are critical; the team grant is best-effort.)
         try:
-            self.gh(["api", "--method", "PUT",
-                     f"/orgs/{self.morphoDepotOrg}/teams/{teamSlug}/repos/{nameWithOwner}",
-                     "--field", "permission=push"])
-        except Exception as e:
-            logging.warning(f"Could not grant {teamSlug} Write on {nameWithOwner}: {e}")
+            teamSlug = f"{me}-team".lower()
+            try:
+                self.gh(["api", "--method", "PUT",
+                         f"/orgs/{self.morphoDepotOrg}/teams/{teamSlug}/repos/{nameWithOwner}",
+                         "--field", "permission=push"])
+            except Exception as e:
+                logging.warning(f"Could not grant {teamSlug} Write on {nameWithOwner}: {e}")
 
-        self._putRepoFile(nameWithOwner, "README.md",
-                          self._renderCollectionReadme(title, description, members),
-                          "Add collection README")
-        self._putRepoFile(nameWithOwner, "CURATOR", me + "\n", "Add CURATOR file")
+            self._putRepoFile(nameWithOwner, "README.md",
+                              self._renderCollectionReadme(title, description, members),
+                              "Add collection README")
+            self._putRepoFile(nameWithOwner, "CURATOR", me + "\n", "Add CURATOR file")
 
-        self.gh(["repo", "edit", nameWithOwner,
-                 "--add-topic", DISCOVERY_TOPIC, "--add-topic", COLLECTION_TOPIC])
+            self.gh(["repo", "edit", nameWithOwner,
+                     "--add-topic", DISCOVERY_TOPIC, "--add-topic", COLLECTION_TOPIC])
+        except Exception:
+            self.progressMethod(f"Rolling back incomplete collection {nameWithOwner}...")
+            try:
+                # Best-effort; needs the gh 'delete_repo' scope.
+                self.gh(["repo", "delete", nameWithOwner, "--yes"], quietErrors=True)
+            except Exception as delErr:
+                logging.warning(f"Could not roll back {nameWithOwner} after a failed create "
+                                f"(delete it manually; the gh token may lack delete_repo scope): {delErr}")
+            raise
 
         try:
             self.notifyRepoClerk(nameWithOwner)
