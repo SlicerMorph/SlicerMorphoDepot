@@ -220,9 +220,8 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
 
         uiWidget = slicer.util.loadUI(os.path.normpath(self.resourcePath("UI/MorphoDepotRelease.ui")))
         uiWidget.setMRMLScene(slicer.mrmlScene)
-        self.releaseTabIndex = None
         if self.includeReleaseUI:
-            self.releaseTabIndex = self.tabWidget.addTab(uiWidget, "Release")
+            self.tabWidget.addTab(uiWidget, "Release")
         self.releaseUI = slicer.util.childWidgetVariables(uiWidget)
 
         self.adminTab = qt.QScrollArea()
@@ -773,44 +772,6 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
                 self.tabWidget.setTabEnabled(tabIndex, moduleEnabled)
             else:
                 self.tabWidget.setTabEnabled(tabIndex, True)
-        self._applyOrgMemberGating(moduleEnabled)
-
-    def _applyOrgMemberGating(self, moduleEnabled):
-        """Gray out the org-member-only surfaces (the whole Release tab and the Collections
-        'Create a Collection' section) for a CONFIRMED non-member.
-
-        The membership check hits the control-plane App, which can be slow or unreachable, so it
-        MUST NOT run on the UI thread (doing so froze the module in enter()).  It is computed ONCE
-        in a background thread and cached in ``self._orgIsNonMember``; this method only ever READS
-        that cached value to update the widgets, so it never blocks.  Until the result is in we
-        fail OPEN (surfaces enabled) — a real member is never locked out and the UI never hangs.
-        Membership is fixed for the session (normal users don't switch gh accounts / reload), so a
-        change such as joining the org takes effect on the next Slicer restart."""
-        if not moduleEnabled:
-            return
-        # Kick off the one-time membership determination OFF the UI thread, then re-apply when done.
-        if not getattr(self, "_orgMemberCheckStarted", False):
-            self._orgMemberCheckStarted = True
-            self._orgIsNonMember = None
-            import threading
-            def worker():
-                try:
-                    self._orgIsNonMember = (self.logic.orgMembershipStatus() == "non_member")
-                except Exception as e:
-                    logging.warning(f"Org membership check failed; member-only surfaces left enabled: {e}")
-                    self._orgIsNonMember = False
-            threading.Thread(target=worker, daemon=True).start()
-            # Re-apply on the main thread once the result is likely in (non-blocking).
-            qt.QTimer.singleShot(2500, lambda: self._applyOrgMemberGating(self.checkModuleEnabled()))
-        nonMember = bool(getattr(self, "_orgIsNonMember", None))  # None (not yet known) -> fail open
-        joinHint = ("Available to MorphoDepot organization members. "
-                    "Join at https://join.morphodepot.org, then restart Slicer.")
-        if self.releaseTabIndex is not None:
-            self.tabWidget.setTabEnabled(self.releaseTabIndex, not nonMember)
-            self.tabWidget.setTabToolTip(self.releaseTabIndex, joinHint if nonMember else "")
-        # Collections: keep the "Existing Collections" list browsable; gray only the create section.
-        self.collectionsUI.createCollapsibleButton.enabled = not nonMember
-        self.collectionsUI.createCollapsibleButton.setToolTip(joinHint if nonMember else "")
 
     def onCurrentTabChanged(self,index):
         qt.QSettings().setValue("MorphoDepot/tabIndex", index)
