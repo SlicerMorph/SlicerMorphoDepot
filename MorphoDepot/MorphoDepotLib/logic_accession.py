@@ -682,14 +682,21 @@ jobs:
         are reflected immediately, unlike the search index which lags for fresh repos), so it
         is reliable right after staging and from any machine.  Returns marker-shaped dicts."""
         me = self.whoami()
-        # Include org repos too — member-tier staged repos are born in MorphoDepot, owned by the
-        # org but accessible only to the member's {handle}-team.
-        try:
-            repos = self.ghJSON(["api", "/user/repos?affiliation=owner,organization_member&per_page=100", "--paginate"])
-        except Exception as e:
-            logging.warning(f"listStagedRepos: could not list repositories: {e}")
-            return []
+        # Staged repos can live in the user's personal account (personal-tier staging) or the
+        # MorphoDepot org (member-tier — owned by the org, reachable via the {handle}-team); both
+        # paths tag the repo `morphodepot-staging`.  Query exactly those two scopes rather than
+        # `/user/repos?affiliation=owner,organization_member --paginate`, which walks every repo of
+        # every org the user belongs to just to keep the few staged ones — bounded here regardless
+        # of how many repos live in the user's other orgs.
+        repos = []
+        for endpoint in ("/user/repos?affiliation=owner&per_page=100",
+                         f"/orgs/{self.morphoDepotOrg}/repos?per_page=100"):
+            try:
+                repos.extend(self.ghJSON(["api", endpoint, "--paginate"]) or [])
+            except Exception as e:
+                logging.warning(f"listStagedRepos: could not list {endpoint}: {e}")
         staged = []
+        seen = set()
         for repo in repos:
             if not isinstance(repo, dict):
                 continue
@@ -700,6 +707,9 @@ jobs:
                 continue
             name = repo.get("name")
             nameWithOwner = repo.get("full_name") or f"{owner}/{name}"
+            if nameWithOwner in seen:  # defensive de-dup (a repo can't be in both lists)
+                continue
+            seen.add(nameWithOwner)
             staged.append({
                 "nameWithOwner": nameWithOwner,
                 "repoName": name,
