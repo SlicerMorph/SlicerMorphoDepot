@@ -790,9 +790,12 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         # Collections: only the "Create a Collection" section is member-gated; the existing-
         # collections list stays browsable by everyone.
         self.collectionsUI.createCollapsibleButton.enabled = not confirmedNonMember
-        # If the restored/selected tab is the one we just disabled, land on Create rather than
-        # leaving a disabled tab selected.
-        if not self.tabWidget.isTabEnabled(self.tabWidget.currentIndex):
+        # If membership gating just disabled the currently-selected tab (Release), land on Create
+        # instead of leaving a disabled tab selected.  Guarded on confirmedNonMember: only then did
+        # we newly disable a tab AND is Create guaranteed enabled.  In the deps-not-ready case
+        # (moduleEnabled False) Create is disabled too, so redirecting there would just swap one
+        # disabled tab for another — leave the selection alone, as before this gating existed.
+        if confirmedNonMember and not self.tabWidget.isTabEnabled(self.tabWidget.currentIndex):
             self.tabWidget.currentIndex = self.createTabIndex
 
     def onCurrentTabChanged(self,index):

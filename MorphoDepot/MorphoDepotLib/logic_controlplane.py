@@ -64,6 +64,8 @@ class ControlPlaneMixin:
             if state == "active":
                 status = "member"
             elif state:
+                # Any other non-empty state ('pending' = invited-not-yet-accepted, or any future
+                # GitHub state) is deliberately treated as not-yet-a-member, not an error.
                 status = "non_member"
             else:
                 # exit 0 but no state (a 200 with an unexpected JSON shape) is indeterminate, NOT a
