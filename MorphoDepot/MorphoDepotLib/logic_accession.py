@@ -346,9 +346,10 @@ jobs:
         return self.provisionStagedRepo(buildContext)
 
     def _provisionStagedRepoInOrg(self, buildContext):
-        """Member tier: the App creates the repo IN-ORG (private, staged topic, {handle}-team
-        Write); we push the built content and upload the source volume to S3.  No personal
-        account, no transfer.  Returns the org nameWithOwner (MorphoDepot/<name>)."""
+        """Member tier: born IN-ORG (private, staged topic, {login}-team Write).  We upload the
+        source volume to S3 FIRST, then create the repo and push the built content (which already
+        carries the source_volume pointer) -- so a failed upload never leaves a half-provisioned
+        staged repo on GitHub.  No personal account, no transfer.  Returns MorphoDepot/<name>."""
         repoDir = buildContext["repoDir"]
         repo = buildContext["repo"]
         curator = buildContext["curator"]
@@ -357,12 +358,31 @@ jobs:
         sourceFileName = buildContext["sourceFileName"]
         checksum = buildContext["checksum"]
 
-        # Member-driven create (#20): the member creates the repo in-org with their OWN gh -- they have
-        # create-private rights and become its admin -- instead of asking the App. This is what lets the
-        # App drop its Administration permission. The member (admin) retains push regardless; the
-        # {login}-team grant for other collaborators can be added later without the App.
-        self.progressMethod(f"Creating {self.morphoDepotOrg}/{repoName} (private)...")
         nameWithOwner = f"{self.morphoDepotOrg}/{repoName}"
+
+        # ORDERING (org tier): upload the source volume to S3 and bake its URL into the committed
+        # content BEFORE creating anything on GitHub.  The S3 upload is the fallible external step
+        # (its sign endpoint runs on a flaky host and large multipart uploads can fail), so doing it
+        # FIRST means a failed upload leaves NO half-provisioned staged repo behind -- nothing exists
+        # on GitHub until the volume is safely stored.  The upload is repo-independent (its key is
+        # content-addressed {creator}/{repo}/{filename} + checksum), so it needs no GitHub repo and a
+        # retry reuses the same object.  The name-collision preflight already ran in
+        # createAccessionRepo before the local build, so we never upload against a taken name.  (A
+        # create failure AFTER a good upload leaves only an orphaned, dedupable S3 object -- far
+        # milder than an orphaned repo, and GC-able.)
+        self.progressMethod(f"Uploading source volume for {nameWithOwner} to the object store...")
+        publicURL = self.uploadSourceVolumeToObjectStore(
+            sourceFilePath, checksum, curator, repoName, f"{sourceFileName}.nrrd")
+        with open(os.path.join(repoDir, "source_volume"), "w") as fp:
+            fp.write(publicURL)
+        repo.index.add([f"{repoDir}/source_volume"])
+        repo.index.commit("Add source volume url")
+
+        # Only now touch GitHub.  Member-driven create (#20): the member creates the repo in-org with
+        # their OWN gh -- they have create-private rights and become its admin -- instead of asking the
+        # App. This is what lets the App drop its Administration permission. The member (admin) retains
+        # push regardless; the {login}-team grant for other collaborators can be added later without the App.
+        self.progressMethod(f"Creating {nameWithOwner} (private)...")
         self.gh(["repo", "create", nameWithOwner, "--private", "--disable-wiki"])
         cloneURL = f"https://github.com/{nameWithOwner}.git"
         # Mark it staged with the member's own gh (members own their topics now; the App does not).
@@ -383,7 +403,8 @@ jobs:
         except Exception as e:
             logging.warning(f"Could not grant {teamSlug} Write on {nameWithOwner}: {e}")
 
-        # Push the locally built content to the empty in-org repo (member has Write via team).
+        # Push the locally built content -- which already includes the source_volume pointer -- to the
+        # empty in-org repo in a single push (member has Write via team).
         self.localRepo = repo
         try:
             repo.create_remote("origin", cloneURL)
@@ -411,17 +432,9 @@ jobs:
         except Exception as e:
             logging.warning(f"Could not subscribe to {nameWithOwner}: {e}")
 
-        # v1 release (version anchor, no asset)
+        # v1 release (version anchor, no asset).  The source volume already lives in S3 and its
+        # pointer was pushed with the initial content above, so nothing is uploaded here.
         self.gh(["release", "create", "--repo", nameWithOwner, "v1", "--notes", "Initial release"])
-
-        # Upload the source volume to S3 and record the absolute public URL.
-        publicURL = self.uploadSourceVolumeToObjectStore(
-            sourceFilePath, checksum, curator, repoName, f"{sourceFileName}.nrrd")
-        with open(os.path.join(repoDir, "source_volume"), "w") as fp:
-            fp.write(publicURL)
-        repo.index.add([f"{repoDir}/source_volume"])
-        repo.index.commit("Add source file url file")
-        repo.remote(name="origin").push()
 
         self.stagingContext = {
             "repoDir": repoDir,
