@@ -509,10 +509,9 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.createUI.repoTypeGroup = qt.QGroupBox("Repository type")
         repoTypeGroupLayout = qt.QVBoxLayout(self.createUI.repoTypeGroup)
         self.createUI.archivalRadio = qt.QRadioButton(
-            "Archival - maintained and citable; created in the MorphoDepot organization "
-            "(members only) and gets a DOI")
+            "Archival (members only): in the MorphoDepot org, citable with a DOI")
         self.createUI.shortTermRadio = qt.QRadioButton(
-            "Short-term - disposable / classroom; created on your own account, no DOI")
+            "Short-term (personal): on your own account, disposable, no DOI")
         repoTypeGroupLayout.addWidget(self.createUI.archivalRadio)
         repoTypeGroupLayout.addWidget(self.createUI.shortTermRadio)
         headerIndex = self.createUI.verticalLayout.indexOf(self.createUI.createSectionHeader)
