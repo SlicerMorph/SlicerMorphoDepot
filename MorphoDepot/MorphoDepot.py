@@ -220,8 +220,11 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
 
         uiWidget = slicer.util.loadUI(os.path.normpath(self.resourcePath("UI/MorphoDepotRelease.ui")))
         uiWidget.setMRMLScene(slicer.mrmlScene)
+        # -1 when the Release tab isn't built (release UI disabled); no real tab index equals -1,
+        # so the membership gating in enter() safely skips it in that case.
+        self.releaseTabIndex = -1
         if self.includeReleaseUI:
-            self.tabWidget.addTab(uiWidget, "Release")
+            self.releaseTabIndex = self.tabWidget.addTab(uiWidget, "Release")
         self.releaseUI = slicer.util.childWidgetVariables(uiWidget)
 
         self.adminTab = qt.QScrollArea()
@@ -765,13 +768,35 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         ScriptedLoadableModuleWidget.onReload(self)
 
     def enter(self):
-        """Disable everything except the configUI"""
+        """Disable everything except the configUI, then apply org-membership gating.
+
+        Membership is looked up at most ONCE here (cached in the logic's _orgMemberCache for the
+        rest of the session — never re-checked on tab switches) and drives which member-only
+        surfaces are enabled.  Only a CONFIRMED non-member is restricted: 'member' and 'unknown' (a
+        network/scope failure, which orgMembershipStatus never caches) both fail OPEN, so a
+        transient error can never lock a real member out of the Release tab or collection creation.
+        The membership call is short-circuited unless the module's dependencies are set up, and is
+        itself bounded by a short timeout, so enter() cannot hang."""
         moduleEnabled = self.checkModuleEnabled()
+        confirmedNonMember = moduleEnabled and self.logic.orgMembershipStatus() == "non_member"
         for tabIndex in range(self.tabWidget.count):
-            if tabIndex != self.configureTabIndex:
-                self.tabWidget.setTabEnabled(tabIndex, moduleEnabled)
-            else:
+            if tabIndex == self.configureTabIndex:
                 self.tabWidget.setTabEnabled(tabIndex, True)
+            elif tabIndex == self.releaseTabIndex and confirmedNonMember:
+                # Releases are archival-only and org-members-only, so hide Release from non-members.
+                self.tabWidget.setTabEnabled(tabIndex, False)
+            else:
+                self.tabWidget.setTabEnabled(tabIndex, moduleEnabled)
+        # Collections: only the "Create a Collection" section is member-gated; the existing-
+        # collections list stays browsable by everyone.
+        self.collectionsUI.createCollapsibleButton.enabled = not confirmedNonMember
+        # If membership gating just disabled the currently-selected tab (Release), land on Create
+        # instead of leaving a disabled tab selected.  Guarded on confirmedNonMember: only then did
+        # we newly disable a tab AND is Create guaranteed enabled.  In the deps-not-ready case
+        # (moduleEnabled False) Create is disabled too, so redirecting there would just swap one
+        # disabled tab for another — leave the selection alone, as before this gating existed.
+        if confirmedNonMember and not self.tabWidget.isTabEnabled(self.tabWidget.currentIndex):
+            self.tabWidget.currentIndex = self.createTabIndex
 
     def onCurrentTabChanged(self,index):
         qt.QSettings().setValue("MorphoDepot/tabIndex", index)
