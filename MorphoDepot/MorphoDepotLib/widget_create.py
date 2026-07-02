@@ -615,16 +615,16 @@ class CreateTabMixin:
         return sourceVolume, colorTable, sourceSegmentation, accessionData
 
     def _submitContactForm(self):
-        """Best-effort submission of the creator's contact info to the MorphoDepot contact list.
-        Called at PUBLISH time only — never for staged-only repos, so the list never accumulates
-        contacts for repositories that are discarded or never go public.  Reads the email from
-        the Go-live field and the repo type from the (still-populated) accession form, and runs
-        on a background thread so it never blocks the UI."""
-        CONTACT_FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLScqzoTAIklSg2Dc4sQHMw-_J8PPQUOSBqFrpLnWpLS-tvvVHQ/formResponse"
-        CONTACT_FORM_ENTRY_EMAIL       = "entry.2057466047"  # Email Address
-        CONTACT_FORM_ENTRY_GH_USER     = "entry.1912463514"  # GitHub Username
-        CONTACT_FORM_ENTRY_REPO_NAME   = "entry.683034902"   # Repository Name
-        CONTACT_FORM_ENTRY_REPO_TYPE   = "entry.156019116"   # Repository Type
+        """Best-effort recording of the creator's contact info (github handle, repo, email, repo
+        type) to the private MorphoDepot contacts repo, via the intake App's /contacts/record
+        endpoint.  Called at PUBLISH time only — never for staged-only repos, so the list never
+        accumulates contacts for repositories that are discarded or never go public.  Skipped for
+        org members (they supplied a verified email at ORCID onboarding) and for developer
+        self-test / UI-harness runs (testingMode), whose repos live in the throwaway testing org
+        and must never be recorded.  Runs on a background thread so it never blocks the UI."""
+        if getattr(self, "testingMode", False):
+            # Developer self-test / UI harness -> throwaway testing org; never a real contact.
+            return
         if not getattr(self, "_contactEmailNeeded", True):
             # Org members already supplied a verified email at ORCID onboarding; nothing collected
             # here, so there is nothing to submit.
@@ -638,20 +638,20 @@ class CreateTabMixin:
         except Exception:
             repoTypeFull = ""
         repoTypeShort = "Archival" if repoTypeFull.startswith("Archival") else "Short-term"
-        repoName = (self._stagedNameWithOwner or "").split("/")[-1]
-        formData = {
-            CONTACT_FORM_ENTRY_EMAIL:     self.createUI.goLiveEmail.text.strip(),
-            CONTACT_FORM_ENTRY_GH_USER:   ghUser,
-            CONTACT_FORM_ENTRY_REPO_NAME: repoName,
-            CONTACT_FORM_ENTRY_REPO_TYPE: repoTypeShort,
+        body = {
+            "github":    ghUser,
+            "repo":      self._stagedNameWithOwner or "",   # full owner/name
+            "email":     self.createUI.goLiveEmail.text.strip(),
+            "repo_type": repoTypeShort,
         }
+        url = f"{self.logic.controlPlaneBase()}/contacts/record"
         import threading
         def _post(url, data):
             try:
-                requests.post(url, data=data, timeout=5)
+                requests.post(url, json=data, timeout=5)
             except Exception:
                 pass  # non-critical
-        threading.Thread(target=_post, args=(CONTACT_FORM_URL, formData), daemon=True).start()
+        threading.Thread(target=_post, args=(url, body), daemon=True).start()
 
     def onCreateRepository(self):
         """Stage the repository: build it locally and provision it PRIVATE on the personal
