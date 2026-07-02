@@ -79,11 +79,14 @@ class SearchMixin:
                 if question in repoData:
                     repoValue = repoData[question][1]
                     if isinstance(repoValue, list):
-                        # Exclude only if NONE of the repo's values matches the criteria — decided
-                        # AFTER scanning all values.  (The old in-loop check excluded on the first
-                        # non-match, and a set can't un-exclude a later match.)  An empty list matches
-                        # nothing the user selected, so it is excluded.
-                        if not any(value in criteria[question] for value in repoValue):
+                        # Exclude only if the repo HAS value(s) for this field and NONE match the
+                        # criteria — decided AFTER scanning all values.  (The old in-loop check
+                        # excluded on the first non-match, and a set can't un-exclude a later match.)
+                        # An EMPTY/unspecified multi-select does NOT exclude the repo — mirroring the
+                        # scalar branch below (which ignores an empty value).  Otherwise a repo that
+                        # simply left this field blank (e.g. a whole-specimen atlas with no
+                        # anatomicalAreas) becomes invisible in EVERY search, even the default browse.
+                        if repoValue and not any(value in criteria[question] for value in repoValue):
                             excludedRepos.add(nameWithOwner)
                     else:
                         if repoValue != "" and repoValue not in criteria[question]:
