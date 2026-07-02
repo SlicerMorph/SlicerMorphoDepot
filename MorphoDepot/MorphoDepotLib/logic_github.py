@@ -46,8 +46,11 @@ class GitHubMixin:
             raise TypeError("gh command must be a string or list")
         # A `gh auth switch` changes the active account, so any cached whoami() is now stale.
         # Invalidate here so no call site (e.g. the self-test's switchUser) has to know about it.
+        # Org membership is per-account too, so drop its cache as well — the UI gating recomputes
+        # on the next module enter().
         if "auth" in commandList and "switch" in commandList:
             self._whoamiCache = None
+            self._orgMemberCache = None
         self.progressMethod(" ".join(commandList))
         fullCommandList = [self.ghExecutablePath] + commandList
 

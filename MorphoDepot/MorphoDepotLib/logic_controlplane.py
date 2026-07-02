@@ -57,8 +57,10 @@ class ControlPlaneMixin:
             # GitHub returns the caller's OWN membership: state 'active' (full member) or 'pending'
             # (invited, not yet accepted — treated as not-yet-a-member, matching the App's prior
             # is_active_member semantics).
+            # Bound the timeout: this runs on the UI thread at module enter() to drive gating, so a
+            # dead network must degrade to 'unknown' (fail-open) in seconds, never hang the module.
             state = (self.gh(["api", f"/user/memberships/orgs/{org}", "--jq", ".state"],
-                             quietErrors=True) or "").strip()
+                             timeout=10, quietErrors=True) or "").strip()
             if state == "active":
                 status = "member"
             elif state:
