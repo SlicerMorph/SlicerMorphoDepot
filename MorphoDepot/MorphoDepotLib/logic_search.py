@@ -61,10 +61,14 @@ class SearchMixin:
         excludedRepos = set()
         for nameWithOwner, repoData in self.repoDataByNameWithOwner.items():
             for question in criteria:
-                # Handle repoType with default assumption
-                if question == "repoType":
-                    repoValue = repoData.get("repoType", (None, "Archival (intended for long-term maintenance)"))[1]
-                    if repoValue not in criteria["repoType"]:
+                # Repository tier is decided by OWNER, not the self-declared accession repoType: a
+                # repo is "Archival" only if it lives in the MorphoDepot org (the gated, reviewed
+                # home); everything else (personal accounts, other orgs) is "Personal".  This ignores
+                # what a repo *claims* in its accession, so old personal test repos that picked
+                # "Archival" are correctly classified as Personal.  (nameWithOwner is "{owner}^{repo}".)
+                if question == "tier":
+                    tier = "Archival" if nameWithOwner.split("^", 1)[0] == self.morphoDepotOrg else "Personal"
+                    if tier not in criteria["tier"]:
                         excludedRepos.add(nameWithOwner)
                     continue
 
