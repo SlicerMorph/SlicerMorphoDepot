@@ -29,6 +29,14 @@ class MorphoDepotSearchForm():
         "developmentalStage": "Stage:",
         "anatomicalAreas": "Anatomical Areas:",
     }
+
+    # The "Repository" tier filter is OWNER-based, NOT the self-declared accession repoType:
+    # Archival = repos owned by the MorphoDepot org (the gated, reviewed home); Personal = everything
+    # else (personal accounts, other orgs).  Options are fixed here and matched against each repo's
+    # owner in MorphoDepotLogic.search() -- so a personal repo that *claimed* "Archival" in its
+    # accession is correctly classified as Personal.
+    TIER_OPTIONS = ["Archival", "Personal"]
+
     def __init__(self, updateCallback=lambda : None):
         self.updateCallback = updateCallback
         self.form = qt.QWidget()
@@ -45,15 +53,19 @@ class MorphoDepotSearchForm():
         self.searchBox.textChanged.connect(self.updateCallback)
         self.searchBox.setPlaceholderText("Fetch repository data to search...")
 
-        # Add repoType filter separately to control default
-        self.repoTypeComboBox = ctk.ctkCheckableComboBox()
-        self.searchFormLayout.addRow("Repository Type:", self.repoTypeComboBox)
-        repoTypeQuestionData = MorphoDepotAccessionForm.formQuestions["repoType"]
-        for option in repoTypeQuestionData[1]:
-            self.repoTypeComboBox.addItem(option)
-        model = self.repoTypeComboBox.checkableModel()
-        self.repoTypeComboBox.setCheckState(model.index(0, 0), qt.Qt.Checked) # Default to Archival
-        self.repoTypeComboBox.checkedIndexesChanged.connect(self.updateCallback)
+        # Repository tier filter (OWNER-based; see TIER_OPTIONS) -- added separately to control its
+        # default.  Default to Archival so the many personal / pre-org repos are hidden unless the
+        # user opts into Personal.
+        self.tierComboBox = ctk.ctkCheckableComboBox()
+        self.searchFormLayout.addRow("Repository:", self.tierComboBox)
+        self.tierComboBox.setToolTip(
+            "Archival = repositories in the MorphoDepot organization (curated, reviewed). "
+            "Personal = personal-account repositories.")
+        for option in MorphoDepotSearchForm.TIER_OPTIONS:
+            self.tierComboBox.addItem(option)
+        model = self.tierComboBox.checkableModel()
+        self.tierComboBox.setCheckState(model.index(0, 0), qt.Qt.Checked)  # Default to Archival
+        self.tierComboBox.checkedIndexesChanged.connect(self.updateCallback)
 
         self.comboBoxesByQuestion = {}
         questions = MorphoDepotAccessionForm.formQuestions
@@ -78,14 +90,13 @@ class MorphoDepotSearchForm():
     def criteria(self):
         criteria = {"freeText": self.searchBox.text}
 
-        # Handle repoType separately
-        repoTypeQuestionData = MorphoDepotAccessionForm.formQuestions["repoType"]
-        criteria["repoType"] = []
-        model = self.repoTypeComboBox.checkableModel()
+        # Repository tier (owner-based) -- matched against each repo's owner in MorphoDepotLogic.search().
+        criteria["tier"] = []
+        model = self.tierComboBox.checkableModel()
         for row in range(model.rowCount()):
             index = model.index(row, 0)
-            if self.repoTypeComboBox.checkState(index) == qt.Qt.Checked:
-                criteria["repoType"].append(repoTypeQuestionData[1][row])
+            if self.tierComboBox.checkState(index) == qt.Qt.Checked:
+                criteria["tier"].append(MorphoDepotSearchForm.TIER_OPTIONS[row])
 
         questions = MorphoDepotAccessionForm.formQuestions
         for question, questionData in questions.items():
