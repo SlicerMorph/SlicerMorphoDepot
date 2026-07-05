@@ -17,13 +17,21 @@ The Slicer extension uses git behind the scenes, but most of the project managem
 MorphoDepot consisted of a single module with a tabbed workflow
 
 * **Configure:** contains variables such as github username, path to the GH cli and git, as well as where the local repositories will be stored. User cannot proceed unless all fields are configured correctly and they logged into GitHub via the GH cli commands (see next section).
-* **Search:** Queries the github for currently existing MorphoDepot repositories and creates a summary table  Results can be filtered.
+* **Search:** Browse existing MorphoDepot repositories in a filterable summary table. Repositories are grouped by type — **Archival** (in the MorphoDepot organization) and **Personal** (individual accounts) — and the list defaults to Archival.
 * **Annotate:** Primary interface the "segmentor" persona will interact with MorphoDepot. 
 * **Review:** Primary interface the "repository owner" persona will interact with MorphoDepot
-* **Create:** Interface to create a MorphoDepot repository from scratch
+* **Create:** Interface to create a MorphoDepot repository from scratch. You first choose the **repository type** (see *Repository types* below) — **Archival** (in the MorphoDepot organization, citable with a DOI; members only) or **Personal** (on your own account, no DOI) — then complete a questionnaire describing the scan and specimen, choose an anatomical terminology (color table), and optionally include a baseline segmentation.
 * **Release:** Interface for the "repository owner" persona to cut versioned releases (`v1`, `v2`, …) of a project. The owner selects the merged baseline segmentation and a color table, optionally attaches screenshots and release notes, and publishes a tagged GitHub release whose baseline becomes the starting point contributors sync to. The tab can also announce an upcoming release with a deadline to notify contributors and close out open issues before the release is cut.
+* **Collections:** Curate a **collection** — a themed grouping of existing MorphoDepot repositories (e.g. *"Mammal Skulls of the PNW"*, *"Snakes of Texas"*). Anyone can browse existing collections; **organization members** can create one by giving it a title and adding at least two member repositories. A collection is itself a lightweight repository in the MorphoDepot organization that links to its members.
 
 <img src="./Search_MD.png" width="400">
+
+## Repository types: Archival vs. Personal
+
+Every MorphoDepot repository is one of two types, chosen when it is created — the distinction is simply **where it lives**:
+
+* **Archival** — created in the **MorphoDepot GitHub organization**. These are the curated, long-term datasets: they go through review, are issued a **DOI** (via Zenodo) so they can be cited, and are the ones shown by default in **Search**. Creating an archival repository requires membership in the MorphoDepot organization ([join.morphodepot.org](https://join.morphodepot.org), currently in development).
+* **Personal** — created on **your own GitHub account**. Anyone can create one — no membership, no DOI — and how long you keep it is up to you. Personal repositories can still be segmented and contributed to like any other.
 
 ## Prerequisites for using MorphoDepot
 (If you using [MorphoCloud On Demand Instances](https://morphocloud.org), you only need to complete step #4)
