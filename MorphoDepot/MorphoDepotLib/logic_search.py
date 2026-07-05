@@ -39,6 +39,11 @@ class SearchMixin:
             if journals:
                 for j in journals:
                     try:
+                        # Collections (md-collection "repos of repos") are not datasets to segment,
+                        # so keep them out of Search entirely.  drain.py stamps their journal with a
+                        # `collection` key (absent on dataset journals).
+                        if j.get("collection"):
+                            continue
                         owner, repo = j["nameWithOwner"].split("/", 1)
                         key = f"{owner}^{repo}"
                         repoData = dict(j.get("accession", {}))
