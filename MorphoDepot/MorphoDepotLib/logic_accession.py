@@ -49,6 +49,7 @@ def _tripletFromIdentifier(s):
     if not s or not isinstance(s, str):
         return None
     tail = s.rstrip("/").split("/")[-1]            # URL -> last path segment; URN/triplet unchanged
+    tail = tail.split("?", 1)[0].split("#", 1)[0]  # drop any query string / fragment on that segment
     parts = [p for p in tail.split(":") if p != ""]
     if len(parts) < 3:
         return None
@@ -70,11 +71,14 @@ def _tripletFromRecord(rec):
     if triplet:
         return triplet, "occurrenceID"
     cat = (rec.get("catalogNumber") or "").strip()
-    if cat.count(":") >= 2 and _tripletFromIdentifier(cat):
-        return _tripletFromIdentifier(cat), "catalogNumber"
+    catTriplet = _tripletFromIdentifier(cat)
+    if cat.count(":") >= 2 and catTriplet:
+        return catTriplet, "catalogNumber"
     inst = (rec.get("institutionCode") or "").strip()
     coll = (rec.get("collectionCode") or "").strip()
-    if inst and coll and cat:
+    # Only assemble when inst/coll actually look like codes -- some providers return verbose names
+    # ("University of Washington"), which would make a malformed triplet.
+    if inst and coll and cat and _CODE_RE.match(inst) and _CODE_RE.match(coll):
         return f"{inst}:{coll}:{cat}", "assembled"
     return None, None
 
@@ -85,12 +89,12 @@ def extractAccession(url):
     out = {"url": url, "source": "Unknown", "specimenIdentifier": None,
            "via": None, "scientificName": None, "resolved": False}
     try:
-        host = (urlparse(url).netloc or "").lower()
-        if "arctos.database.museum" in host:
+        host = (urlparse(url).hostname or "").lower()   # .hostname drops any :port / userinfo
+        if host == "arctos.database.museum" or host.endswith(".arctos.database.museum"):
             out["source"] = "Arctos"
             triplet = _tripletFromIdentifier(url)          # triplet is in the URL path; no network
             out.update(specimenIdentifier=triplet, via="url-path", resolved=bool(triplet))
-        elif "gbif.org" in host:
+        elif host == "gbif.org" or host.endswith(".gbif.org"):
             out["source"] = "GBIF"
             match = re.search(r"/occurrence/(\d+)", url)
             if match:
@@ -100,9 +104,9 @@ def extractAccession(url):
                 triplet, via = _tripletFromRecord(rec)
                 out.update(specimenIdentifier=triplet, via=via,
                            scientificName=data.get("species") or data.get("scientificName"), resolved=bool(triplet))
-        elif "idigbio.org" in host:
+        elif host == "idigbio.org" or host.endswith(".idigbio.org"):
             out["source"] = "iDigBio"
-            uuid = url.rstrip("/").split("/")[-1]
+            uuid = urlparse(url).path.rstrip("/").split("/")[-1]   # .path excludes query/fragment
             data = requests.get(f"https://search.idigbio.org/v2/view/records/{uuid}",
                                 timeout=_ACCESSION_TIMEOUT).json()
             record = (data or {}).get("data", {}) or {}
