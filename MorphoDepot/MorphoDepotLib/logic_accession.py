@@ -25,37 +25,126 @@ import ctk
 import slicer
 from slicer.i18n import tr as _
 from slicer.i18n import translate
+from urllib.parse import urlparse
+
+
+# --------------------------------------------------------------------------------------
+# Specimen-accession resolver: turn a pasted public-database record URL into a Darwin Core
+# triplet (institutionCode:collectionCode:catalogNumber, e.g. "UWBM:Mamm:82522") for the README
+# and MorphoDepotAccession.json.  Best-effort and self-contained: never raises, times every
+# network call, and degrades to {resolved: False} (raw URL retained) for anything it cannot
+# resolve.  GBIF and iDigBio cost one API call each; the triplet is in the Arctos URL path.
+# --------------------------------------------------------------------------------------
+
+_ACCESSION_TIMEOUT = 10
+# Colon tokens that mark a scheme/URN wrapper rather than an institution/collection code -- guards
+# against uuid/urn/doi identifiers that would otherwise look triplet-shaped.
+_NON_INSTITUTION_TOKENS = {"urn", "uuid", "http", "https", "doi", "ark", "hdl", "guid", "catalog", "uri", "url"}
+_CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
+
+
+def _tripletFromIdentifier(s):
+    """Extract a DwC triplet INST:COLL:CAT from an occurrenceID/GUID that may be a bare triplet, a
+    URN (URN:catalog:INST:COLL:CAT), or a URL (.../guid/INST:COLL:CAT).  None if no real triplet."""
+    if not s or not isinstance(s, str):
+        return None
+    tail = s.rstrip("/").split("/")[-1]            # URL -> last path segment; URN/triplet unchanged
+    parts = [p for p in tail.split(":") if p != ""]
+    if len(parts) < 3:
+        return None
+    inst, coll, cat = parts[-3], parts[-2], parts[-1]
+    if inst.lower() in _NON_INSTITUTION_TOKENS or coll.lower() in _NON_INSTITUTION_TOKENS:
+        return None
+    if not _CODE_RE.match(inst) or not _CODE_RE.match(coll) or not cat:
+        return None
+    return f"{inst}:{coll}:{cat}"
+
+
+def _tripletFromRecord(rec):
+    """Priority ladder over a normalized record: occurrenceID (most reliable) -> a catalogNumber
+    that already carries the triplet -> assembled from the three DwC fields.  Returns (triplet, via).
+    occurrenceID wins because providers overload institution/collection/catalog inconsistently (a
+    GBIF record can stuff the whole triplet into catalogNumber and put "Mammalogy" in collectionCode),
+    so naive assembly is unreliable; occurrenceID carries a triplet-bearing identifier far more often."""
+    triplet = _tripletFromIdentifier(rec.get("occurrenceID"))
+    if triplet:
+        return triplet, "occurrenceID"
+    cat = (rec.get("catalogNumber") or "").strip()
+    if cat.count(":") >= 2 and _tripletFromIdentifier(cat):
+        return _tripletFromIdentifier(cat), "catalogNumber"
+    inst = (rec.get("institutionCode") or "").strip()
+    coll = (rec.get("collectionCode") or "").strip()
+    if inst and coll and cat:
+        return f"{inst}:{coll}:{cat}", "assembled"
+    return None, None
+
+
+def extractAccession(url):
+    """Best-effort resolve of a pasted specimen-record URL.  Returns a dict with keys url, source,
+    specimenIdentifier, via, scientificName, resolved (+ error on exception).  Never raises."""
+    out = {"url": url, "source": "Unknown", "specimenIdentifier": None,
+           "via": None, "scientificName": None, "resolved": False}
+    try:
+        host = (urlparse(url).netloc or "").lower()
+        if "arctos.database.museum" in host:
+            out["source"] = "Arctos"
+            triplet = _tripletFromIdentifier(url)          # triplet is in the URL path; no network
+            out.update(specimenIdentifier=triplet, via="url-path", resolved=bool(triplet))
+        elif "gbif.org" in host:
+            out["source"] = "GBIF"
+            match = re.search(r"/occurrence/(\d+)", url)
+            if match:
+                data = requests.get(f"https://api.gbif.org/v1/occurrence/{match.group(1)}",
+                                    timeout=_ACCESSION_TIMEOUT).json()
+                rec = {k: data.get(k) for k in ("occurrenceID", "catalogNumber", "institutionCode", "collectionCode")}
+                triplet, via = _tripletFromRecord(rec)
+                out.update(specimenIdentifier=triplet, via=via,
+                           scientificName=data.get("species") or data.get("scientificName"), resolved=bool(triplet))
+        elif "idigbio.org" in host:
+            out["source"] = "iDigBio"
+            uuid = url.rstrip("/").split("/")[-1]
+            data = requests.get(f"https://search.idigbio.org/v2/view/records/{uuid}",
+                                timeout=_ACCESSION_TIMEOUT).json()
+            record = (data or {}).get("data", {}) or {}
+            rec = {"occurrenceID": record.get("dwc:occurrenceID"), "catalogNumber": record.get("dwc:catalogNumber"),
+                   "institutionCode": record.get("dwc:institutionCode"), "collectionCode": record.get("dwc:collectionCode")}
+            triplet, via = _tripletFromRecord(rec)
+            out.update(specimenIdentifier=triplet, via=via, scientificName=record.get("dwc:scientificName"), resolved=bool(triplet))
+    except Exception as e:
+        out["error"] = repr(e)
+        logging.warning(f"Accession extraction failed for {url!r}: {e}")
+    return out
 
 
 class AccessionMixin:
     def _resolveSpeciesString(self, accessionData, fallbackSpecies=""):
-        """Determine the species string from accession data — via the iDigBio record when the
-        specimen is accessioned there, otherwise the directly-entered species field.  Shared by
-        create (_stageRepoFiles) and edit (saveStagedRepoEdits) so the README/topic stay
-        consistent.  Robust to an unavailable/empty iDigBio response (network error, bad
-        specimen id, service down): it never raises, and on the edit path `fallbackSpecies`
-        (the species already recorded for the repo) is used so a transient outage does not
-        blank a previously-resolved species."""
-        if accessionData.get('iDigBioAccessioned', ['', ''])[1] == "Yes":
-            idigbioURL = accessionData.get('iDigBioURL', ['', ''])[1]
-            specimenID = idigbioURL.split("/")[-1] if idigbioURL else ""
-            try:
-                import idigbio
-                api = idigbio.json()
-                idigbioData = api.view("records", specimenID) if specimenID else None
-                data = idigbioData.get('data') if isinstance(idigbioData, dict) else None
-                if data:
-                    if 'ala:species' in data:
-                        return data['ala:species']
-                    if 'dwc:scientificName' in data:
-                        return data['dwc:scientificName']
-                logging.warning(f"Could not find species for '{idigbioURL}' (response: {idigbioData})")
-            except Exception as e:
-                logging.warning(f"iDigBio species lookup failed for '{idigbioURL}': {e}")
-            # Lookup unavailable/empty: keep the already-recorded species (edit), then the
-            # directly-entered field, then a safe default — never crash, never blindly blank.
-            return fallbackSpecies or accessionData.get('species', ['', ''])[1] or "Unknown species"
-        return accessionData.get('species', ['', ''])[1]
+        """The species string for the README/topic.  Uses the directly-entered species field, which
+        the Create form already validates against the GBIF backbone taxonomy; on the edit path
+        `fallbackSpecies` (the species already recorded for the repo) covers a blank entry so a
+        re-save never blanks it.  The accessioned-specimen URL is provenance only and is NOT parsed
+        for species (see extractAccession / _injectAccessionFields)."""
+        return accessionData.get('species', ['', ''])[1] or fallbackSpecies or "Unknown species"
+
+    def _accessionURL(self, accessionData):
+        """The raw accessioned-specimen record URL from accessionData (stored under the legacy
+        ``iDigBioURL`` key as a ``[label, answer]`` pair).  '' when absent."""
+        value = accessionData.get('iDigBioURL')
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            return (value[1] or "").strip()
+        return value.strip() if isinstance(value, str) else ""
+
+    def _injectAccessionFields(self, accessionData):
+        """Resolve the accessioned-specimen record (best-effort) and stamp the derived provenance
+        fields (``specimenIdentifier`` / ``accessionSource`` / ``accessionResolved``) into
+        accessionData in place, for MorphoDepotAccession.json and the README.  Returns the full
+        extraction dict.  Never raises and never blocks staging: an absent/unresolvable URL simply
+        yields ``accessionResolved = False`` with the raw URL retained."""
+        url = self._accessionURL(accessionData)
+        info = extractAccession(url) if url else {}
+        accessionData['specimenIdentifier'] = info.get('specimenIdentifier')
+        accessionData['accessionSource'] = info.get('source', 'Unknown')
+        accessionData['accessionResolved'] = bool(info.get('resolved'))
+        return info
 
     def _writeLicense(self, repoDir, accessionData):
         """Write LICENSE.txt for the chosen Creative Commons license."""
@@ -71,11 +160,21 @@ class AccessionMixin:
     def _renderReadme(self, accessionData, speciesString, screenshotItems=None):
         """Build README.md text from accession data.  screenshotItems is an ordered list of
         (filename, caption) for images under the screenshots/ directory."""
+        # The accessioned-specimen provenance line: the resolved Darwin Core triplet linked to its
+        # public record when we have both, else the bare record URL, else nothing.
+        specimenId = accessionData.get('specimenIdentifier')
+        accessionURL = self._accessionURL(accessionData)
+        if specimenId and accessionURL:
+            specimenLine = f"* Accessioned specimen: {specimenId} ([record]({accessionURL}))\n"
+        elif accessionURL:
+            specimenLine = f"* Accessioned specimen record: {accessionURL}\n"
+        else:
+            specimenLine = ""
         readme_content = f"""
 ## MorphoDepot Repository
 Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepotAccession.json) for specimen details.
 * Species: {speciesString}
-* Modality: {accessionData['modality'][1]}
+{specimenLine}* Modality: {accessionData['modality'][1]}
 * Contrast: {accessionData['contrastEnhancement'][1]}
 * Dimensions: {accessionData['scanDimensions']}
 * Spacing (mm): {accessionData['scanSpacing']}
@@ -200,6 +299,10 @@ jobs:
         colorTableName = colorTable.GetName()
         slicer.util.saveNode(colorTable, os.path.join(repoDir, colorTableName) + ".csv")
         repoFileNames.append(f"{colorTableName}.csv")
+
+        # Resolve the accessioned-specimen record (best-effort) so the derived provenance fields
+        # land in MorphoDepotAccession.json and the README.  Never blocks staging.
+        self._injectAccessionFields(accessionData)
 
         # write accessionData file
         accessionData['fileFormatVersion'] = self.accessionFileFormatVersion
@@ -823,7 +926,9 @@ jobs:
         # it) so a transient iDigBio outage during re-resolution can't blank it.
         priorSpecies = self._speciesFromReadme(repoDir)
 
-        # Regenerate the metadata-derived files from the edited data.
+        # Regenerate the metadata-derived files from the edited data.  Re-resolve the accession
+        # record in case the specimen URL was edited (best-effort; never blocks the re-save).
+        self._injectAccessionFields(accessionData)
         accessionData['fileFormatVersion'] = self.accessionFileFormatVersion
         with open(os.path.join(repoDir, "MorphoDepotAccession.json"), "w") as fp:
             fp.write(json.dumps(accessionData, indent=4))
