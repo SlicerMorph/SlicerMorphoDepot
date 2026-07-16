@@ -32,7 +32,7 @@ class DepsMixin:
         return hasattr(slicer.vtkSegment, "SetTerminology")
 
     def checkPythonDependencies(self):
-        """See if pygbif and idigbio are available.
+        """See if pygbif is available (used for the taxon-name check and species search).
         The GitPython package is installed by default in slicer.
         """
         try:
@@ -40,15 +40,10 @@ class DepsMixin:
         except ModuleNotFoundError:
             return False
 
-        try:
-            import idigbio
-        except ModuleNotFoundError:
-            return False
-
         return True
 
     def installPythonDependencies(self):
-        """Install pygbif and idigbio if needed
+        """Install pygbif if needed
         """
         try:
             import pygbif
@@ -56,13 +51,6 @@ class DepsMixin:
             self.progressMethod(f"Installing pygbif")
             slicer.util.pip_install("pygbif")
             import pygbif
-
-        try:
-            import idigbio
-        except ModuleNotFoundError:
-            self.progressMethod(f"Installing idigbio")
-            slicer.util.pip_install("idigbio")
-            import idigbio
 
     def checkCommand(self, command):
         try:

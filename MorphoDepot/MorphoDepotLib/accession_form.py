@@ -53,14 +53,17 @@ class MorphoDepotAccessionForm():
 
         # section 2
         "iDigBioAccessioned" : (
-            "Is your specimen's species in the iDigBio database?",
+            "Is your specimen accessioned in a public database or repository (e.g. GBIF, iDigBio, Arctos)?",
             ["Yes", "No"],
             ""
         ),
         "iDigBioURL" : (
-            "Enter URL from iDigBio:",
+            "Paste the record URL:",
             "",
-            "Go to iDigBio portal, search for the specimen, click the link and paste the URL below (it should look something like this: https://www.idigbio.org/portal/records/b328320d-268e-4bfc-ae70-1c00f0891f89)"
+            "Paste the URL of this specimen's record in a public database. For example:\n"
+            "  GBIF:     https://www.gbif.org/occurrence/1702720653\n"
+            "  iDigBio:  https://portal.idigbio.org/portal/records/<record-uuid>\n"
+            "  Arctos:   https://arctos.database.museum/guid/UWBM:Mamm:82522"
         ),
 
         # section 3
@@ -204,9 +207,9 @@ class MorphoDepotAccessionForm():
         q,a,t = form["iDigBioAccessioned"]
         self.questions["iDigBioAccessioned"] = FormRadioQuestion(q, a, self.validateForm)
         layout.addWidget(self.questions["iDigBioAccessioned"].questionBox)
-        self.gotoiDigBioButton = qt.QPushButton("Open iDigBio")
-        self.gotoiDigBioButton.connect("clicked()", lambda : qt.QDesktopServices.openUrl(qt.QUrl("https://iDigBio.org")))
-        layout.addWidget(self.gotoiDigBioButton)
+        self.gotoAccessionButton = qt.QPushButton("Search GBIF")
+        self.gotoAccessionButton.connect("clicked()", lambda : qt.QDesktopServices.openUrl(qt.QUrl("https://www.gbif.org/occurrence/search")))
+        layout.addWidget(self.gotoAccessionButton)
         q,a,t = form["iDigBioURL"]
         self.questions["iDigBioURL"] = FormTextQuestion(q, self.validateForm)
         self.questions["iDigBioURL"].questionBox.toolTip = t
@@ -375,10 +378,10 @@ class MorphoDepotAccessionForm():
                 self.sectionWidgets[2].show()
                 if self.questions["iDigBioAccessioned"].answer() == "Yes":
                     self.questions["iDigBioURL"].questionBox.show()
-                    self.gotoiDigBioButton.show()
+                    self.gotoAccessionButton.show()
                 else:
                     self.questions["iDigBioURL"].questionBox.hide()
-                    self.gotoiDigBioButton.hide()
+                    self.gotoAccessionButton.hide()
 
             if self.questions["imageContents"].answer() == "Partial specimen":
                 self.sectionWidgets[5].show()
@@ -398,10 +401,11 @@ class MorphoDepotAccessionForm():
         if isBiological:
             if self.questions["specimenSource"].answer() == "":
                 valid = False
-            if self.questions["specimenSource"].answer() == "Accessioned specimen":
-                if self.questions["iDigBioAccessioned"].answer() == "Yes":
-                    if not self.questions["iDigBioURL"].answer().startswith("https://portal.idigbio.org/portal/records"):
-                        valid = False
+            # The accessioned-specimen record URL is captured but does NOT gate staging: a missing
+            # or malformed URL never blocks Create (a valid record often isn't an iDigBio portal
+            # link -- it may be GBIF, Arctos, etc.).  For archival repos its presence and validity
+            # are enforced at the server-side review gate, which surfaces a warning to the reviewer
+            # rather than breaking the member's staging.
 
             # Section 3 is always required for biological
             valid = valid and self.questions["species"].answer() != ""

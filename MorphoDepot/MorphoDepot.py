@@ -96,7 +96,7 @@ class EnableModuleMixin:
         pass
 
     def offerPythonInstallation(self):
-        msg = "Extra python packages (idigbio and pygbif) are required."
+        msg = "An extra python package (pygbif) is required."
         msg += "\nClick OK to install them for MorphoDepot."
         install = slicer.util.confirmOkCancelDisplay(msg)
         if install:
