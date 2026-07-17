@@ -239,7 +239,10 @@ class RepoMixin:
         needs no GitHub access to the private candidate — the App is the reader."""
         import base64
         nameWithOwner = payload.get("nameWithOwner", "candidate")
-        cacheDir = os.path.join(self.localRepositoryDirectory(), "MorphoDepotCaches", "ReviewInspect")
+        # Per-candidate cache subdir so segmentation/color files from different candidates (keyed only
+        # by basename) can never clobber each other, even out of the sequential scene-cleared flow.
+        cacheDir = os.path.join(self.localRepositoryDirectory(), "MorphoDepotCaches", "ReviewInspect",
+                                nameWithOwner.replace("/", "-"))
         os.makedirs(cacheDir, exist_ok=True)
 
         # Color table (payload bytes -> temp file -> load).
@@ -261,14 +264,20 @@ class RepoMixin:
             raise RuntimeError("Candidate has no source_volume pointer")
         volumeURL = self.resolveVolumeURL(volumeRef, nameWithOwner)
         checksum = (payload.get("sourceVolumeChecksum") or "").strip() or None
+        if not checksum:
+            # Parity with loadFromLocalRepository (S4): no checksum -> integrity can't be verified.
+            self.progressMethod("Warning: payload has no sourceVolumeChecksum; cannot verify volume integrity.")
         volumeCacheDir = os.path.join(self.localRepositoryDirectory(), "MorphoDepotCaches", "Volumes")
         os.makedirs(volumeCacheDir, exist_ok=True)
         nrrdPath = os.path.join(volumeCacheDir, f"{nameWithOwner.replace('/', '-')}-volume.nrrd")
         if checksum and os.path.exists(nrrdPath) and not self._fileMatchesChecksum(nrrdPath, checksum):
             try:
                 os.remove(nrrdPath)   # stale/tampered cache -> re-fetch (matches loadFromLocalRepository)
-            except OSError:
-                pass
+            except OSError as e:
+                # S4: if the bad file can't be evicted we must NOT fall through — the `if not
+                # os.path.exists` below would skip the re-download and loadVolume the known-bad cache.
+                raise RuntimeError(
+                    f"Cached volume failed checksum and could not be removed for re-download: {e}")
         if not os.path.exists(nrrdPath):
             slicer.util.downloadFile(volumeURL, nrrdPath, checksum=checksum)
         self.sourceVolumeNode = slicer.util.loadVolume(nrrdPath)

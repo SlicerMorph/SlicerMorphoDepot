@@ -178,7 +178,8 @@ class ReviewTabMixin:
             return
         with slicer.util.tryWithErrorDisplay("Failed to inspect the candidate", waitCursor=True):
             slicer.util.showStatusMessage(f"Loading {nameWithOwner} for review...")
-            payload = self.logic.inspectCandidate(candidate.get("name"))
+            repoName = candidate.get("name") or (candidate.get("nameWithOwner") or "").split("/")[-1]
+            payload = self.logic.inspectCandidate(repoName)
             slicer.mrmlScene.Clear()
             self.logic.loadCandidateForReview(payload)
             slicer.util.showStatusMessage(f"Loaded {nameWithOwner} (read-only review)")
