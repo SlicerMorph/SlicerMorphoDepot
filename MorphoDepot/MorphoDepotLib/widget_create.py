@@ -100,10 +100,17 @@ class CreateTabMixin:
         loaded into the scene, or re-saved -- that avoids the slow source-volume re-download of the
         edit-resume, removes the misleading "you can edit this" impression, and (crucially) keeps main
         at the approved commit so the DOI mint isn't blocked (docs/doi-mint-at-flip.md)."""
-        import json
         nameWithOwner = repo.get("nameWithOwner")
         repoName = repo.get("repoName")
         if not (nameWithOwner and repoName):
+            return
+        # `stagingContext` is a single shared slot -- don't silently clobber an in-progress staging
+        # session (a repo the curator just staged and is about to publish from the go-live form).
+        if getattr(self.logic, "stagingContext", None) is not None and not (
+                self.testingMode or slicer.util.confirmOkCancelDisplay(
+                    "Another staged repository is open for publishing. Proceeding will discard that "
+                    "in-progress session (the repo stays safe on GitHub). Continue?",
+                    windowTitle="Active staging session")):
             return
         if not (self.testingMode or slicer.util.confirmOkCancelDisplay(
                 f"Publish {nameWithOwner}?\n\nThis makes the approved repository public and mints its "
@@ -135,7 +142,20 @@ class CreateTabMixin:
         # The published repo drops its staging topic and leaves the list.
         self._stagedReposListPopulated = False
         self.refreshStagedReposList(force=True)
-        if final and not isinstance(final, dict) and not self.testingMode:
+        # An approved repo should flip (publishStagedRepo returns the public name string).  Defensive:
+        # if the App instead opened a fresh review (approval expired) or auto-bounced, say so rather
+        # than failing mute.
+        if isinstance(final, dict):
+            if final.get("changesRequested") and not self.testingMode:
+                slicer.util.errorDisplay(
+                    f"{nameWithOwner} could not be published — automated checks reported issues. "
+                    "Load it to edit, fix them, and re-submit.", windowTitle="Changes requested")
+            elif final.get("pending") and not self.testingMode:
+                slicer.util.infoDisplay(
+                    f"{nameWithOwner} was re-submitted for review (its earlier approval had expired).",
+                    windowTitle="Pending review")
+            return
+        if final and not self.testingMode:
             slicer.util.infoDisplay(f"{final} is now public.", windowTitle="Published")
 
     def _openStagedRepoInBrowser(self, repo):
