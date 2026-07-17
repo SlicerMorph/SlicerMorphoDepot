@@ -86,12 +86,15 @@ class CreateTabMixin:
         openAction = menu.addAction("Open the private repo in browser")
         openAction.connect("triggered()", lambda r=repo: self._openStagedRepoInBrowser(r))
         if repo.get("reviewState") == "approved":
-            # It has been reviewed -- go straight to publish. No clone, no volume download, no edit
-            # (which would also change main and block the mint, see publishApprovedStagedRepo).
+            # Reviewed -> go straight to publish; do NOT offer edit (an edit would re-clone + re-
+            # download the volume AND change main, invalidating the review/mint, see
+            # publishApprovedStagedRepo).
             publishAction = menu.addAction("Publish (make public)")
             publishAction.connect("triggered()", lambda r=repo: self.publishApprovedStagedRepo(r))
-        editAction = menu.addAction("Load the repo to edit")
-        editAction.connect("triggered()", lambda i=item: self.onStagedRepoActivated(i))
+        else:
+            # Editing only makes sense before approval.
+            editAction = menu.addAction("Load the repo to edit")
+            editAction.connect("triggered()", lambda i=item: self.onStagedRepoActivated(i))
         menu.exec_(listWidget.mapToGlobal(point))
 
     def publishApprovedStagedRepo(self, repo):
@@ -166,9 +169,17 @@ class CreateTabMixin:
     def onStagedRepoActivated(self, item):
         """Resume the repo double-clicked in the unpublished list: clone it, pre-fill the
         questionnaire from its committed metadata so the curator can review/correct it, and
-        restore the Publish / Discard gate.  Edits are applied at Publish (saveStagedRepoEdits)."""
+        restore the Publish / Discard gate.  Edits are applied at Publish (saveStagedRepoEdits).
+
+        An already-APPROVED repo is NOT reopened here: re-cloning + re-downloading the volume and a
+        possible edit-resave would change main and invalidate the review/DOI mint.  Double-clicking
+        one just points the curator at right-click -> Publish."""
         repo = self._stagedReposByItem.get(item)
         if not repo:
+            return
+        if repo.get("reviewState") == "approved":
+            slicer.util.showStatusMessage(
+                "This repository is approved — right-click it and choose Publish to make it public.")
             return
         try:
             with slicer.util.tryWithErrorDisplay(_("Trouble resuming staged repository"), waitCursor=True):
