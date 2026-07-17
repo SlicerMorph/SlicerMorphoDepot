@@ -113,6 +113,61 @@ class ControlPlaneMixin:
             raise RuntimeError(f"Control plane '{path}' failed ({r.status_code}): {detail}")
         return r.json()
 
+    # --- reviewer tools (repoadmin-gated; org-design Sec.11.6) ---
+    # The org team whose members may use the App-proxied candidate-inspection tools. It is an
+    # AUTHORIZATION LIST the App checks, never a repo grant. The App is the hard gate; this
+    # client-side check only decides whether to SHOW the reviewer UI.
+    repoAdminTeam = "repoadminteam"
+
+    def repoAdminStatus(self):
+        """Whether the active user is a member of the reviewer team (repoadminteam), asked DIRECTLY
+        of GitHub (fast; avoids the intermittently-slow App). Returns 'yes' | 'no' | 'unknown'.
+        Caches only a CONFIRMED result. Used to show/hide the Review-tab reviewer tools — fail-CLOSED
+        for the UI (a non-'yes' hides the section); the App enforces access regardless (Sec.11.6).
+        Reload the module after being added to / removed from the team so the cache refreshes."""
+        org = self.morphoDepotOrg
+        team = self.repoAdminTeam
+        cache = getattr(self, "_repoAdminCache", None)
+        if cache is not None and cache[0] == (org, team) and cache[1] in ("yes", "no"):
+            return cache[1]
+        me = self.whoami()
+        try:
+            # 'active' = a member OR maintainer of the team (both count); 'pending' = invited but not
+            # yet accepted (not a reviewer yet). A 404 exits non-zero with "HTTP 404" = not on the team.
+            state = (self.gh(["api", f"/orgs/{org}/teams/{team}/memberships/{me}", "--jq", ".state"],
+                             timeout=10, quietErrors=True) or "").strip()
+            if state == "active":
+                status = "yes"
+            elif state:
+                status = "no"
+            else:
+                # exit 0 but no state (unexpected shape) -> indeterminate; don't cache.
+                return "unknown"
+        except Exception as e:
+            if "HTTP 404" in str(e):
+                status = "no"
+            else:
+                logging.warning(f"repoadmin check failed (status unknown): {e}")
+                return "unknown"
+        self._repoAdminCache = ((org, team), status)
+        return status
+
+    def isRepoAdmin(self):
+        """True only when repoadminteam membership is CONFIRMED (fail-closed: 'unknown' -> False)."""
+        return self.repoAdminStatus() == "yes"
+
+    def reviewQueue(self):
+        """The reviewer queue from the App (repoadmin-gated + staging-only server-side): a list of
+        staged candidates awaiting review. Raises on transport/policy error so the caller surfaces it."""
+        result = self.controlPlaneRequest("reviews/queue", {}, timeout=60)
+        return result.get("candidates", []) if isinstance(result, dict) else []
+
+    def inspectCandidate(self, repoName):
+        """Fetch the App-served review payload for a staged candidate (repoadmin-gated, staging-only,
+        read-only server-side). `repoName` is the bare repo name; returns the inspection payload
+        (source_volume pointer + checksum, color table, segmentation(s))."""
+        return self.controlPlaneRequest("reviews/inspect", {"repo": repoName}, timeout=120)
+
     def reviewStatus(self, repoNames):
         """The caller's own per-repo review state {name: 'approved'|'pending'|'none'} from the control
         plane, used to label the unpublished list.  Best-effort -> {} on any error so the list still

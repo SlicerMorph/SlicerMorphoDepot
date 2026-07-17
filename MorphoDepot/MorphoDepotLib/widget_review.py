@@ -99,4 +99,87 @@ class ReviewTabMixin:
             self._completeStepReset("Review (approve) is successfully completed",
                                     "The pull request was approved and merged.")
 
+    # --- Reviewer tools: inspect a staged publish candidate (repoadminteam only; org-design Sec.11.6) ---
+
+    def _setupReviewerInspect(self):
+        """Build the repoadmin-only 'Repositories awaiting review' section and insert it at the TOP of
+        the Review tab. Hidden by default; enter() reveals it only for a confirmed repoadminteam
+        member. Loads a staged candidate's volume + segmentation read-only via the App (no clone,
+        no GitHub access to the private repo needed)."""
+        self._reviewCandidatesByItem = {}
+        section = ctk.ctkCollapsibleButton()
+        section.text = "Repositories awaiting review (reviewers only)"
+        section.collapsed = False
+        layout = qt.QVBoxLayout(section)
+        hint = qt.QLabel(
+            "Inspect a staged publish candidate's source volume and segmentation in Slicer, "
+            "read-only. Approve or request changes from the review email.")
+        hint.wordWrap = True
+        layout.addWidget(hint)
+        self.reviewQueueRefreshButton = qt.QPushButton("Refresh review queue")
+        layout.addWidget(self.reviewQueueRefreshButton)
+        self.reviewQueueList = qt.QListWidget()
+        self.reviewQueueList.setToolTip("Staged candidates awaiting publication review.")
+        layout.addWidget(self.reviewQueueList)
+        self.inspectCandidateButton = qt.QPushButton("Inspect in Slicer (read-only)")
+        self.inspectCandidateButton.enabled = False
+        layout.addWidget(self.inspectCandidateButton)
+
+        self.reviewTabWidget.layout().insertWidget(0, section)
+        self.reviewerInspectSection = section
+        section.visible = False  # enter() reveals it only for a confirmed repoadminteam member
+
+        self.reviewQueueRefreshButton.connect("clicked(bool)", self.onReviewQueueRefresh)
+        self.reviewQueueList.itemSelectionChanged.connect(self.onReviewQueueSelectionChanged)
+        self.reviewQueueList.itemDoubleClicked.connect(self.onInspectCandidate)
+        self.inspectCandidateButton.connect("clicked(bool)", self.onInspectCandidate)
+
+    def onReviewQueueRefresh(self):
+        with slicer.util.tryWithErrorDisplay("Failed to load the review queue", waitCursor=True):
+            slicer.util.showStatusMessage("Loading review queue...")
+            self.reviewQueueList.clear()
+            self._reviewCandidatesByItem = {}
+            self.inspectCandidateButton.enabled = False
+            candidates = self.logic.reviewQueue()
+            if not candidates:
+                placeholder = qt.QListWidgetItem("(no repositories awaiting review)")
+                placeholder.setFlags(qt.Qt.NoItemFlags)
+                self.reviewQueueList.addItem(placeholder)
+                return
+            for c in candidates:
+                curator = c.get("curator") or "?"
+                item = qt.QListWidgetItem(f"{c.get('nameWithOwner')}    (curator: {curator})")
+                self._reviewCandidatesByItem[item] = c
+                self.reviewQueueList.addItem(item)
+            slicer.util.showStatusMessage(f"{len(candidates)} awaiting review")
+
+    def onReviewQueueSelectionChanged(self):
+        selected = self.reviewQueueList.selectedItems()
+        self.inspectCandidateButton.enabled = any(
+            i in self._reviewCandidatesByItem for i in selected)
+
+    def onInspectCandidate(self, item=None):
+        candidate = self._reviewCandidatesByItem.get(item) if item is not None else None
+        if candidate is None:
+            selected = self.reviewQueueList.selectedItems()
+            candidate = self._reviewCandidatesByItem.get(selected[0]) if selected else None
+        if candidate is None:
+            return
+        nameWithOwner = candidate.get("nameWithOwner")
+        if not (self.testingMode or slicer.util.confirmOkCancelDisplay(
+                f"Close the current scene and load {nameWithOwner} for review?")):
+            return
+        with slicer.util.tryWithErrorDisplay("Failed to inspect the candidate", waitCursor=True):
+            slicer.util.showStatusMessage(f"Loading {nameWithOwner} for review...")
+            payload = self.logic.inspectCandidate(candidate.get("name"))
+            slicer.mrmlScene.Clear()
+            self.logic.loadCandidateForReview(payload)
+            slicer.util.showStatusMessage(f"Loaded {nameWithOwner} (read-only review)")
+            slicer.util.infoDisplay(
+                f"Loaded {nameWithOwner} for review (read-only).\n\n"
+                "This is a reviewer preview — inspect the source volume and segmentation. "
+                "Approve or request changes from the review email.",
+                windowTitle="Reviewing a candidate",
+                dontShowAgainSettingsKey="MorphoDepot/DontShowReviewInspectNotice")
+
     # Release

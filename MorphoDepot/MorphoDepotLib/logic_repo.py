@@ -229,6 +229,63 @@ class RepoMixin:
         self.loadFromLocalRepository(remoteName="origin", configuration="preview")
         return True
 
+    def loadCandidateForReview(self, payload):
+        """Load an App-served review candidate into Slicer READ-ONLY, without cloning (org-design
+        Sec.11.6). The color table + baseline segmentation(s) come from `payload` (the App read them
+        with its own token, gated to repoadminteam + staging-only); the source VOLUME is downloaded
+        from its public-read S3 URL. The caller clears the scene first. Returns True on success.
+
+        This is the reviewer counterpart to loadRepoForPreview: same read-only result, but a reviewer
+        needs no GitHub access to the private candidate — the App is the reader."""
+        import base64
+        nameWithOwner = payload.get("nameWithOwner", "candidate")
+        cacheDir = os.path.join(self.localRepositoryDirectory(), "MorphoDepotCaches", "ReviewInspect")
+        os.makedirs(cacheDir, exist_ok=True)
+
+        # Color table (payload bytes -> temp file -> load).
+        self.colorTableNode = None
+        ct = payload.get("colorTable")
+        if ct and ct.get("contentB64"):
+            # basename(): the file name comes from repo content — never let it escape the cache dir.
+            ctPath = os.path.join(cacheDir, os.path.basename(ct.get("name") or "colors.csv"))
+            with open(ctPath, "wb") as fp:
+                fp.write(base64.b64decode(ct["contentB64"]))
+            try:
+                self.colorTableNode = slicer.util.loadColorTable(ctPath)
+            except Exception as e:
+                self.progressMethod(f"Could not load color table: {e}")
+
+        # Source volume from the public-read object store (same path as a normal load).
+        volumeRef = (payload.get("sourceVolume") or "").strip()
+        if not volumeRef:
+            raise RuntimeError("Candidate has no source_volume pointer")
+        volumeURL = self.resolveVolumeURL(volumeRef, nameWithOwner)
+        checksum = (payload.get("sourceVolumeChecksum") or "").strip() or None
+        volumeCacheDir = os.path.join(self.localRepositoryDirectory(), "MorphoDepotCaches", "Volumes")
+        os.makedirs(volumeCacheDir, exist_ok=True)
+        nrrdPath = os.path.join(volumeCacheDir, f"{nameWithOwner.replace('/', '-')}-volume.nrrd")
+        if checksum and os.path.exists(nrrdPath) and not self._fileMatchesChecksum(nrrdPath, checksum):
+            try:
+                os.remove(nrrdPath)   # stale/tampered cache -> re-fetch (matches loadFromLocalRepository)
+            except OSError:
+                pass
+        if not os.path.exists(nrrdPath):
+            slicer.util.downloadFile(volumeURL, nrrdPath, checksum=checksum)
+        self.sourceVolumeNode = slicer.util.loadVolume(nrrdPath)
+
+        # Baseline segmentation(s) from the payload — shown read-only (no Segment Editor set-up).
+        for seg in payload.get("segmentations") or []:
+            if not seg.get("contentB64"):
+                continue
+            segPath = os.path.join(cacheDir, os.path.basename(seg.get("name") or "baseline.seg.nrrd"))
+            with open(segPath, "wb") as fp:
+                fp.write(base64.b64decode(seg["contentB64"]))
+            try:
+                slicer.util.loadSegmentation(segPath)
+            except Exception as e:
+                self.progressMethod(f"Could not load segmentation {os.path.basename(segPath)}: {e}")
+        return True
+
     def _fileMatchesChecksum(self, filePath, checksum):
         """True if filePath's digest matches `checksum` ('<algo>:<hex>', e.g. 'SHA256:ab...', or a
         bare SHA-256 hex).  Used to re-verify the name-keyed volume cache on every load (review S4)."""
