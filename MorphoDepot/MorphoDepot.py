@@ -212,6 +212,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         uiWidget.setMRMLScene(slicer.mrmlScene)
         self.tabWidget.addTab(uiWidget, "Review")
         self.reviewUI = slicer.util.childWidgetVariables(uiWidget)
+        self.reviewTabWidget = uiWidget  # kept so the repoadmin-only reviewer section can be inserted
 
         uiWidget = slicer.util.loadUI(os.path.normpath(self.resourcePath("UI/MorphoDepotCreate.ui")))
         uiWidget.setMRMLScene(slicer.mrmlScene)
@@ -712,6 +713,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.reviewUI.hideDraftsCheckBox.stateChanged.connect(self.onHideDraftsChanged)
         self.reviewUI.requestChangesButton.clicked.connect(self.onRequestChanges)
         self.reviewUI.approveButton.clicked.connect(self.onApprove)
+        self._setupReviewerInspect()
         self.releaseUI.refreshButton.clicked.connect(self.onRefreshReleaseTab)
         self.releaseUI.repoList.itemDoubleClicked.connect(self.onReleaseRepoDoubleClicked)
         self.releaseUI.makeReleaseButton.clicked.connect(self.onMakeRelease)
@@ -789,6 +791,11 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         # Collections: only the "Create a Collection" section is member-gated; the existing-
         # collections list stays browsable by everyone.
         self.collectionsUI.createCollapsibleButton.enabled = not confirmedNonMember
+        # Reviewer tools (Review tab): show the "awaiting review" section ONLY for a CONFIRMED
+        # repoadminteam member; fail-closed (hidden) otherwise, incl. 'unknown' (org-design Sec.11.6).
+        # The App is the hard gate regardless; this only declutters the tab for non-reviewers.
+        if getattr(self, "reviewerInspectSection", None) is not None:
+            self.reviewerInspectSection.visible = moduleEnabled and self.logic.isRepoAdmin(forceRefresh=True)
         # If membership gating just disabled the currently-selected tab (Release), land on Create
         # instead of leaving a disabled tab selected.  Guarded on confirmedNonMember: only then did
         # we newly disable a tab AND is Create guaranteed enabled.  In the deps-not-ready case
