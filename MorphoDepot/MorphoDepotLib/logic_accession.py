@@ -691,11 +691,22 @@ jobs:
                     "reviewSentTo": resp.get("review_sent_to")}
 
         if status == "approved" and resp.get("flip"):
-            # Member-driven go-live (#20): the reviewer approved and the App minted the DOI WITHOUT
-            # flipping.  The MEMBER now flips the repo public and swaps the staging topic for the
-            # discovery topics, both with their own gh — so the App never needs Administration.
+            # Member-driven go-live (#20): the reviewer approved.  The MEMBER now flips the repo public
+            # and swaps the staging topic for the discovery topics, both with their own gh — so the App
+            # never needs Administration.
             self.progressMethod(f"Approved -- publishing {finalNameWithOwner}...")
             self.setRepoVisibility(finalNameWithOwner, public=True)
+            # Finalize: the App mints the v1 DOI on the now-public repo (docs/doi-mint-at-flip.md),
+            # part of the single Make-Public action.  Best-effort and idempotent — the repo IS public
+            # (the go-live succeeded); a mint hiccup only leaves the DOI pending, and re-running Make
+            # Public finalizes it.  When the App still mints at approval, this is a harmless no-op that
+            # returns the existing DOI; if the endpoint is absent (older App), it 404s and is skipped.
+            try:
+                self.progressMethod(f"Finalizing DOI for {finalNameWithOwner}...")
+                self.controlPlaneRequest("repos/finalize", {"repo": repoName})
+            except Exception as e:
+                logging.warning(f"DOI finalize did not complete for {finalNameWithOwner} "
+                                f"(the repo is public; re-run Make Public to finish the DOI): {e}")
             self.addMorphoTopics(finalNameWithOwner, species)
             self.ghTopicClearCache()
             self.localRepo = None
