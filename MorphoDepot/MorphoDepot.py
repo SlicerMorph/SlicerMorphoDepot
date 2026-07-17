@@ -795,7 +795,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         # repoadminteam member; fail-closed (hidden) otherwise, incl. 'unknown' (org-design Sec.11.6).
         # The App is the hard gate regardless; this only declutters the tab for non-reviewers.
         if getattr(self, "reviewerInspectSection", None) is not None:
-            self.reviewerInspectSection.visible = moduleEnabled and self.logic.isRepoAdmin()
+            self.reviewerInspectSection.visible = moduleEnabled and self.logic.isRepoAdmin(forceRefresh=True)
         # If membership gating just disabled the currently-selected tab (Release), land on Create
         # instead of leaving a disabled tab selected.  Guarded on confirmedNonMember: only then did
         # we newly disable a tab AND is Create guaranteed enabled.  In the deps-not-ready case

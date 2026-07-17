@@ -119,14 +119,17 @@ class ControlPlaneMixin:
     # client-side check only decides whether to SHOW the reviewer UI.
     repoAdminTeam = "repoadminteam"
 
-    def repoAdminStatus(self):
+    def repoAdminStatus(self, forceRefresh=False):
         """Whether the active user is a member of the reviewer team (repoadminteam), asked DIRECTLY
         of GitHub (fast; avoids the intermittently-slow App). Returns 'yes' | 'no' | 'unknown'.
         Caches only a CONFIRMED result. Used to show/hide the Review-tab reviewer tools — fail-CLOSED
         for the UI (a non-'yes' hides the section); the App enforces access regardless (Sec.11.6).
-        Reload the module after being added to / removed from the team so the cache refreshes."""
+        ``forceRefresh`` drops the cache and re-queries GitHub, so adding/removing the user from the
+        team is reflected on the next Review-tab Refresh without a full module reload."""
         org = self.morphoDepotOrg
         team = self.repoAdminTeam
+        if forceRefresh:
+            self._repoAdminCache = None
         cache = getattr(self, "_repoAdminCache", None)
         if cache is not None and cache[0] == (org, team) and cache[1] in ("yes", "no"):
             return cache[1]
@@ -152,9 +155,11 @@ class ControlPlaneMixin:
         self._repoAdminCache = ((org, team), status)
         return status
 
-    def isRepoAdmin(self):
-        """True only when repoadminteam membership is CONFIRMED (fail-closed: 'unknown' -> False)."""
-        return self.repoAdminStatus() == "yes"
+    def isRepoAdmin(self, forceRefresh=False):
+        """True only when repoadminteam membership is CONFIRMED (fail-closed: 'unknown' -> False).
+        ``forceRefresh`` re-queries GitHub (used when re-evaluating the reviewer-section visibility
+        on a manual Refresh, so a team change takes effect without a module reload)."""
+        return self.repoAdminStatus(forceRefresh=forceRefresh) == "yes"
 
     def reviewQueue(self):
         """The reviewer queue from the App (repoadmin-gated + staging-only server-side): a list of

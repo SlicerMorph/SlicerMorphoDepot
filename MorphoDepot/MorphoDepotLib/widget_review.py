@@ -40,6 +40,13 @@ class ReviewTabMixin:
             with slicer.util.tryWithErrorDisplay("Failed to update PR list", waitCursor=True):
                 self.updateReviewPRList()
         self.reviewUI.repoClerkStatusLabel.hide()
+        # Re-evaluate the reviewer section here (with a FRESH team-membership check), because Slicer's
+        # module Reload rebuilds the widget but does NOT call enter() — so without this a repoadminteam
+        # change (or the section being rebuilt hidden on reload) is only reflected on a full module
+        # re-entry. Now clicking Refresh Github updates it. Fail-closed (hidden) on 'unknown'.
+        section = getattr(self, "reviewerInspectSection", None)
+        if section is not None:
+            section.visible = self.logic.isRepoAdmin(forceRefresh=True)
 
     def updateReviewPRList(self):
         with slicer.util.tryWithErrorDisplay("Failed to update PR list", waitCursor=True):
