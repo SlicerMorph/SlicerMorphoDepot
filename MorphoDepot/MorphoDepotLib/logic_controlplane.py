@@ -94,15 +94,17 @@ class ControlPlaneMixin:
         joining the org so the cached result refreshes.)"""
         return self.orgMembershipStatus(org) == "member"
 
-    def controlPlaneRequest(self, path, body):
+    def controlPlaneRequest(self, path, body, timeout=120):
         """POST to the intake App control plane, authenticated by the user's gh token.
-        Returns the parsed JSON, or raises with the server's error detail."""
+        Returns the parsed JSON, or raises with the server's error detail.  `timeout` (seconds) can
+        be shortened for best-effort calls so a slow/down App doesn't stall the UI for the full
+        default."""
         import requests
         token = self._ghToken()
         if not token:
             raise RuntimeError("Not signed in to GitHub — run `gh auth login` first.")
         r = requests.post(f"{self.controlPlaneBase()}/{path}", json=body,
-                          headers={"Authorization": f"Bearer {token}"}, timeout=120)
+                          headers={"Authorization": f"Bearer {token}"}, timeout=timeout)
         if r.status_code != 200:
             try:
                 detail = r.json().get("detail", r.text)
