@@ -703,7 +703,9 @@ jobs:
             # returns the existing DOI; if the endpoint is absent (older App), it 404s and is skipped.
             try:
                 self.progressMethod(f"Finalizing DOI for {finalNameWithOwner}...")
-                self.controlPlaneRequest("repos/finalize", {"repo": repoName})
+                # Best-effort: a short timeout so a slow/down App can't stall Make Public for the
+                # full default; the repo is already public and re-running finishes the DOI.
+                self.controlPlaneRequest("repos/finalize", {"repo": repoName}, timeout=30)
             except Exception as e:
                 logging.warning(f"DOI finalize did not complete for {finalNameWithOwner} "
                                 f"(the repo is public; re-run Make Public to finish the DOI): {e}")
