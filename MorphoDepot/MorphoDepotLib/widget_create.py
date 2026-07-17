@@ -63,8 +63,9 @@ class CreateTabMixin:
         for repo in repos:
             label = repo.get("summary") or repo.get("nameWithOwner", "")
             state = statuses.get(repo.get("repoName"))
+            repo["reviewState"] = state
             if state == "approved":
-                label += "    ✓ approved — click Publish to finish"
+                label += "    ✓ approved — right-click ▸ Publish"
             elif state == "pending":
                 label += "    ⏳ pending review"
             item = qt.QListWidgetItem(label)
@@ -72,8 +73,8 @@ class CreateTabMixin:
             self._stagedReposByItem[item] = repo
 
     def onStagedReposContextMenu(self, point):
-        """Right-click menu on an unpublished staged repo: open it on GitHub, or load it to
-        edit (same as double-click)."""
+        """Right-click menu on an unpublished staged repo: open it on GitHub; for an APPROVED repo,
+        Publish it directly (make public, no reopen); otherwise load it to edit (same as double-click)."""
         listWidget = self.createUI.stagedReposList
         item = listWidget.itemAt(point)
         if item is None:
@@ -84,9 +85,81 @@ class CreateTabMixin:
         menu = qt.QMenu(listWidget)
         openAction = menu.addAction("Open the private repo in browser")
         openAction.connect("triggered()", lambda r=repo: self._openStagedRepoInBrowser(r))
-        editAction = menu.addAction("Load the repo to edit")
-        editAction.connect("triggered()", lambda i=item: self.onStagedRepoActivated(i))
+        if repo.get("reviewState") == "approved":
+            # Reviewed -> go straight to publish; do NOT offer edit (an edit would re-clone + re-
+            # download the volume AND change main, invalidating the review/mint, see
+            # publishApprovedStagedRepo).
+            publishAction = menu.addAction("Publish (make public)")
+            publishAction.connect("triggered()", lambda r=repo: self.publishApprovedStagedRepo(r))
+        else:
+            # Editing only makes sense before approval.
+            editAction = menu.addAction("Load the repo to edit")
+            editAction.connect("triggered()", lambda i=item: self.onStagedRepoActivated(i))
         menu.exec_(listWidget.mapToGlobal(point))
+
+    def publishApprovedStagedRepo(self, repo):
+        """Go-live for an already-APPROVED staged repo WITHOUT reopening it: flip public + finalize
+        (mint the DOI) + set discovery topics.  Because the repo was reviewed, nothing is cloned,
+        loaded into the scene, or re-saved -- that avoids the slow source-volume re-download of the
+        edit-resume, removes the misleading "you can edit this" impression, and (crucially) keeps main
+        at the approved commit so the DOI mint isn't blocked (docs/doi-mint-at-flip.md)."""
+        nameWithOwner = repo.get("nameWithOwner")
+        repoName = repo.get("repoName")
+        if not (nameWithOwner and repoName):
+            return
+        # `stagingContext` is a single shared slot -- don't silently clobber an in-progress staging
+        # session (a repo the curator just staged and is about to publish from the go-live form).
+        if getattr(self.logic, "stagingContext", None) is not None and not (
+                self.testingMode or slicer.util.confirmOkCancelDisplay(
+                    "Another staged repository is open for publishing. Proceeding will discard that "
+                    "in-progress session (the repo stays safe on GitHub). Continue?",
+                    windowTitle="Active staging session")):
+            return
+        if not (self.testingMode or slicer.util.confirmOkCancelDisplay(
+                f"Publish {nameWithOwner}?\n\nThis makes the approved repository public and mints its "
+                "DOI.  It was already reviewed, so nothing is edited.",
+                windowTitle="Publish repository")):
+            return
+        final = None
+        try:
+            with slicer.util.tryWithErrorDisplay(_("Trouble publishing repository"), waitCursor=True):
+                # Discovery species topic from the committed accession (one API read; no clone).
+                speciesTopic = ""
+                raw, _sha = self._readRepoFileViaApi(nameWithOwner, "MorphoDepotAccession.json")
+                if raw:
+                    try:
+                        sp = (json.loads(raw).get("species") or ["", ""])[1]
+                        speciesTopic = sp.lower().replace(" ", "-") if sp else ""
+                    except Exception:
+                        pass
+                self.logic.stagingContext = {
+                    "repoName": repoName, "personalNameWithOwner": nameWithOwner,
+                    "isMember": True, "speciesTopicString": speciesTopic, "repoDir": None}
+                slicer.util.showStatusMessage(f"Publishing {nameWithOwner}...")
+                final = self.logic.publishStagedRepo()
+        except Exception as e:
+            slicer.util.showStatusMessage("")
+            logging.warning(f"Publish failed for {nameWithOwner}: {e}")
+            return
+        slicer.util.showStatusMessage("")
+        # The published repo drops its staging topic and leaves the list.
+        self._stagedReposListPopulated = False
+        self.refreshStagedReposList(force=True)
+        # An approved repo should flip (publishStagedRepo returns the public name string).  Defensive:
+        # if the App instead opened a fresh review (approval expired) or auto-bounced, say so rather
+        # than failing mute.
+        if isinstance(final, dict):
+            if final.get("changesRequested") and not self.testingMode:
+                slicer.util.errorDisplay(
+                    f"{nameWithOwner} could not be published — automated checks reported issues. "
+                    "Load it to edit, fix them, and re-submit.", windowTitle="Changes requested")
+            elif final.get("pending") and not self.testingMode:
+                slicer.util.infoDisplay(
+                    f"{nameWithOwner} was re-submitted for review (its earlier approval had expired).",
+                    windowTitle="Pending review")
+            return
+        if final and not self.testingMode:
+            slicer.util.infoDisplay(f"{final} is now public.", windowTitle="Published")
 
     def _openStagedRepoInBrowser(self, repo):
         nameWithOwner = repo.get("nameWithOwner")
@@ -96,9 +169,17 @@ class CreateTabMixin:
     def onStagedRepoActivated(self, item):
         """Resume the repo double-clicked in the unpublished list: clone it, pre-fill the
         questionnaire from its committed metadata so the curator can review/correct it, and
-        restore the Publish / Discard gate.  Edits are applied at Publish (saveStagedRepoEdits)."""
+        restore the Publish / Discard gate.  Edits are applied at Publish (saveStagedRepoEdits).
+
+        An already-APPROVED repo is NOT reopened here: re-cloning + re-downloading the volume and a
+        possible edit-resave would change main and invalidate the review/DOI mint.  Double-clicking
+        one just points the curator at right-click -> Publish."""
         repo = self._stagedReposByItem.get(item)
         if not repo:
+            return
+        if repo.get("reviewState") == "approved":
+            slicer.util.showStatusMessage(
+                "This repository is approved — right-click it and choose Publish to make it public.")
             return
         try:
             with slicer.util.tryWithErrorDisplay(_("Trouble resuming staged repository"), waitCursor=True):
