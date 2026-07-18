@@ -1205,7 +1205,7 @@ class CreateTabMixin:
             self.createUI.discardButton.enabled = False
             self.createUI.openRepository.enabled = False
             self.createUI.stagingStatusLabel.text = (
-                f"Submitted for review: {where} — once approved, you need to click Publish once more to make it public.")
+                f"Submitted for review: {where} — once approved, right-click it in the staged-repositories list and choose Publish to make it public.")
             self.refreshStagedReposList(force=True)
             self._completeStepReset(
                 "Review request is successfully completed",
