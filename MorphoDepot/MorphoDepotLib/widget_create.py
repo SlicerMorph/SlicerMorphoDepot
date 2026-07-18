@@ -1211,10 +1211,10 @@ class CreateTabMixin:
                 "Review request is successfully completed",
                 f"'{where}' has been submitted for review.\n\n"
                 f"Publishing is a two-step process. A request was emailed to {to}. Once a reviewer "
-                "approves, you'll get an email; then reopen this repo from your unpublished list (it "
-                "will be marked 'approved') and click Publish again to do the final flip to public "
-                "— within 14 days of approval. Until then it stays private (reopening to make changes "
-                "will require requesting review again).")
+                "approves, you'll get an email; then find this repo at the top of the staged-"
+                "repositories list (it will be marked '✓ approved'), right-click it, and choose "
+                "Publish to do the final flip to public — within 14 days of approval. Until then it "
+                "stays private (editing it will require requesting review again).")
             return
         # Now that the repo is actually public, add the creator to the contact list (best-effort,
         # background).  Done here — never at stage — so discarded/abandoned repos never leak a

@@ -708,7 +708,7 @@ jobs:
                 self.controlPlaneRequest("repos/finalize", {"repo": repoName}, timeout=30)
             except Exception as e:
                 logging.warning(f"DOI finalize did not complete for {finalNameWithOwner} "
-                                f"(the repo is public; re-run Make Public to finish the DOI): {e}")
+                                f"(the repo is public; re-run Publish to finish the DOI): {e}")
             self.addMorphoTopics(finalNameWithOwner, species)
             self.ghTopicClearCache()
             self.localRepo = None
