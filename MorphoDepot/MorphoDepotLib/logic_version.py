@@ -31,6 +31,7 @@ import datetime
 import json
 import logging
 import os
+import posixpath
 import shutil
 import subprocess
 import tarfile
@@ -46,6 +47,13 @@ from slicer.i18n import tr as _
 VERSION_CHECK_REPO = "SlicerMorph/SlicerMorphoDepot"
 VERSION_CHECK_BRANCH = "main"
 VERSION_CHECK_TTL_SECONDS = 24 * 60 * 60
+
+# Locations this repository used to live at.  Their URLs still redirect here, so a clone
+# made before the move is a canonical clone and should still be offered updates.
+PREVIOUS_REPOSITORIES = ("MorphoCloud/SlicerMorphoDepot",)
+
+# Backups are the undo for an in-place update, but they should not accumulate forever.
+BACKUPS_TO_KEEP = 3
 
 # The installed module is exactly the repository's MorphoDepot/ directory minus the two
 # entries the extension build strips.  Verified by diffing an Extension Manager install
@@ -224,6 +232,21 @@ class VersionMixin:
 
     # ------------------------------------------------------------- installed side
 
+    def _remoteIsCanonical(self, remoteUrl):
+        """Whether a clone's origin is the repository the update check tracks.
+
+        Matches owner AND name.  Matching the name alone would accept a fork at
+        github.com/someone/SlicerMorphoDepot, and fast-forwarding a clone whose origin is
+        a fork would quietly install somebody else's code.  Both URL forms carry
+        "owner/name": https://github.com/Owner/Name.git and git@github.com:Owner/Name.git.
+        """
+        if not remoteUrl:
+            return False
+        normalized = remoteUrl.lower()
+        candidates = [self.versionCheckRepository().lower()]
+        candidates += [previous.lower() for previous in PREVIOUS_REPOSITORIES]
+        return any(candidate in normalized for candidate in candidates)
+
     def _cloneDescription(self, moduleDirectory):
         """Describe the git clone containing the module, or None if there is not one.
 
@@ -277,8 +300,7 @@ class VersionMixin:
             remoteUrl = repository.remotes.origin.url
         except Exception:
             remoteUrl = ""
-        repositoryName = self.versionCheckRepository().split("/")[-1].lower()
-        if repositoryName not in remoteUrl.lower():
+        if not self._remoteIsCanonical(remoteUrl):
             reasons.append(_("its origin remote is not the MorphoDepot repository"))
 
         if reasons:
@@ -559,6 +581,7 @@ class VersionMixin:
             self._writeMarker(
                 moduleDirectory, targetSha, datetime.datetime.now().strftime("%Y-%m-%d"),
                 installed.get("extensionRevision", ""))
+            self._pruneBackups(keep=backupPath)
         except Exception as e:
             logging.error(f"MorphoDepot update failed: {e}")
             if backupPath:
@@ -579,7 +602,10 @@ class VersionMixin:
         archivePath = os.path.join(workDirectory, "morphodepot.tar.gz")
         url = f"https://codeload.github.com/{self.versionCheckRepository()}/tar.gz/{sha}"
         self.progressMethod(f"Downloading MorphoDepot {sha[:7]}")
-        response = requests.get(url, timeout=120, stream=True)
+        # (connect, read) rather than one long budget: the archive is well under a
+        # megabyte, so a slow or hung server should give up quickly instead of holding the
+        # user-initiated update -- and the UI with it -- for minutes.
+        response = requests.get(url, timeout=(10, 60), stream=True)
         response.raise_for_status()
         with open(archivePath, "wb") as archiveFile:
             for chunk in response.iter_content(chunk_size=65536):
@@ -592,16 +618,32 @@ class VersionMixin:
             # GitHub names the top level <repo>-<ref>, where <ref> depends on what was
             # requested; read it rather than reconstructing it.
             topLevel = names[0].split("/")[0]
-            try:
-                archive.extractall(path=workDirectory, filter="data")
-            except TypeError:
-                # Python older than 3.12 has no extraction filters.
-                archive.extractall(path=workDirectory)
+            self._extractArchive(archive, workDirectory)
 
         sourceDirectory = os.path.join(workDirectory, topLevel, MODULE_SUBDIRECTORY)
         if not os.path.isdir(sourceDirectory):
             raise RuntimeError(f"the downloaded archive has no {MODULE_SUBDIRECTORY} directory")
         return sourceDirectory
+
+    def _extractArchive(self, archive, workDirectory):
+        """Unpack, refusing anything that would write outside `workDirectory`.
+
+        tarfile's `filter="data"` only exists on Python 3.12 and later, and MorphoDepot
+        supports Slicer versions that ship older ones, so the members are checked here
+        rather than relying on a guard that silently is not there.
+        """
+        for member in archive.getmembers():
+            memberPath = posixpath.normpath(member.name)
+            if posixpath.isabs(memberPath) or memberPath.startswith(".."):
+                raise RuntimeError(f"archive entry outside the extraction directory: {member.name}")
+            if not (member.isfile() or member.isdir()):
+                # GitHub source tarballs are plain files and directories; a link or device
+                # entry means this is not the archive we think it is.
+                raise RuntimeError(f"unexpected archive entry type: {member.name}")
+        try:
+            archive.extractall(path=workDirectory, filter="data")
+        except TypeError:
+            archive.extractall(path=workDirectory)
 
     def _moduleFileList(self, sourceDirectory):
         """Relative paths of the files an extension build ships."""
@@ -641,6 +683,27 @@ class VersionMixin:
             moduleDirectory, backupPath, dirs_exist_ok=True,
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         return backupPath
+
+    def _pruneBackups(self, keep=""):
+        """Drop all but the most recent backups.
+
+        Called only after an update succeeds, so the copy that was just made -- and the
+        one before it, in case a problem only shows up later -- always survive.
+        """
+        backupRoot = self._backupRoot()
+        try:
+            candidates = [os.path.join(backupRoot, name) for name in os.listdir(backupRoot)]
+        except OSError:
+            return
+        directories = [path for path in candidates if os.path.isdir(path)]
+        try:
+            directories.sort(key=os.path.getmtime, reverse=True)
+        except OSError:
+            return
+        for stale in directories[BACKUPS_TO_KEEP:]:
+            if stale == keep:
+                continue
+            shutil.rmtree(stale, ignore_errors=True)
 
     def _restoreModuleTree(self, backupPath, moduleDirectory):
         """Copy the backup back over the module directory.
