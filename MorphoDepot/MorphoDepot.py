@@ -52,6 +52,7 @@ from MorphoDepotLib.logic_release import ReleaseMixin
 from MorphoDepotLib.logic_accession import AccessionMixin
 from MorphoDepotLib.logic_search import SearchMixin
 from MorphoDepotLib.logic_collections import CollectionsMixin
+from MorphoDepotLib.logic_version import VersionMixin
 from MorphoDepotLib.widget_create import CreateTabMixin
 from MorphoDepotLib.widget_configure import ConfigureTabMixin
 from MorphoDepotLib.widget_annotate import AnnotateTabMixin
@@ -60,6 +61,7 @@ from MorphoDepotLib.widget_release import ReleaseTabMixin
 from MorphoDepotLib.widget_search import SearchTabMixin
 from MorphoDepotLib.widget_collections import CollectionsTabMixin
 from MorphoDepotLib.widget_validation import ValidationMixin
+from MorphoDepotLib.widget_version import VersionUIMixin
 
 
 class MorphoDepot(ScriptedLoadableModule):
@@ -152,7 +154,7 @@ class EnableModuleMixin:
         return True
 
 
-class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, EnableModuleMixin, ValidationMixin, CreateTabMixin, ConfigureTabMixin, AnnotateTabMixin, ReviewTabMixin, ReleaseTabMixin, SearchTabMixin, CollectionsTabMixin):
+class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, EnableModuleMixin, ValidationMixin, CreateTabMixin, ConfigureTabMixin, AnnotateTabMixin, ReviewTabMixin, ReleaseTabMixin, SearchTabMixin, CollectionsTabMixin, VersionUIMixin):
     """Uses ScriptedLoadableModuleWidget base class, available at:
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
     """
@@ -679,6 +681,10 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.searchUI.resultsCollapsibleButton.layout().addLayout(self.searchUI.resultsButtonsLayout)
 
 
+        # Update notice (issue #203).  Built last so the banner lands at the top of the
+        # module layout, above the tab widget, where it is visible from every tab.
+        self.setupVersionUI()
+
         # Connections
         self.tabWidget.currentChanged.connect(self.onCurrentTabChanged)
         self.configureUI.repoDirectory.comboBox().connect("currentTextChanged(QString)", self.onRepoDirectoryChanged)
@@ -753,6 +759,8 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
 
     def cleanup(self) -> None:
         """Called when the application closes and the module widget is destroyed."""
+        # Tells an in-flight version check to stop polling and not touch these widgets.
+        self._versionWidgetAlive = False
         self.removeObservers()
 
     def onReload(self):
@@ -803,6 +811,9 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         # disabled tab for another — leave the selection alone, as before this gating existed.
         if confirmedNonMember and not self.tabWidget.isTabEnabled(self.tabWidget.currentIndex):
             self.tabWidget.currentIndex = self.createTabIndex
+        # Look for a newer MorphoDepot (issue #203).  Cached for a day and run off the main
+        # thread, so entering the module stays as fast as it was.
+        self.startVersionCheck()
 
     def onCurrentTabChanged(self,index):
         qt.QSettings().setValue("MorphoDepot/tabIndex", index)
@@ -812,7 +823,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             self._refreshArchivalAvailability()
             self.refreshStagedReposList()
 
-class MorphoDepotLogic(ScriptedLoadableModuleLogic, DepsMixin, GitHubMixin, ControlPlaneMixin, ObjectStoreMixin, RepoClerkMixin, RepoMixin, ContributeMixin, ReleaseMixin, AccessionMixin, SearchMixin, CollectionsMixin):
+class MorphoDepotLogic(ScriptedLoadableModuleLogic, DepsMixin, GitHubMixin, ControlPlaneMixin, ObjectStoreMixin, RepoClerkMixin, RepoMixin, ContributeMixin, ReleaseMixin, AccessionMixin, SearchMixin, CollectionsMixin, VersionMixin):
     """This class should implement all the actual
     computation done by your module.  The interface
     should be such that other python code can import
