@@ -273,6 +273,7 @@ class VersionMixin:
             "repositoryRoot": os.path.realpath(workingTree),
             "sha": "",
             "date": "",
+            "branch": "",
             "blockedReason": "",
         }
         try:
@@ -290,9 +291,11 @@ class VersionMixin:
             pass
         try:
             branch = repository.active_branch.name
+            description["branch"] = branch
             if branch != self.versionCheckBranch():
                 reasons.append(_("it is on branch '{branch}'").format(branch=branch))
         except TypeError:
+            description["branch"] = _("detached HEAD")
             reasons.append(_("it has a detached HEAD"))
         except Exception:
             pass
@@ -320,6 +323,7 @@ class VersionMixin:
             "date": "",
             "moduleDirectory": "",
             "repositoryRoot": "",
+            "branch": "",
             "extensionRevision": "",
             "canUpdate": False,
             "blockedReason": "",
@@ -341,6 +345,7 @@ class VersionMixin:
             if clone:
                 installed["sha"] = clone["sha"]
                 installed["date"] = clone["date"]
+                installed["branch"] = clone["branch"]
                 installed["repositoryRoot"] = clone["repositoryRoot"]
             return installed
 
@@ -371,6 +376,7 @@ class VersionMixin:
         if clone:
             installed["sha"] = clone["sha"]
             installed["date"] = clone["date"]
+            installed["branch"] = clone["branch"]
             installed["repositoryRoot"] = clone["repositoryRoot"]
             if clone["blockedReason"]:
                 installed["shape"] = SHAPE_DEV_CLONE
@@ -467,6 +473,7 @@ class VersionMixin:
             "latestDate": "",
             "aheadBy": 0,
             "compareUrl": "",
+            "compareStatus": "",
             "error": "",
         }
 
@@ -497,6 +504,9 @@ class VersionMixin:
             return status
 
         status["compareUrl"] = comparison.get("html_url", "") or ""
+        # "identical", "ahead" (the branch has commits we do not), "behind" (we have
+        # commits the branch does not -- a development build), or "diverged".
+        status["compareStatus"] = comparison.get("status", "") or ""
         status["aheadBy"] = comparison.get("ahead_by", 0) or 0
         status["latestSha"] = comparison.get("head_sha") or installedSha
         status["latestDate"] = (comparison.get("head_date") or "")[:10]

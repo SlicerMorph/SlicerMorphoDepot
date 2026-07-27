@@ -37,10 +37,10 @@ VERSION_POLL_DEADLINE_SECONDS = 120
 
 SHAPE_DESCRIPTIONS = {
     SHAPE_EXTENSION: "Extension Manager",
-    SHAPE_CLONE: "git clone",
-    SHAPE_DEV_CLONE: "git clone (working copy)",
-    SHAPE_BUILD_TREE: "build tree",
-    SHAPE_UNKNOWN: "unrecognized install",
+    SHAPE_CLONE: "Developer checkout",
+    SHAPE_DEV_CLONE: "Developer checkout",
+    SHAPE_BUILD_TREE: "Built from source",
+    SHAPE_UNKNOWN: "Unrecognized installation",
 }
 
 
@@ -80,6 +80,7 @@ class VersionUIMixin:
             "latestDate": self.versionSetting("latestDate"),
             "aheadBy": int(self.versionSetting("aheadBy", "0") or 0),
             "compareUrl": self.versionSetting("compareUrl"),
+            "compareStatus": self.versionSetting("compareStatus"),
             "error": "",
         }
 
@@ -89,6 +90,7 @@ class VersionUIMixin:
         self.setVersionSetting("latestDate", status.get("latestDate", ""))
         self.setVersionSetting("aheadBy", str(status.get("aheadBy", 0)))
         self.setVersionSetting("compareUrl", status.get("compareUrl", ""))
+        self.setVersionSetting("compareStatus", status.get("compareStatus", ""))
         self.setVersionSetting("lastCheckAt", datetime.datetime.now().astimezone().isoformat())
 
     # ---------------------------------------------------------------------- UI
@@ -150,6 +152,12 @@ class VersionUIMixin:
         self.configureUI.installedVersionLabel = qt.QLabel(_("Checking..."))
         self.configureUI.installedVersionLabel.wordWrap = True
         versionLayout.addRow(_("Installed:"), self.configureUI.installedVersionLabel)
+
+        # Where it came from is a separate fact from whether it is current.  Keeping them
+        # on one line made an ordinary state read like a warning.
+        self.configureUI.versionSourceLabel = qt.QLabel("")
+        self.configureUI.versionSourceLabel.wordWrap = True
+        versionLayout.addRow(_("Source:"), self.configureUI.versionSourceLabel)
 
         self.configureUI.versionStatusLabel = qt.QLabel("")
         self.configureUI.versionStatusLabel.wordWrap = True
@@ -286,10 +294,15 @@ class VersionUIMixin:
     # ------------------------------------------------------------------ display
 
     def _versionDisplayName(self, sha, date):
+        """Date first, revision in parentheses.
+
+        A date is what a user can reason about; the revision is kept visible for everyone
+        because it is the first thing worth knowing when diagnosing a report.
+        """
         if not sha:
             return _("unknown")
         label = sha[:7]
-        return f"{label} ({date})" if date else label
+        return f"{date} ({label})" if date else label
 
     def _sameRevision(self, first, second):
         """Whether two revisions are the same commit.
@@ -310,26 +323,41 @@ class VersionUIMixin:
         installed = self._versionInstalled or {}
         status = self._versionStatus or {}
 
+        self.configureUI.installedVersionLabel.text = self._versionDisplayName(
+            installed.get("sha", ""), installed.get("date", ""))
+
         shape = installed.get("shape", SHAPE_UNKNOWN)
-        installedLabel = self._versionDisplayName(installed.get("sha", ""), installed.get("date", ""))
-        self.configureUI.installedVersionLabel.text = "{version} - {shape}".format(
-            version=installedLabel, shape=SHAPE_DESCRIPTIONS.get(shape, shape))
+        source = SHAPE_DESCRIPTIONS.get(shape, shape)
+        branch = installed.get("branch", "")
+        if branch and shape in (SHAPE_CLONE, SHAPE_DEV_CLONE):
+            source = _("{source}, branch '{branch}'").format(source=source, branch=branch)
+        self.configureUI.versionSourceLabel.text = source
 
-        upToDate = self._sameRevision(installed.get("sha", ""), status.get("latestSha", ""))
+        updateAvailable = status.get("available") and not self._sameRevision(
+            installed.get("sha", ""), status.get("latestSha", ""))
+
         if status.get("error"):
-            self.configureUI.versionStatusLabel.text = status["error"]
+            statusText = status["error"]
         elif not status:
-            self.configureUI.versionStatusLabel.text = _("Not checked yet.")
-        elif status.get("available") and not upToDate:
-            self.configureUI.versionStatusLabel.text = _("Update available: {version}").format(
+            statusText = _("Not checked yet.")
+        elif updateAvailable:
+            statusText = _("Update available: {version}").format(
                 version=self._versionDisplayName(status.get("latestSha", ""), status.get("latestDate", "")))
+            # Why an update is being withheld is only worth saying when one is actually
+            # being withheld.  Said unconditionally it read as a warning about a healthy
+            # install.
+            if installed.get("blockedReason"):
+                statusText += "\n" + installed["blockedReason"]
+        elif status.get("compareStatus") == "behind":
+            # We hold commits the tracked branch does not: a development build, which is
+            # not the same thing as being level with the release.
+            statusText = _("This is a development version, ahead of the released one.")
         elif installed.get("sha"):
-            self.configureUI.versionStatusLabel.text = _("Up to date.")
+            statusText = _("Up to date.")
         else:
-            self.configureUI.versionStatusLabel.text = _("The installed version could not be determined.")
-
-        if installed.get("blockedReason"):
-            self.configureUI.versionStatusLabel.text += "\n" + installed["blockedReason"]
+            statusText = installed.get("blockedReason") or _(
+                "The installed version could not be determined.")
+        self.configureUI.versionStatusLabel.text = statusText
 
         self._refreshVersionBanner(installed, status)
 
@@ -346,12 +374,12 @@ class VersionUIMixin:
             self.versionBanner.visible = False
             return
 
-        aheadBy = status.get("aheadBy", 0)
-        message = _("A newer MorphoDepot is available: {latest} (you have {installed}).").format(
+        # Deliberately no commit count: it means nothing to the researchers this is for,
+        # and the two dates already say how far behind they are.  "What's New" is there
+        # for anyone who wants the detail.
+        message = _("MorphoDepot {latest} is available.  You have {installed}.").format(
             latest=self._versionDisplayName(latestSha, status.get("latestDate", "")),
             installed=self._versionDisplayName(installed.get("sha", ""), installed.get("date", "")))
-        if aheadBy:
-            message += " " + _("{count} commits behind.").format(count=aheadBy)
         if installed.get("blockedReason"):
             message += "\n" + installed["blockedReason"]
         self.versionBannerLabel.text = message
