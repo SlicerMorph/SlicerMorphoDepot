@@ -22,7 +22,6 @@ from slicer.i18n import tr as _
 
 from MorphoDepotLib.logic_version import (
     VERSION_CHECK_REPO,
-    VERSION_CHECK_TTL_SECONDS,
     SHAPE_BUILD_TREE,
     SHAPE_CLONE,
     SHAPE_DEV_CLONE,
@@ -58,47 +57,13 @@ class VersionUIMixin:
         return slicer.util.settingsValue(
             VERSION_SETTINGS_PREFIX + "enabled", True, converter=slicer.util.toBool)
 
-    def cachedVersionStatus(self):
-        """The last check result if it is still fresh, otherwise None."""
-        checkedAt = self.versionSetting("lastCheckAt")
-        if not checkedAt:
-            return None
-        try:
-            age = (datetime.datetime.now().astimezone()
-                   - datetime.datetime.fromisoformat(checkedAt)).total_seconds()
-        except ValueError:
-            return None
-        if age < 0 or age > VERSION_CHECK_TTL_SECONDS:
-            return None
-        latestSha = self.versionSetting("latestSha")
-        if not latestSha:
-            return None
-        return {
-            "available": slicer.util.settingsValue(
-                VERSION_SETTINGS_PREFIX + "available", False, converter=slicer.util.toBool),
-            "latestSha": latestSha,
-            "latestDate": self.versionSetting("latestDate"),
-            "aheadBy": int(self.versionSetting("aheadBy", "0") or 0),
-            "compareUrl": self.versionSetting("compareUrl"),
-            "compareStatus": self.versionSetting("compareStatus"),
-            "error": "",
-        }
-
-    def cacheVersionStatus(self, status):
-        self.setVersionSetting("available", status.get("available", False))
-        self.setVersionSetting("latestSha", status.get("latestSha", ""))
-        self.setVersionSetting("latestDate", status.get("latestDate", ""))
-        self.setVersionSetting("aheadBy", str(status.get("aheadBy", 0)))
-        self.setVersionSetting("compareUrl", status.get("compareUrl", ""))
-        self.setVersionSetting("compareStatus", status.get("compareStatus", ""))
-        self.setVersionSetting("lastCheckAt", datetime.datetime.now().astimezone().isoformat())
-
     # ---------------------------------------------------------------------- UI
 
     def setupVersionUI(self):
         """Build the update banner and the version controls on the Configure tab."""
         self._versionWidgetAlive = True
         self._versionCheckRunning = False
+        self._versionCheckedThisSession = False
         self._versionInstalled = None
         self._versionStatus = None
 
@@ -208,12 +173,12 @@ class VersionUIMixin:
 
     def onVersionRepositoryChanged(self, text):
         self.setVersionSetting("repository", text.strip())
-        # The cached answer was about a different repository.
-        self.setVersionSetting("lastCheckAt", "")
+        # This session's answer was about a different repository.
+        self._versionCheckedThisSession = False
 
     def onVersionBranchChanged(self, text):
         self.setVersionSetting("branch", text.strip())
-        self.setVersionSetting("lastCheckAt", "")
+        self._versionCheckedThisSession = False
 
     # ----------------------------------------------------------------- running
 
@@ -227,6 +192,8 @@ class VersionUIMixin:
             return
         if not force and not self.versionCheckEnabled():
             return
+        if not force and self._versionCheckedThisSession:
+            return
         # gh is how the check talks to GitHub, so there is nothing to do (and nothing worth
         # complaining about) until the user has finished setting up their dependencies.
         if not self.logic or not self.logic.ghExecutablePath:
@@ -235,13 +202,6 @@ class VersionUIMixin:
         installed = self.logic.installedVersion()
         self._versionInstalled = installed
         self._refreshVersionDisplay()
-
-        if not force:
-            cached = self.cachedVersionStatus()
-            if cached:
-                self._versionStatus = cached
-                self._refreshVersionDisplay()
-                return
 
         installedSha = installed.get("sha", "")
         # Resolved here, on the main thread: both read QSettings.
@@ -280,6 +240,9 @@ class VersionUIMixin:
             self._onVersionCheckFinished(status)
 
         self._versionCheckRunning = True
+        # Marked as the session's check when it starts, not when it finishes, so a run of
+        # failures (no network, say) cannot turn every tab switch into another attempt.
+        self._versionCheckedThisSession = True
         threading.Thread(target=check, daemon=True).start()
         qt.QTimer.singleShot(0, poll)
 
@@ -287,8 +250,6 @@ class VersionUIMixin:
         if not getattr(self, "_versionWidgetAlive", False):
             return
         self._versionStatus = status
-        if not status.get("error"):
-            self.cacheVersionStatus(status)
         self._refreshVersionDisplay()
 
     # ------------------------------------------------------------------ display
@@ -448,9 +409,10 @@ class VersionUIMixin:
             return
 
         self.versionBanner.visible = False
-        # Drop the cached result and re-read what is now on disk, so the Configure tab is
-        # honest even if the user picks "Later" and keeps working in this session.
-        self.setVersionSetting("lastCheckAt", "")
+        # Re-read what is now on disk, so the Configure tab is honest even if the user
+        # picks "Later" and keeps working in this session, and let the next module entry
+        # check again rather than trusting this session's answer.
+        self._versionCheckedThisSession = False
         self._versionInstalled = self.logic.installedVersion()
         self._refreshVersionDisplay()
         self._offerReloadAfterUpdate(message)

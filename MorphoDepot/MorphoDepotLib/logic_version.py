@@ -46,7 +46,6 @@ from slicer.i18n import tr as _
 
 VERSION_CHECK_REPO = "SlicerMorph/SlicerMorphoDepot"
 VERSION_CHECK_BRANCH = "main"
-VERSION_CHECK_TTL_SECONDS = 24 * 60 * 60
 
 # Locations this repository used to live at.  Their URLs still redirect here, so a clone
 # made before the move is a canonical clone and should still be offered updates.
