@@ -345,7 +345,8 @@ class VersionUIMixin:
             self.versionBanner.visible = False
             return
         if self._sameRevision(installed.get("sha", ""), latestSha):
-            # A cached result that the install has since caught up with.
+            # The install has caught up with the latest by some other route -- an
+            # Extension Manager update, say -- since this answer was fetched.
             self.versionBanner.visible = False
             return
         if self.versionSetting("dismissedSha") == latestSha:
