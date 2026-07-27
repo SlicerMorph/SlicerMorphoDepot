@@ -1,8 +1,12 @@
 """MorphoDepotWidget VersionUIMixin (issue #203): update notification and manual update.
 
-The check runs in the background whenever the module is entered, at most once a day, and
-says nothing at all unless there is something to say.  Updating is always the user's
+The check runs in the background the first time the module is entered in a Slicer session,
+and says nothing at all unless there is something to say.  Updating is always the user's
 explicit choice.
+
+Once per session rather than once per day: a day-long cache would mean restarting Slicer
+and still being told nothing about a version released that morning, which is the opposite
+of what this is for.  One authenticated API call per launch costs nothing.
 
 The background call follows the pattern slicer.util uses for non-blocking process output:
 the worker thread only puts its result on a queue, and a QTimer started on the MAIN thread
@@ -57,6 +61,18 @@ class VersionUIMixin:
         return slicer.util.settingsValue(
             VERSION_SETTINGS_PREFIX + "enabled", True, converter=slicer.util.toBool)
 
+    def _forgetCacheSettings(self):
+        """Drop the settings the removed 24-hour cache used to write.
+
+        Nothing reads them any more, but they would otherwise sit in every existing
+        settings file forever, and a stale 'available=true' left behind is exactly the
+        sort of thing that confuses a later diagnosis.
+        """
+        settings = qt.QSettings()
+        for orphaned in ("lastCheckAt", "latestSha", "latestDate", "aheadBy",
+                         "available", "compareUrl", "compareStatus"):
+            settings.remove(VERSION_SETTINGS_PREFIX + orphaned)
+
     # ---------------------------------------------------------------------- UI
 
     def setupVersionUI(self):
@@ -66,6 +82,7 @@ class VersionUIMixin:
         self._versionCheckedThisSession = False
         self._versionInstalled = None
         self._versionStatus = None
+        self._forgetCacheSettings()
 
         self.versionBanner = qt.QFrame()
         self.versionBanner.setFrameShape(qt.QFrame.StyledPanel)
