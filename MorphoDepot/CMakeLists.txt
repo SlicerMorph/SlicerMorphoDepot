@@ -23,6 +23,7 @@ set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}Lib/logic_repo.py
   ${MODULE_NAME}Lib/logic_repoclerk.py
   ${MODULE_NAME}Lib/logic_search.py
+  ${MODULE_NAME}Lib/logic_version.py
   ${MODULE_NAME}Lib/screenshot_dialog.py
   ${MODULE_NAME}Lib/search_form.py
   ${MODULE_NAME}Lib/widget_annotate.py
@@ -33,6 +34,7 @@ set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}Lib/widget_review.py
   ${MODULE_NAME}Lib/widget_search.py
   ${MODULE_NAME}Lib/widget_validation.py
+  ${MODULE_NAME}Lib/widget_version.py
   )
 
 set(MODULE_PYTHON_RESOURCES

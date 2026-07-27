@@ -154,6 +154,69 @@ def _stress_invalid_repo_name():
     assert not H.w.createUI.createRepository.enabled, "invalid repo name should keep Create disabled"
 
 
+def _version_change_filter():
+    # Issue #203: only commits touching the installed module should raise a notice.
+    logic = H.w.logic
+    assert logic.moduleFilesChanged(["MorphoDepot/MorphoDepotLib/logic_repo.py"], 1), \
+        "a module file should count as a change"
+    assert not logic.moduleFilesChanged([".github/workflows/claude.yml", "README.md"], 2), \
+        "docs and workflow changes should not raise an update notice"
+    assert not logic.moduleFilesChanged(["MorphoDepot/Testing/Python/md_tests.py"], 1), \
+        "Testing/ is stripped by the extension build and should not count"
+    assert logic.moduleFilesChanged(["README.md"], 300), \
+        "a truncated file list should be treated as a change rather than under-reported"
+
+
+def _version_installed_shape():
+    # Whatever the install shape, detection must return a usable record and never claim
+    # it can write somewhere it cannot.
+    logic = H.w.logic
+    installed = logic.installedVersion()
+    assert installed["shape"] in (
+        "extension", "clone", "devclone", "buildtree", "unknown"), f"odd shape {installed['shape']!r}"
+    assert installed["moduleDirectory"], "the module directory should always resolve"
+    if installed["canUpdate"]:
+        assert installed["sha"], "an updatable install must know its revision"
+        assert logic._directoryIsWritable(
+            installed["repositoryRoot"] or installed["moduleDirectory"]), \
+            "canUpdate was set for a directory that is not writable"
+    else:
+        assert installed["blockedReason"], "a non-updatable install should explain why"
+
+
+def _version_banner_hidden_when_current():
+    # The banner is a notification: it must stay out of the way unless there is news.
+    H.w._versionInstalled = {"shape": "extension", "sha": "abc1234", "date": "2026-07-18",
+                             "canUpdate": True, "blockedReason": ""}
+    H.w._versionStatus = {"available": False, "latestSha": "abc1234", "latestDate": "2026-07-18",
+                          "aheadBy": 0, "compareUrl": "", "error": ""}
+    H.w._refreshVersionDisplay()
+    H.pump(20)
+    assert not H.w.versionBanner.visible, "banner should be hidden when up to date"
+
+    H.w._versionStatus = {"available": True, "latestSha": "def5678", "latestDate": "2026-07-27",
+                          "aheadBy": 12, "compareUrl": "https://example.invalid/compare", "error": ""}
+    H.w._refreshVersionDisplay()
+    H.pump(20)
+    assert H.w.versionBanner.visible, "banner should appear when an update is available"
+    assert "def5678" in H.w.versionBannerLabel.text, "banner should name the available version"
+
+    # Dismissing hides that version only, so the next release speaks up again.
+    H.w.onVersionDismiss()
+    H.pump(20)
+    assert not H.w.versionBanner.visible, "dismiss should hide the banner"
+    H.w._refreshVersionDisplay()
+    H.pump(20)
+    assert not H.w.versionBanner.visible, "a dismissed version should stay dismissed"
+    H.w._versionStatus["latestSha"] = "999aaaa"
+    H.w._refreshVersionDisplay()
+    H.pump(20)
+    assert H.w.versionBanner.visible, "a newer version should not stay dismissed"
+    H.w.onVersionDismiss()
+    H.w._versionInstalled = None
+    H.w._versionStatus = None
+
+
 TESTS = [
     ("stress_empty_segmentation_guard", _stress_empty_segmentation_guard),
     ("stress_continuous_colortable_guard", _stress_continuous_colortable_guard),
@@ -170,4 +233,7 @@ TESTS = [
     ("logic_whoami", _logic_whoami),
     ("logic_mixins_touch", _logic_mixins_touch),
     ("baseline_nochange_helper", _baseline_nochange_helper),
+    ("version_change_filter", _version_change_filter),
+    ("version_installed_shape", _version_installed_shape),
+    ("version_banner_hidden_when_current", _version_banner_hidden_when_current),
 ]
