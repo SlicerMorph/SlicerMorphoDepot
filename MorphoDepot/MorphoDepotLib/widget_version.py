@@ -168,6 +168,45 @@ class VersionUIMixin:
         self.configureUI.versionCheckNowButton.connect("clicked()", self.onVersionCheckNow)
         self.configureUI.versionCheckEnabledCheckBox.connect("toggled(bool)", self.onVersionCheckEnabledToggled)
 
+        self._setupVersionTestingFields()
+
+    def _setupVersionTestingFields(self):
+        """Let a developer point the check at another repository or branch.
+
+        Lives in the Testing section, which is already developer-mode-gated, because the
+        main use is testing an update against a branch before it reaches main.  It doubles
+        as an escape hatch if the repository moves again, as it has once already.
+        """
+        testingLayout = getattr(self.configureUI, "testingLayout", None)
+        if testingLayout is None:
+            return
+
+        self.configureUI.versionRepositoryLineEdit = qt.QLineEdit()
+        self.configureUI.versionRepositoryLineEdit.text = self.logic.versionCheckRepository()
+        self.configureUI.versionRepositoryLineEdit.toolTip = _(
+            "owner/name of the repository the update check compares against")
+        testingLayout.addRow(_("Update repository:"), self.configureUI.versionRepositoryLineEdit)
+
+        self.configureUI.versionBranchLineEdit = qt.QLineEdit()
+        self.configureUI.versionBranchLineEdit.text = self.logic.versionCheckBranch()
+        self.configureUI.versionBranchLineEdit.toolTip = _(
+            "branch the update check compares against")
+        testingLayout.addRow(_("Update branch:"), self.configureUI.versionBranchLineEdit)
+
+        self.configureUI.versionRepositoryLineEdit.connect(
+            "textChanged(QString)", self.onVersionRepositoryChanged)
+        self.configureUI.versionBranchLineEdit.connect(
+            "textChanged(QString)", self.onVersionBranchChanged)
+
+    def onVersionRepositoryChanged(self, text):
+        self.setVersionSetting("repository", text.strip())
+        # The cached answer was about a different repository.
+        self.setVersionSetting("lastCheckAt", "")
+
+    def onVersionBranchChanged(self, text):
+        self.setVersionSetting("branch", text.strip())
+        self.setVersionSetting("lastCheckAt", "")
+
     # ----------------------------------------------------------------- running
 
     def startVersionCheck(self, force=False):
@@ -197,6 +236,9 @@ class VersionUIMixin:
                 return
 
         installedSha = installed.get("sha", "")
+        # Resolved here, on the main thread: both read QSettings.
+        repository = self.logic.versionCheckRepository()
+        branch = self.logic.versionCheckBranch()
         try:
             environment = slicer.util.startupEnvironment()
         except Exception:
@@ -207,7 +249,8 @@ class VersionUIMixin:
 
         def check():
             try:
-                resultQueue.put(self.logic.fetchUpdateStatus(installedSha, environment))
+                resultQueue.put(self.logic.fetchUpdateStatus(
+                    installedSha, environment, repository=repository, branch=branch))
             except Exception as e:
                 logging.debug(f"MorphoDepot version check failed: {e}")
                 resultQueue.put({"available": False, "error": str(e), "latestSha": "",

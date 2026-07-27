@@ -76,6 +76,22 @@ UPDATABLE_SHAPES = (SHAPE_EXTENSION, SHAPE_CLONE)
 
 class VersionMixin:
 
+    # ------------------------------------------------------------- what to track
+
+    def versionCheckRepository(self):
+        """The repository to compare against.
+
+        Overridable so the check can be pointed at a branch under development, and so a
+        repository move -- this one has already moved from MorphoCloud to SlicerMorph --
+        does not strand installed copies until they are updated.
+        """
+        return slicer.util.settingsValue(
+            "MorphoDepot/versionCheck/repository", VERSION_CHECK_REPO) or VERSION_CHECK_REPO
+
+    def versionCheckBranch(self):
+        return slicer.util.settingsValue(
+            "MorphoDepot/versionCheck/branch", VERSION_CHECK_BRANCH) or VERSION_CHECK_BRANCH
+
     # ------------------------------------------------------------------ identity
 
     def moduleDirectory(self):
@@ -251,7 +267,7 @@ class VersionMixin:
             pass
         try:
             branch = repository.active_branch.name
-            if branch != VERSION_CHECK_BRANCH:
+            if branch != self.versionCheckBranch():
                 reasons.append(_("it is on branch '{branch}'").format(branch=branch))
         except TypeError:
             reasons.append(_("it has a detached HEAD"))
@@ -261,7 +277,8 @@ class VersionMixin:
             remoteUrl = repository.remotes.origin.url
         except Exception:
             remoteUrl = ""
-        if "slicermorphodepot" not in remoteUrl.lower():
+        repositoryName = self.versionCheckRepository().split("/")[-1].lower()
+        if repositoryName not in remoteUrl.lower():
             reasons.append(_("its origin remote is not the MorphoDepot repository"))
 
         if reasons:
@@ -412,12 +429,16 @@ class VersionMixin:
                 return True
         return False
 
-    def fetchUpdateStatus(self, installedSha, environment=None):
+    def fetchUpdateStatus(self, installedSha, environment=None, repository=None, branch=None):
         """Compare the installed revision against upstream.
 
-        BACKGROUND THREAD SAFE -- subprocess and json only.  Returns a dict with
-        `available`, `latestSha`, `latestDate`, `aheadBy`, `compareUrl` and `error`.
+        BACKGROUND THREAD SAFE -- subprocess and json only.  `repository` and `branch` are
+        resolved by the caller on the main thread, since reading them touches QSettings.
+        Returns a dict with `available`, `latestSha`, `latestDate`, `aheadBy`, `compareUrl`
+        and `error`.
         """
+        repository = repository or VERSION_CHECK_REPO
+        branch = branch or VERSION_CHECK_BRANCH
         status = {
             "available": False,
             "latestSha": "",
@@ -429,7 +450,7 @@ class VersionMixin:
 
         if not installedSha:
             latest = self._ghJson(
-                ["api", f"repos/{VERSION_CHECK_REPO}/commits/{VERSION_CHECK_BRANCH}",
+                ["api", f"repos/{repository}/commits/{branch}",
                  "--jq", "{sha: .sha, date: .commit.committer.date}"],
                 environment=environment)
             if latest is None:
@@ -446,7 +467,7 @@ class VersionMixin:
             " file_count: ((.files // []) | length),"
             " files: [(.files // [])[].filename]}")
         comparison = self._ghJson(
-            ["api", f"repos/{VERSION_CHECK_REPO}/compare/{installedSha}...{VERSION_CHECK_BRANCH}",
+            ["api", f"repos/{repository}/compare/{installedSha}...{branch}",
              "--jq", jqFilter],
             environment=environment)
         if comparison is None:
@@ -487,7 +508,7 @@ class VersionMixin:
         self.progressMethod(f"Updating the MorphoDepot clone at {repositoryRoot}")
         try:
             repository = git.Repo(repositoryRoot)
-            repository.git.pull("--ff-only", "origin", VERSION_CHECK_BRANCH)
+            repository.git.pull("--ff-only", "origin", self.versionCheckBranch())
         except Exception as e:
             logging.error(f"MorphoDepot update: git pull failed: {e}")
             return False, _("Could not fast-forward the clone: {error}").format(error=str(e))
@@ -556,7 +577,7 @@ class VersionMixin:
     def _downloadModuleTree(self, sha, workDirectory):
         """Download and unpack the repository at `sha`; return its MorphoDepot/ directory."""
         archivePath = os.path.join(workDirectory, "morphodepot.tar.gz")
-        url = f"https://codeload.github.com/{VERSION_CHECK_REPO}/tar.gz/{sha}"
+        url = f"https://codeload.github.com/{self.versionCheckRepository()}/tar.gz/{sha}"
         self.progressMethod(f"Downloading MorphoDepot {sha[:7]}")
         response = requests.get(url, timeout=120, stream=True)
         response.raise_for_status()

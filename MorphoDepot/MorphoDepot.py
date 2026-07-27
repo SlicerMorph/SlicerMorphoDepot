@@ -333,6 +333,8 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.configureUI.testingCollapsibleButton.visible = slicer.util.settingsValue("Developer/DeveloperMode", False, converter=slicer.util.toBool)
 
         testingLayout = qt.QFormLayout(self.configureUI.testingCollapsibleButton)
+        # Kept so other setup code (the update check) can add developer-only rows here.
+        self.configureUI.testingLayout = testingLayout
 
         self.configureUI.creatorUser = qt.QLineEdit()
         self.configureUI.creatorUser.text = slicer.util.settingsValue("MorphoDepot/testingCreatorUser", "")
