@@ -495,9 +495,10 @@ jobs:
         # Mark it staged with the member's own gh (members own their topics now; the App does not).
         self.gh(["repo", "edit", nameWithOwner, "--add-topic", self.stagingTopic])
 
-        # Grant the member's {login}-team Write, so the repo is reachable THROUGH the team.  The Create
-        # tab's unpublished list queries `affiliation=organization_member` (team-based); without this
-        # grant the member reaches the repo only as its direct-collaborator creator and it never shows.
+        # Grant the member's {login}-team Write, so the repo is reachable THROUGH the team -- that is,
+        # so the member's collaborators can reach it.  NOTE: the Create tab's unpublished list does NOT
+        # depend on this grant; it scopes org repos by the CURATOR file (see listStagedRepos), precisely
+        # because this call is best-effort and may silently be missing.
         # The member is repo-admin (creator) and the team's maintainer, so their OWN gh performs this --
         # no App Administration is involved.  GitHub gates this on admin of THIS repo, so a member can
         # only ever team-grant repos they created (verified: a read-only repo returns 403).  Best-effort:
@@ -809,17 +810,37 @@ jobs:
 
     stagingTopic = "morphodepot-staging"
 
+    def repoCurator(self, nameWithOwner):
+        """Return the handle in a repo's CURATOR file (lowercased), or None if unreadable.
+        CURATOR is written unconditionally into the initial commit by `_stageRepoFiles`, so
+        every successfully-staged repo has one; it names the creator and survives the repo
+        moving between a personal account and the org."""
+        try:
+            info = self.ghJSON(["api", f"/repos/{nameWithOwner}/contents/CURATOR"])
+        except Exception as e:
+            logging.warning(f"repoCurator: could not read CURATOR of {nameWithOwner}: {e}")
+            return None
+        if not isinstance(info, dict) or not info.get("content"):
+            return None
+        try:
+            import base64
+            return base64.b64decode(info["content"]).decode("utf-8", errors="ignore").strip().lower() or None
+        except Exception:
+            return None
+
     def listStagedRepos(self):
         """Return the active user's repositories that are staged but not yet published,
         identified by the `morphodepot-staging` topic.  Uses the repo LIST endpoint (topics
         are reflected immediately, unlike the search index which lags for fresh repos), so it
         is reliable right after staging and from any machine.  Returns marker-shaped dicts."""
         me = self.whoami()
+        if not me:  # no identity -> no way to tell our repos from anyone else's; claim none
+            logging.warning("listStagedRepos: could not determine the active gh login")
+            return []
         # Staged repos can live in the user's personal account (personal-tier staging) or the
-        # MorphoDepot org (member-tier — owned by the org, reachable via the {handle}-team); both
-        # paths tag the repo `morphodepot-staging`.  Query exactly those two scopes rather than
-        # `/user/repos?affiliation=owner,organization_member --paginate`, which walks every repo of
-        # every org the user belongs to just to keep the few staged ones — bounded here regardless
+        # MorphoDepot org (member-tier — owned by the org).  Query exactly those two scopes rather
+        # than `/user/repos?affiliation=owner,organization_member --paginate`, which walks every repo
+        # of every org the user belongs to just to keep the few staged ones — bounded here regardless
         # of how many repos live in the user's other orgs.
         repos = []
         for endpoint in ("/user/repos?affiliation=owner&per_page=100",
@@ -843,6 +864,16 @@ jobs:
             if nameWithOwner in seen:  # defensive de-dup (a repo can't be in both lists)
                 continue
             seen.add(nameWithOwner)
+            # Personal repos are ours by construction (we own them).  Org repos are NOT: the org
+            # scope returns every private repo the token can see, so an org OWNER would otherwise
+            # get every member's unpublished repo in their Create tab — and, once one is approved,
+            # a right-click "Publish (make public)" on someone else's unfinished work.  CURATOR is
+            # the authoritative "who staged this" signal (unconditional, in the initial commit),
+            # unlike the {login}-team grant, which is written best-effort and can silently be
+            # missing.  Skip on an unreadable CURATOR: leak-safe, and nothing is lost — the repo
+            # is still on GitHub and the list has a Refresh button.
+            if owner != me and self.repoCurator(nameWithOwner) != me.lower():
+                continue
             staged.append({
                 "nameWithOwner": nameWithOwner,
                 "repoName": name,
