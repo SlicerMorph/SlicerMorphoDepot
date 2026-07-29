@@ -301,8 +301,13 @@ class VersionUIMixin:
         installed = self._versionInstalled or {}
         status = self._versionStatus or {}
 
+        # An Extension Manager install knows its revision from the .s4ext but has no date until
+        # it has self-updated once and written a marker, so it would otherwise show a bare SHA --
+        # the one thing a researcher cannot reason about.  The update check's comparison already
+        # carries the installed commit's date; use it as the fallback.
+        installedDate = installed.get("date", "") or status.get("installedDate", "")
         self.configureUI.installedVersionLabel.text = self._versionDisplayName(
-            installed.get("sha", ""), installed.get("date", ""))
+            installed.get("sha", ""), installedDate)
 
         shape = installed.get("shape", SHAPE_UNKNOWN)
         source = SHAPE_DESCRIPTIONS.get(shape, shape)

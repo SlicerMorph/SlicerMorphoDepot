@@ -461,8 +461,8 @@ class VersionMixin:
 
         BACKGROUND THREAD SAFE -- subprocess and json only.  `repository` and `branch` are
         resolved by the caller on the main thread, since reading them touches QSettings.
-        Returns a dict with `available`, `latestSha`, `latestDate`, `aheadBy`, `compareUrl`
-        and `error`.
+        Returns a dict with `available`, `latestSha`, `latestDate`, `installedDate`,
+        `aheadBy`, `compareUrl` and `error`.
         """
         repository = repository or VERSION_CHECK_REPO
         branch = branch or VERSION_CHECK_BRANCH
@@ -470,6 +470,7 @@ class VersionMixin:
             "available": False,
             "latestSha": "",
             "latestDate": "",
+            "installedDate": "",
             "aheadBy": 0,
             "compareUrl": "",
             "compareStatus": "",
@@ -488,8 +489,12 @@ class VersionMixin:
             status["latestDate"] = (latest.get("date") or "")[:10]
             return status
 
+        # `base_date` is the installed commit's own date.  The comparison already carries it,
+        # so asking for it here costs nothing and lets the Configure tab date an install that
+        # has no update marker to read one from (a fresh Extension Manager install).
         jqFilter = (
             "{status: .status, ahead_by: .ahead_by, html_url: .html_url,"
+            " base_date: .base_commit.commit.committer.date,"
             " head_sha: (.commits | last | .sha),"
             " head_date: (.commits | last | .commit.committer.date),"
             " file_count: ((.files // []) | length),"
@@ -509,6 +514,7 @@ class VersionMixin:
         status["aheadBy"] = comparison.get("ahead_by", 0) or 0
         status["latestSha"] = comparison.get("head_sha") or installedSha
         status["latestDate"] = (comparison.get("head_date") or "")[:10]
+        status["installedDate"] = (comparison.get("base_date") or "")[:10]
 
         if comparison.get("status") == "diverged":
             # The installed revision is not an ancestor of the release branch, so "behind"
