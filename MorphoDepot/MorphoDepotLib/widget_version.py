@@ -361,9 +361,14 @@ class VersionUIMixin:
         # Deliberately no commit count: it means nothing to the researchers this is for,
         # and the two dates already say how far behind they are.  "What's New" is there
         # for anyone who wants the detail.
+        # Same marker-then-comparison fallback as the Configure tab: without it the "two dates"
+        # this comment relies on are one date and a bare SHA on exactly the installs that have
+        # never self-updated.
         message = _("MorphoDepot {latest} is available.  You have {installed}.").format(
             latest=self._versionDisplayName(latestSha, status.get("latestDate", "")),
-            installed=self._versionDisplayName(installed.get("sha", ""), installed.get("date", "")))
+            installed=self._versionDisplayName(
+                installed.get("sha", ""),
+                installed.get("date", "") or status.get("installedDate", "")))
         if installed.get("blockedReason"):
             message += "\n" + installed["blockedReason"]
         self.versionBannerLabel.text = message
