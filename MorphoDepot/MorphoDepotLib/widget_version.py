@@ -301,8 +301,13 @@ class VersionUIMixin:
         installed = self._versionInstalled or {}
         status = self._versionStatus or {}
 
+        # An Extension Manager install knows its revision from the .s4ext but has no date until
+        # it has self-updated once and written a marker, so it would otherwise show a bare SHA --
+        # the one thing a researcher cannot reason about.  The update check's comparison already
+        # carries the installed commit's date; use it as the fallback.
+        installedDate = installed.get("date", "") or status.get("installedDate", "")
         self.configureUI.installedVersionLabel.text = self._versionDisplayName(
-            installed.get("sha", ""), installed.get("date", ""))
+            installed.get("sha", ""), installedDate)
 
         shape = installed.get("shape", SHAPE_UNKNOWN)
         source = SHAPE_DESCRIPTIONS.get(shape, shape)
@@ -356,9 +361,14 @@ class VersionUIMixin:
         # Deliberately no commit count: it means nothing to the researchers this is for,
         # and the two dates already say how far behind they are.  "What's New" is there
         # for anyone who wants the detail.
+        # Same marker-then-comparison fallback as the Configure tab: without it the "two dates"
+        # this comment relies on are one date and a bare SHA on exactly the installs that have
+        # never self-updated.
         message = _("MorphoDepot {latest} is available.  You have {installed}.").format(
             latest=self._versionDisplayName(latestSha, status.get("latestDate", "")),
-            installed=self._versionDisplayName(installed.get("sha", ""), installed.get("date", "")))
+            installed=self._versionDisplayName(
+                installed.get("sha", ""),
+                installed.get("date", "") or status.get("installedDate", "")))
         if installed.get("blockedReason"):
             message += "\n" + installed["blockedReason"]
         self.versionBannerLabel.text = message
