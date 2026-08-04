@@ -813,7 +813,8 @@ class CreateTabMixin:
                 "Staging completed",
                 "Staging is completed. Scene is reset.\n\n"
                 "You can go back and edit the repo by double-clicking it in the staged-only repos list.\n\n"
-                "Repos that are not requested to be made public within 14 days of staging will be discarded.")
+                "We will email you a reminder if it is still unfinished after a week. Unfinished "
+                "repositories may be removed by a MorphoDepot administrator after four weeks.")
 
     def _enterGoLiveState(self, stagedNameWithOwner):
         """Reveal the Go-live gate after a repo has been staged privately."""
