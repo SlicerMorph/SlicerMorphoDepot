@@ -116,8 +116,8 @@ class ReleaseMixin:
         MorphoDepotAccession.json. Links each previous release to its tag's tree on
         GitHub so the reader sees the repository at that release stage. Shows every
         screenshot the repo currently carries, so the front page keeps its images through
-        a release that adds none (`newScreenshotEntries` is the fallback if captions.json
-        can't be read); older screenshots also remain in their archived READMEs."""
+        a release that adds none (`newScreenshotEntries` is the fallback whenever
+        captions.json yields nothing); older screenshots also remain in their archived READMEs."""
         repoDir = self.localRepo.working_dir
         accessionPath = os.path.join(repoDir, "MorphoDepotAccession.json")
         accession = {}
@@ -184,7 +184,8 @@ class ReleaseMixin:
         # release that adds none (a metadata-only one, e.g. reissuing a DOI) would otherwise strip
         # the images off the front page even though they are still committed.  The caller has
         # already folded this release's screenshots into captions.json, so this covers old and new
-        # alike; `newScreenshotEntries` remains the fallback if captions.json is missing/unreadable.
+        # alike; `newScreenshotEntries` takes over whenever that yields nothing -- missing, corrupt,
+        # or an empty captions.json -- which is also the right answer when there simply are none.
         screenshotItems = self._readScreenshotCaptions(repoDir) or list(newScreenshotEntries or [])
         if screenshotItems:
             lines.append("")
