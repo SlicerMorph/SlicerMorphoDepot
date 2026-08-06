@@ -114,8 +114,10 @@ class ReleaseMixin:
     def generateReleaseReadme(self, newTag, newScreenshotEntries):
         """Build a new README.md body for the given release. Reuses metadata from
         MorphoDepotAccession.json. Links each previous release to its tag's tree on
-        GitHub so the reader sees the repository at that release stage. Lists only
-        screenshots from this release flow (older screenshots stay in their archived READMEs)."""
+        GitHub so the reader sees the repository at that release stage. Shows every
+        screenshot the repo currently carries, so the front page keeps its images through
+        a release that adds none (`newScreenshotEntries` is the fallback whenever
+        captions.json yields nothing); older screenshots also remain in their archived READMEs."""
         repoDir = self.localRepo.working_dir
         accessionPath = os.path.join(repoDir, "MorphoDepotAccession.json")
         accession = {}
@@ -178,10 +180,17 @@ class ReleaseMixin:
         lines.append(f"* Dimensions: {scanDimensions}")
         lines.append(f"* Spacing (mm): {scanSpacing}")
 
-        if newScreenshotEntries:
+        # Every screenshot the repo currently carries -- not just this release's additions.  A
+        # release that adds none (a metadata-only one, e.g. reissuing a DOI) would otherwise strip
+        # the images off the front page even though they are still committed.  The caller has
+        # already folded this release's screenshots into captions.json, so this covers old and new
+        # alike; `newScreenshotEntries` takes over whenever that yields nothing -- missing, corrupt,
+        # or an empty captions.json -- which is also the right answer when there simply are none.
+        screenshotItems = self._readScreenshotCaptions(repoDir) or list(newScreenshotEntries or [])
+        if screenshotItems:
             lines.append("")
-            lines.append(f"## Screenshots for {newTag}")
-            for name, caption in newScreenshotEntries:
+            lines.append("## Screenshots")
+            for name, caption in screenshotItems:
                 altText = caption or name
                 lines.append(f"![{altText}](screenshots/{name})")
                 if caption:

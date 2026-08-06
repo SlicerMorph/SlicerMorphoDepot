@@ -193,7 +193,9 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
 
     def _readScreenshotCaptions(self, repoDir):
         """Read an existing repo's screenshots/captions.json into an ordered list of
-        (filename, caption) so the README can be regenerated without the live screenshots."""
+        (filename, caption) so the README can be regenerated without the live screenshots.
+        Ordered by screenshot NUMBER, not by name: screenshots are numbered sequentially as
+        releases add them, and a plain sort puts screenshot-10 before screenshot-2."""
         captionsPath = os.path.join(repoDir, "screenshots", "captions.json")
         if not os.path.exists(captionsPath):
             return []
@@ -202,7 +204,13 @@ Repository for segmentation of a specimen scan.  See [this JSON file](MorphoDepo
                 captions = json.load(fp)
         except Exception:
             return []
-        return [(name, captions[name]) for name in sorted(captions.keys())]
+
+        def order(name):
+            match = re.match(r"^screenshot-(\d+)\.png$", name)
+            # Anything not following the naming scheme sorts after, by name, so it still appears.
+            return (0, int(match.group(1)), "") if match else (1, 0, name)
+
+        return [(name, captions[name]) for name in sorted(captions.keys(), key=order)]
 
     def _speciesFromReadme(self, repoDir):
         """Extract the already-recorded species from a repo's committed README (the
