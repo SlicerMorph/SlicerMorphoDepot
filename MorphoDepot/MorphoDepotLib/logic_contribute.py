@@ -76,11 +76,20 @@ class ContributeMixin:
         except git.exc.GitCommandError as e:
             if not self.isMissingCredentialError(e):
                 raise
+            # Says what actually helps, not "run gh auth setup-git": the module has already tried
+            # that on the way in, with the git from the Configure tab handed to gh (#214), so a
+            # user reaching this message has watched the recommended command fail.  This is the
+            # worst possible moment to send them somewhere that does not work.
             raise RuntimeError(
                 "Your segmentation was saved on this computer, but could not be sent to GitHub "
-                "because MorphoDepot could not sign in.\n\n"
-                "In a terminal window, run:  gh auth setup-git\n"
-                "then click Commit again -- your work is still here and nothing has been lost.") from e
+                "because MorphoDepot could not sign in. Nothing has been lost -- the work is "
+                "here and will go up once this is sorted out.\n\n"
+                "MorphoDepot already tried to set up the sign-in for you automatically. The usual "
+                "cause is that git is not on your system PATH: add the folder holding git to it, "
+                "or install a git that puts itself there, then restart Slicer, open this issue "
+                "again and click Commit.\n\n"
+                "If git is already on the PATH, open a terminal, run:  gh auth login\n"
+                "and complete every step, then try again.") from e
         for pi in pushInfoList:
             for flag in [pi.REJECTED, pi.REMOTE_REJECTED, pi.REMOTE_FAILURE, pi.ERROR]:
                 if pi.flags & flag:

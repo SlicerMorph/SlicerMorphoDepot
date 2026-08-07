@@ -93,10 +93,16 @@ class DepsMixin:
 
         Set process-wide rather than per-repository on purpose: GitPython copies os.environ at
         each invocation, so this reaches the pushes in logic_contribute/logic_release/
-        logic_accession and any added later, with no per-call-site plumbing to forget.  Only the
-        GIT_*/SSH_* variables are set this way -- PATH is deliberately left alone (#214), since
-        prepending a portable git's directory would put its bash.exe and sh.exe ahead of
-        everything for every subprocess Slicer launches.
+        logic_accession and any added later, with no per-call-site plumbing to forget.  The
+        scoped alternative exists -- repo.git.update_environment() applies to one Repo -- and is
+        rejected for that reason, not because nothing else is affected: Slicer's own Extension
+        Wizard pushes through GitPython in this same process (ExtensionWizard.py), so once this
+        logic has been built, an extension publish from the same session also gets prompting
+        disabled.  That is judged acceptable because a git prompt inside Slicer has nowhere to
+        appear either way -- the Wizard user gets a clear failure instead of a hang.
+
+        PATH is deliberately NOT set this way (#214): prepending a portable git's directory would
+        put its bash.exe and sh.exe ahead of everything for every subprocess Slicer launches.
         """
         os.environ.update(self.gitNonInteractiveEnvironment)
 
@@ -189,9 +195,10 @@ class DepsMixin:
         A user who has switched a remote to SSH by hand still needs one to reach upstream, so a
         False here is not a false alarm for them either -- but their push, alone, would work.
 
-        The timeout is a backstop against a credential helper that hangs, since this runs on the
-        way into the module: generous enough for a keychain that has to be unlocked, short enough
-        that a wedged helper does not hold the UI.
+        The timeout is a backstop against a credential helper that HANGS, not a budget for the
+        normal path: this runs on every module enter, and when nothing is configured git exits
+        immediately, so the cost of the common failing case is milliseconds.  Kept short anyway,
+        because enter() must not stall the UI (see its own no-hang contract).
         """
         if not self.gitExecutablePath:
             return False
@@ -210,7 +217,7 @@ class DepsMixin:
                 input="protocol=https\nhost=github.com\n\n",
                 capture_output=True,
                 text=True,
-                timeout=20,
+                timeout=10,
                 env=environment,
                 **popenArguments)
         except (OSError, subprocess.SubprocessError) as e:
@@ -239,14 +246,21 @@ class DepsMixin:
         if self.gitCredentialsConfigured():
             self._gitCredentialsCache = True
             return True
-        self.progressMethod("Setting up GitHub sign-in for git...")
+        # Said plainly because this WRITES to the user's global git configuration, affecting git
+        # everywhere else on their machine -- and a probe failure is not proof that no helper
+        # exists (a locked keychain reads the same way), so the change can be made on a false
+        # premise.  Judged worth it for this audience: the alternative is a segmenter losing a
+        # session's work to a failure they cannot diagnose.
+        self.progressMethod("Adding GitHub sign-in to your global git configuration...")
         try:
-            # Bounded, unlike the default gh timeout: this sits in front of module entry, and it
-            # runs again on every enter for as long as the problem lasts.  Retrying rather than
-            # attempting once per session is deliberate -- a user who fixes the underlying cause
-            # (puts git on PATH, finishes a login) is then repaired automatically on the way back
-            # in, instead of having to know to run setup-git themselves.
-            self.gh(["auth", "setup-git"], timeout=60)
+            # Bounded well below gh()'s 300s default: this sits in front of module entry, which
+            # must not stall, and it runs again on every enter for as long as the problem lasts.
+            # Retrying rather than attempting once per session is deliberate -- a user who fixes
+            # the underlying cause (finishes a `gh auth login`, installs git) is then repaired
+            # automatically on the way back in, instead of having to know setup-git exists.  The
+            # cost of that retry is small: when gh cannot do the job it fails in well under a
+            # second, and the timeout is only a backstop against a wedged child.
+            self.gh(["auth", "setup-git"], timeout=20)
         except Exception as e:
             logging.warning(f"MorphoDepot: `gh auth setup-git` did not succeed: {e}")
             return False

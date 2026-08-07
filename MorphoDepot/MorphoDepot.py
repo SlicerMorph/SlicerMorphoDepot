@@ -149,15 +149,25 @@ class EnableModuleMixin:
         # push, so the failure used to land after the segmentation was finished.  This does not
         # gate the module -- searching and browsing need no credential -- so a failure warns and
         # continues.
-        if not self.logic.ensureGitCredentialHelper():
+        # Warned once per session, not once per enter: a user who cannot fix this right now must
+        # not have to dismiss the same dialog on every visit to the module.  The check itself
+        # still runs each time, so a sign-in fixed elsewhere is picked up without a restart.
+        if not self.logic.ensureGitCredentialHelper() and not getattr(self, "gitCredentialWarningShown", False):
+            self.gitCredentialWarningShown = True
             msgBox = qt.QMessageBox()
             msgBox.setWindowTitle("MorphoDepot GitHub Sign-in")
             msgBox.setText("MorphoDepot can read from GitHub, but cannot yet save your work back to it.")
-            informativeText = "Saving a segmentation will fail until this is fixed.\n\n"
-            informativeText += "In a terminal window, run:  gh auth setup-git\n"
-            informativeText += "then come back to Slicer and reopen this module.\n\n"
-            informativeText += "If that command reports that it cannot find git, add the folder holding "
-            informativeText += "git to your system PATH, or install git so that it is on the PATH, and run it again."
+            # Does NOT tell the user to run `gh auth setup-git`: that is exactly what MorphoDepot
+            # just tried, under better conditions than a terminal can offer (it hands gh the git
+            # from the Configure tab, #214).  Recommending it again would send the user to a
+            # command that has already failed for them.  What actually helps is the cause.
+            informativeText = "Saving a segmentation will fail until this is fixed, so it is worth "
+            informativeText += "sorting out before you start work.\n\n"
+            informativeText += "MorphoDepot already tried to set this up for you and could not.\n\n"
+            informativeText += "The usual cause is that git is not on your system PATH: add the folder "
+            informativeText += "holding git to it, or install a git that puts itself there, then restart Slicer.\n\n"
+            informativeText += "If git is already on the PATH, open a terminal, run:  gh auth login\n"
+            informativeText += "and complete every step, then reopen this module."
             msgBox.setInformativeText(informativeText)
             msgBox.setIcon(qt.QMessageBox.Warning)
             msgBox.addButton(qt.QMessageBox.Ok)
