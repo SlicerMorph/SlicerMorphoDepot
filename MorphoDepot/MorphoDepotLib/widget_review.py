@@ -31,15 +31,19 @@ from MorphoDepotLib.screenshot_dialog import ScreenshotReviewDialog
 
 class ReviewTabMixin:
     def onReviewRefresh(self):
+        # The PR list is queried live from GitHub (MorphoDepotLib/logic_workstate.py), so there
+        # is no RepoClerk journal update to wait for -- a student who clicks Request review is
+        # visible on the next refresh, not on the next sweep.  The journal is still consulted for
+        # *which* in-org repos this user curates (the committed CURATOR file), which is index
+        # data and changes only on a push.
         self.reviewUI.repoClerkStatusLabel.text = "Updating..."
         self.reviewUI.repoClerkStatusLabel.show()
         slicer.app.processEvents()
-        with slicer.util.tryWithErrorDisplay("Failed to update PR list", waitCursor=True):
-            self.updateReviewPRList()
-        if self._waitForRepoClerkUpdate(self.reviewUI.repoClerkStatusLabel):
+        try:
             with slicer.util.tryWithErrorDisplay("Failed to update PR list", waitCursor=True):
                 self.updateReviewPRList()
-        self.reviewUI.repoClerkStatusLabel.hide()
+        finally:
+            self.reviewUI.repoClerkStatusLabel.hide()
         # Re-evaluate the reviewer section here (with a FRESH team-membership check), because Slicer's
         # module Reload rebuilds the widget but does NOT call enter() — so without this a repoadminteam
         # change (or the section being rebuilt hidden on reload) is only reflected on a full module

@@ -250,19 +250,9 @@ class GitHubMixin:
                        "--add-topic", f"md-{speciesTopicString}", "--remove-topic", self.stagingTopic]
         self.gh(command)
 
-    def issueList(self):
-        me = self.whoami()
-        repoData = self.ghTopicData()
-        issueList = []
-        for repo in repoData:
-            for issue in repo['issues']['nodes']:
-                assignees = [node['login'] for node in issue['assignees']['nodes']]
-                if me in assignees:
-                    repoName = repo['nameWithOwner'].split("/")[1]
-                    issueList.append({'number': issue['number'],
-                                      'title': issue['title'],
-                                      'repository': { 'name': repoName, 'nameWithOwner': repo['nameWithOwner']}})
-        return issueList
+    # issueList() and prList() live in logic_workstate.WorkStateMixin: they are per-user
+    # questions answered live from GitHub, not fleet-scale questions answered from the
+    # RepoClerk journal.  See that module's docstring for why.
 
     def administratedRepoList(self):
         # Releases are ARCHIVAL-ONLY (org-design Sec.9.6): only MorphoDepot-org repos the user
@@ -285,39 +275,6 @@ class GitHubMixin:
                 repo['nameWithOwner'] = f"{ownerLogin}/{repo['name']}"
                 returnRepos.append(repo)
         return returnRepos
-
-    def prList(self, role="segmenter"):
-        """
-        Fetch a list of open pull requests for the user, either as 'segmenter' or reviewer.
-        Returns PRs, their associated issue titles, and repository topics.
-        """
-        me = self.whoami()
-        repoData = self.ghTopicData()
-        prList = []
-        for repo in repoData:
-            for pr in repo['pullRequests']['nodes']:
-                prAuthor = (pr.get('author') or {}).get('login')  # None for a deleted/ghost account
-                if role == "segmenter":
-                    parties = [prAuthor] if prAuthor else []
-                elif role == "reviewer":
-                    parties = [issue['repository']['owner']['login'] for issue in pr['closingIssuesReferences']['nodes']]
-                    # In-org (archival) repos are owned by the MorphoDepot org, not the curator's
-                    # login, so owner-keying alone hides every in-org PR from its curator.  Add the
-                    # journaled curator — the same owner-vs-curator fix administratedRepoList() applies.
-                    if repo.get('curator'):
-                        parties.append(repo['curator'])
-                else:
-                    raise BaseException(f"Unknown role {role}")
-                issueTitles = [issue['title'] for issue in pr['closingIssuesReferences']['nodes']]
-                if me in parties:
-                    repoName = repo['nameWithOwner'].split("/")[1]
-                    prList.append({'number': pr['number'],
-                                      'title': pr['title'],
-                                      'issueTitles': issueTitles,
-                                      'isDraft': pr['isDraft'],
-                                      'author': {'login': prAuthor},
-                                      'repository': { 'name': repoName, 'nameWithOwner': repo['nameWithOwner']}})
-        return prList
 
     def repositoryList(self):
         # --limit 1000: gh defaults to 30, which would make loadIssue's fork-exists check
@@ -370,11 +327,13 @@ class GitHubMixin:
 
     def _openPRForBranch(self, upstreamNameWithOwner, headOwner, branchName):
         """Authoritative check for an already-open PR whose head is headOwner:branchName into the
-        upstream repo, queried DIRECTLY from GitHub (gh api) rather than the lagging RepoClerk
-        journal that prList()/issuePR() read.  Returns the PR dict or None (None also on any query
-        error, so the caller falls through to PR creation, which is itself guarded against
-        duplicates).  The journal lags minutes behind GitHub, so it cannot answer "does a PR exist
-        for this branch right now" — the moment that matters when deciding whether to open one."""
+        upstream repo.  Returns the PR dict or None (None also on any query error, so the caller
+        falls through to PR creation, which is itself guarded against duplicates).
+
+        prList() is live now too, so this is no longer a way around a lagging cache — it is kept
+        because it asks the narrower question directly: not "which of my PRs are open" but "is
+        there an open PR for *this branch* right now", which is the one that decides whether to
+        open another."""
         try:
             prs = self.ghJSON(["api",
                                f"repos/{upstreamNameWithOwner}/pulls?head={headOwner}:{branchName}&state=open"])

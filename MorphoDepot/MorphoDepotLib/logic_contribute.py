@@ -102,12 +102,12 @@ class ContributeMixin:
                     self.progressMethod(f"Push failed with {flag}")
                     return False
 
-        # Create a PR if one does not already exist.  Check AUTHORITATIVELY (direct gh), NOT via the
-        # RepoClerk journal that issuePR()/prList() read: the journal lags minutes behind GitHub, so
-        # right after the first push it still reports "no PR" and the old `if not self.issuePR()`
-        # guard would try to open a SECOND PR for the same head->base.  gh rejects that ("a pull
-        # request ... already exists"), which surfaced as a spurious "Failed to commit and push"
-        # even though the push succeeded -- for repo owners and outside segmenters alike.
+        # Create a PR if one does not already exist.  Ask about THIS branch specifically rather
+        # than going through issuePR()/prList(): those answer "which PRs concern me", which is a
+        # superset and was historically cached, and the old `if not self.issuePR()` guard would
+        # try to open a SECOND PR for the same head->base.  gh rejects that ("a pull request ...
+        # already exists"), which surfaced as a spurious "Failed to commit and push" even though
+        # the push succeeded -- for repo owners and outside segmenters alike.
         upstreamNameWithOwner = self.nameWithOwner("upstream")
         originNameWithOwner = self.nameWithOwner("origin")
         originOwner = originNameWithOwner.split("/")[0]
