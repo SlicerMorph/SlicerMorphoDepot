@@ -69,6 +69,28 @@ class DepsMixin:
             return False
         return True
 
+    def refreshGitPython(self):
+        """Point GitPython at the git executable this logic resolved.
+
+        GitPython's import-time search for a git executable is silenced (see __init__.py), so
+        it starts up with no git configured and every git.Repo() call would fail until it is
+        refreshed here.  This is also what makes a git chosen in the Configure tab usable when it
+        is not on PATH: without it that setting would reach the gh/subprocess calls but leave
+        GitPython pointed at nothing.
+
+        Returns True when GitPython has a working git.  A missing or unusable git is expected (the
+        user has not installed or configured one yet) and is reported by checkGitDependencies(),
+        which is what gates the UI -- so it is logged here, not raised.
+        """
+        if not self.gitExecutablePath:
+            return False
+        try:
+            git.refresh(path=self.gitExecutablePath)
+        except Exception as e:
+            logging.warning(f"MorphoDepot: GitPython could not use {self.gitExecutablePath}: {e}")
+            return False
+        return bool(git.GIT_OK)
+
     def checkGitDependencies(self):
         """Check that git, and gh are available
         """

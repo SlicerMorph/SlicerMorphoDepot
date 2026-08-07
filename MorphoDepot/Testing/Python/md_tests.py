@@ -62,6 +62,14 @@ def _logic_mixins_touch():
     assert H.logic.volumeChecksumIndexURL(), "ObjectStoreMixin.volumeChecksumIndexURL empty"
 
 
+def _logic_gitpython_refreshed():
+    # GitPython is imported with its executable search silenced so a machine without git can
+    # still load the module, which means the logic MUST hand it a git for git.Repo() to work.
+    import git
+    assert H.logic.refreshGitPython(), "refreshGitPython() failed for a resolved git"
+    assert git.GIT_OK, "GitPython has no git executable after the logic was built"
+
+
 def _baseline_nochange_helper():
     # Unit-touch of the M6 no-change check: a file compared to itself is 'unchanged'.
     import tempfile, os, shutil
@@ -232,6 +240,7 @@ TESTS = [
     ("annotate_tab_touch", _annotate_tab_touch),
     ("logic_whoami", _logic_whoami),
     ("logic_mixins_touch", _logic_mixins_touch),
+    ("logic_gitpython_refreshed", _logic_gitpython_refreshed),
     ("baseline_nochange_helper", _baseline_nochange_helper),
     ("version_change_filter", _version_change_filter),
     ("version_installed_shape", _version_installed_shape),

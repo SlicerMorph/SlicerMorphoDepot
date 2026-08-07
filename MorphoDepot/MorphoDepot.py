@@ -3,7 +3,6 @@ from typing import Annotated, Optional
 import csv
 import datetime
 import fnmatch
-import git
 import glob
 import json
 import locale
@@ -19,6 +18,11 @@ import subprocess
 import sys
 import time
 import traceback
+
+# NOTE: do not add `import git` here.  GitPython raises ImportError at import time when the
+# machine has no git executable, which would stop this module from loading at all; it is imported
+# once, quietly, in MorphoDepotLib/__init__.py (see the explanation there) and reaches this file
+# through the MorphoDepotLib imports below.
 
 import ctk
 import qt
@@ -129,6 +133,7 @@ class EnableModuleMixin:
             msgBox.setWindowTitle("MorphoDepot Dependencies")
             msgBox.setText("The git and gh command line tools must be installed and configured.")
             informativeText = "Be sure that you have logged into Github with 'gh auth login' and then restart Slicer.\n"
+            informativeText += "If they are installed but Slicer cannot find them, set their locations in the Configure tab.\n"
             informativeText += "Click 'Open Documentation' for platform-specific instructions."
             msgBox.setInformativeText(informativeText)
             msgBox.setIcon(qt.QMessageBox.Warning)
@@ -858,11 +863,9 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic, DepsMixin, GitHubMixin, Cont
         self.executableExtension = '.exe' if os.name == 'nt' else ''
         modulePath = os.path.split(slicer.modules.morphodepot.path)[0]
         self.resourcesPath = os.path.normpath(modulePath + "/Resources")
-        self.pixiInstallDir = os.path.normpath(self.resourcesPath + "/pixi")
 
         # use configured git and gh paths if selected,
         # else use system installed git and gh if available
-        # Optionally install with pixi, but only if requireSystemGit is False
         # note: normpath returns "." when given ""
         gitPath = os.path.normpath(slicer.util.settingsValue("MorphoDepot/gitPath", "") or "")
         ghPath = os.path.normpath(slicer.util.settingsValue("MorphoDepot/ghPath", "") or "")
@@ -875,6 +878,11 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic, DepsMixin, GitHubMixin, Cont
 
         qt.QSettings().setValue("MorphoDepot/gitPath", self.gitExecutablePath)
         qt.QSettings().setValue("MorphoDepot/ghPath", self.ghExecutablePath)
+
+        # GitPython was imported without a git executable (see MorphoDepotLib/__init__.py), so
+        # hand it the one we just resolved.  Re-runs whenever the logic is rebuilt, which is what the
+        # Configure tab does after the user picks a git path.
+        self.refreshGitPython()
 
 class MorphoDepotTest(ScriptedLoadableModuleTest):
     """
