@@ -149,7 +149,13 @@ class RepoMixin:
         logging.debug("Making new branch")
         if originBranchID in originBranchIDs:
             logging.debug("Checking out existing from origin")
-            self.localRepo.git.execute(f"git checkout --track {originBranchID}".split())
+            # git.checkout(), NOT git.execute(["git", ...]): execute() runs the argv it is given,
+            # so a literal "git" there is looked up on PATH and ignores the executable GitPython
+            # was pointed at (refreshGitPython, #213).  On a machine whose git is a portable
+            # install off the PATH -- the case the Configure tab exists for -- this was the one
+            # call in the module that could not find git, and it is on the path a segmenter takes
+            # to RESUME work: it only runs when the issue branch already exists on origin.
+            self.localRepo.git.checkout("--track", originBranchID)
         else:
             # D1: branch off upstream/main (latest published state).  Fall back to origin/main
             # only if upstream/main is somehow unavailable, preserving the prior behavior.
