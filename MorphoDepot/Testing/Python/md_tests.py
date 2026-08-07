@@ -80,6 +80,8 @@ def _logic_tool_path_environment():
     entries = {os.path.normcase(os.path.normpath(entry))
                for entry in childPath.split(os.pathsep) if entry}
     for executablePath in (H.logic.gitExecutablePath, H.logic.ghExecutablePath):
+        if not executablePath:
+            continue  # nothing configured yet -- checkGitDependencies() is what reports that
         directory = os.path.normcase(os.path.normpath(os.path.dirname(executablePath)))
         assert directory in entries, f"{executablePath} directory missing from the gh child PATH"
 

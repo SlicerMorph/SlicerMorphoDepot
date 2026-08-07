@@ -105,11 +105,22 @@ class DepsMixin:
         empty dict when the child's PATH already covers both directories.  The child environment
         is the startup environment, not this process's, so that is what is extended.
         """
+        # Windows paths are case-insensitive and a path typed into the Configure tab need not
+        # match the one a QFileDialog produced, so every comparison here is on the normalized
+        # form: C:\Program Files\GitHub CLI and c:\program files\github cli\ are one directory
+        # and must not be prepended twice -- whether the duplication comes from git and gh
+        # living together or from the directory already being on the child's PATH.
+        def pathKey(path):
+            return os.path.normcase(os.path.normpath(path))
+
         directories = []
+        keys = set()
         for executablePath in (self.gitExecutablePath, self.ghExecutablePath):
             directory = os.path.dirname(executablePath) if executablePath else ""
-            if directory and directory not in directories:
-                directories.append(directory)
+            if not directory or pathKey(directory) in keys:
+                continue
+            keys.add(pathKey(directory))
+            directories.append(directory)
         if not directories:
             return {}
         try:
@@ -117,12 +128,8 @@ class DepsMixin:
         except Exception:
             basePath = os.environ.get("PATH", "")
         entries = [entry for entry in basePath.split(os.pathsep) if entry]
-        # Windows paths are case-insensitive and the Configure tab hands back a normalized path,
-        # so compare normalized: C:\Program Files\GitHub CLI and c:\program files\github cli\ are
-        # the same directory and must not be prepended twice.
-        present = {os.path.normcase(os.path.normpath(entry)) for entry in entries}
-        missing = [directory for directory in directories
-                   if os.path.normcase(os.path.normpath(directory)) not in present]
+        present = {pathKey(entry) for entry in entries}
+        missing = [directory for directory in directories if pathKey(directory) not in present]
         if not missing:
             return {}
         return {"PATH": os.pathsep.join(missing + entries)}
