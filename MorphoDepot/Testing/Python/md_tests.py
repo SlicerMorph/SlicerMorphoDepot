@@ -96,11 +96,31 @@ def _logic_git_noninteractive_environment():
         assert os.environ.get(key) == value, f"{key} was not applied to the git child environment"
 
 
-def _logic_credential_probe_answers():
-    # The probe backs the module-entry check, so it must return an answer on any machine -- with a
-    # helper, without one, and with no git configured at all -- and must never block on input.
-    result = H.logic.gitCredentialsConfigured()
-    assert isinstance(result, bool), f"gitCredentialsConfigured() returned {result!r}, not a bool"
+def _logic_repository_credentials():
+    # The one path here that WRITES configuration.  Two invariants matter, and the second is the
+    # one that keeps a shared machine honest: the helper must delegate to gh (so the push follows
+    # the active gh account rather than whatever credential the machine had stored for github.com),
+    # and it must be preceded by an empty entry, because git ACCUMULATES helpers across config
+    # scopes -- without the reset a global osxkeychain/manager entry answers first and wins.
+    import os, tempfile, shutil, git
+    repoDirectory = tempfile.mkdtemp(prefix="md-credential-test-")
+    try:
+        repo = git.Repo.init(repoDirectory, initial_branch="main")
+        assert H.logic.configureRepositoryCredentials(repo), "configureRepositoryCredentials failed"
+
+        values = repo.git.config("--local", "--get-all", "credential.https://github.com.helper")
+        entries = values.split("\n")
+        assert entries[0] == "", f"helper list is not reset first: {entries!r}"
+        assert len(entries) == 2, f"expected a reset plus one helper, got {entries!r}"
+        assert "auth git-credential" in entries[1], f"helper does not delegate to gh: {entries[1]!r}"
+        assert H.logic.ghExecutablePath in entries[1], f"helper is not the configured gh: {entries[1]!r}"
+
+        # Written to THIS repository only -- the user's global config is not MorphoDepot's to edit.
+        assert repo.git.config("--local", "credential.interactive") == "false"
+        localConfig = os.path.join(repoDirectory, ".git", "config")
+        assert "auth git-credential" in open(localConfig).read(), "helper did not land in the repo config"
+    finally:
+        shutil.rmtree(repoDirectory, ignore_errors=True)
 
 
 def _logic_missing_credential_detection():
@@ -291,7 +311,7 @@ TESTS = [
     ("logic_gitpython_refreshed", _logic_gitpython_refreshed),
     ("logic_tool_path_environment", _logic_tool_path_environment),
     ("logic_git_noninteractive_environment", _logic_git_noninteractive_environment),
-    ("logic_credential_probe_answers", _logic_credential_probe_answers),
+    ("logic_repository_credentials", _logic_repository_credentials),
     ("logic_missing_credential_detection", _logic_missing_credential_detection),
     ("baseline_nochange_helper", _baseline_nochange_helper),
     ("version_change_filter", _version_change_filter),

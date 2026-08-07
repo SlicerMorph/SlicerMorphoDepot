@@ -114,6 +114,9 @@ class RepoMixin:
             isFork = True
         self.gh(["repo", "clone", cloneTarget, localDirectory])
         self.localRepo = git.Repo(localDirectory)
+        # Before any fetch/pull/push below: this is what makes them authenticate as the active
+        # gh account rather than whatever credential the machine had stored for github.com.
+        self.configureRepositoryCredentials(self.localRepo)
         self._ensureUpstream(sourceRepository)
 
         # D2: keep a genuine fork's default branch current with upstream (GitHub forks do not
@@ -194,6 +197,7 @@ class RepoMixin:
 
         self.gh(["repo", "clone", headNameWithOwner, localDirectory])
         self.localRepo = git.Repo(localDirectory)
+        self.configureRepositoryCredentials(self.localRepo)
         self._ensureUpstream(baseRepo)
         self.localRepo.remotes.origin.fetch()
         self.localRepo.git.checkout(branchName)
@@ -212,6 +216,7 @@ class RepoMixin:
         self.gh(["repo", "clone", repoNameWithOwner, localDirectory])
 
         self.localRepo = git.Repo(localDirectory)
+        self.configureRepositoryCredentials(self.localRepo)
         self.localRepo.git.checkout("main")
         self.loadFromLocalRepository(remoteName="origin", configuration="release")
         return True
@@ -225,6 +230,7 @@ class RepoMixin:
         self.gh(["repo", "clone", repoNameWithOwner, localDirectory])
 
         self.localRepo = git.Repo(localDirectory)
+        self.configureRepositoryCredentials(self.localRepo)
         self.localRepo.git.checkout("main")
         self.loadFromLocalRepository(remoteName="origin", configuration="preview")
         return True

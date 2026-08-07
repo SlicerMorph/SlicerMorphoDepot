@@ -173,105 +173,53 @@ class DepsMixin:
             return {}
         return {"PATH": os.pathsep.join(missing + entries)}
 
-    def gitCredentialsConfigured(self):
-        """True when git can obtain a GitHub credential without asking a human.
+    def configureRepositoryCredentials(self, repo):
+        """Make this repository sign in to GitHub as the gh account MorphoDepot is actually using.
 
-        The credential helper is written by `gh auth setup-git` (run for the user as part of
-        `gh auth login`), and that can only happen if gh can RUN git -- which is not the case on a
-        machine whose git is a portable install that was never put on PATH.  That is #214's
-        dependency in the other direction, and it fails silently: gh authenticates fine, `gh auth
-        status` is green, the Configure tab is green, every gh-driven operation works, and the one
-        operation that goes through GitPython instead -- the push in commitAndPush -- is the one
-        that fails, after the segmentation work is done.
+        Written into the repository's OWN config, not the user's global one (which is what
+        `gh auth setup-git` edits).  Three things that buys:
 
-        Asks git rather than reading config, so any working helper counts (osxkeychain on macOS,
-        manager on Windows) and not just the one gh installs.  `credential fill` consults the
-        helpers and returns what git would use for a push; with prompting disabled it fails
-        outright when nothing answers, so this never blocks on input.
+        * It authenticates as the RIGHT account.  A host-keyed helper -- osxkeychain, or Windows'
+          Credential Manager -- answers for github.com with whatever credential was stored there
+          by whoever stored it, and `gh auth switch` does not touch it.  On a shared teaching
+          machine, in the three-persona test harness, or on any computer where the user pushed to
+          GitHub before installing MorphoDepot, that means commits going up as somebody else
+          while whoami() reports the account they picked.  Delegating to `gh auth git-credential`
+          follows the active gh account by construction, so the question cannot arise.
+        * It changes nothing outside MorphoDepot's own clones.  setup-git rewrites the global
+          config, and with no --hostname it does so for EVERY host the user is logged into, not
+          just github.com.
+        * It does not depend on setup-git succeeding -- which it cannot when gh has no git to run
+          (#214), the failure this whole change exists to fix.
 
-        HTTPS only, deliberately: MorphoDepot builds its remotes as https://github.com/... itself
-        (_ensureUpstream, and the origin set by the accession path), so an HTTPS credential is
-        needed for the normal workflow no matter what protocol gh was configured to clone with.
-        A user who has switched a remote to SSH by hand still needs one to reach upstream, so a
-        False here is not a false alarm for them either -- but their push, alone, would work.
+        The empty value written first is what makes the first point hold: git ACCUMULATES helpers
+        across config scopes, so a global osxkeychain entry would still answer first and win.  An
+        empty credential.helper resets the accumulated list, so only this one runs.  (That is the
+        same two-entry shape `gh auth setup-git` writes globally.)
 
-        The timeout is a backstop against a credential helper that HANGS, not a budget for the
-        normal path: this runs on every module enter, and when nothing is configured git exits
-        immediately, so the cost of the common failing case is milliseconds.  Kept short anyway,
-        because enter() must not stall the UI (see its own no-hang contract).
-
-        Note that a helper CAN put a dialog on screen from here: an osxkeychain entry whose
-        keychain is locked prompts the user to unlock it, so the first entry into the module on
-        such a machine may raise a system password box that was not asked for.  Answering it
-        leaves the probe true; dismissing it reads as "no credential", which is also what the
-        subsequent push would hit -- so the warning that follows is not a false alarm.
+        Returns True when the repository was configured.
         """
-        if not self.gitExecutablePath:
+        if not self.ghExecutablePath:
+            logging.warning("MorphoDepot: no gh to configure repository credentials with")
             return False
-        environment = os.environ.copy()
-        environment.update(self.gitNonInteractiveEnvironment)
-        popenArguments = {}
-        if os.name == "nt":
-            # Hide the console window, the way slicer.util.launchConsoleProcess does.
-            startupInfo = subprocess.STARTUPINFO()
-            startupInfo.dwFlags = subprocess.STARTF_USESHOWWINDOW
-            startupInfo.wShowWindow = subprocess.SW_HIDE
-            popenArguments["startupinfo"] = startupInfo
+        # Quoted because the path routinely contains spaces (C:\Program Files\GitHub CLI), and
+        # git hands this string to a shell.  The escape covers the pathological apostrophe.
+        quotedGhPath = self.ghExecutablePath.replace("'", "'\\''")
+        helper = f"!'{quotedGhPath}' auth git-credential"
+        helperKey = "credential.https://github.com.helper"
         try:
-            completed = subprocess.run(
-                [self.gitExecutablePath, "credential", "fill"],
-                input="protocol=https\nhost=github.com\n\n",
-                capture_output=True,
-                text=True,
-                timeout=10,
-                env=environment,
-                **popenArguments)
-        except (OSError, subprocess.SubprocessError) as e:
-            logging.warning(f"MorphoDepot: could not ask git for a GitHub credential: {e}")
-            return False
-        # NEVER log or progressMethod this stdout: on success it contains the access token itself.
-        return completed.returncode == 0 and "password=" in (completed.stdout or "")
-
-    def ensureGitCredentialHelper(self):
-        """Make sure git has a credential source for github.com, installing one if it has none.
-
-        Running `gh auth setup-git` through self.gh() is what makes this work in the case that
-        breaks: gh is handed a PATH containing the configured git (#214), so it can write the
-        credential config even when git is not on the system PATH and the same command typed in a
-        terminal would fail.  Returns True when git ends up able to answer.
-
-        A False is reported to the user, not raised: searching and browsing work without a push
-        credential, so this warns rather than gating the module.
-        """
-        # Cached like whoami(), and for the same reason: this runs on every module enter, and a
-        # helper that answered once will answer again for the life of this logic instance.  Only
-        # the success is cached -- a user who goes and fixes their sign-in gets a fresh check on
-        # the next enter rather than being told it is still broken.
-        if getattr(self, "_gitCredentialsCache", False):
-            return True
-        if self.gitCredentialsConfigured():
-            self._gitCredentialsCache = True
-            return True
-        # Said plainly because this WRITES to the user's global git configuration, affecting git
-        # everywhere else on their machine -- and a probe failure is not proof that no helper
-        # exists (a locked keychain reads the same way), so the change can be made on a false
-        # premise.  Judged worth it for this audience: the alternative is a segmenter losing a
-        # session's work to a failure they cannot diagnose.
-        self.progressMethod("Adding GitHub sign-in to your global git configuration...")
-        try:
-            # Bounded well below gh()'s 300s default: this sits in front of module entry, which
-            # must not stall, and it runs again on every enter for as long as the problem lasts.
-            # Retrying rather than attempting once per session is deliberate -- a user who fixes
-            # the underlying cause (finishes a `gh auth login`, installs git) is then repaired
-            # automatically on the way back in, instead of having to know setup-git exists.  The
-            # cost of that retry is small: when gh cannot do the job it fails in well under a
-            # second, and the timeout is only a backstop against a wedged child.
-            self.gh(["auth", "setup-git"], timeout=20)
+            repo.git.config("--local", "--replace-all", helperKey, "")
+            repo.git.config("--local", "--add", helperKey, helper)
+            # GIT_TERMINAL_PROMPT stops git asking on a terminal, but it does not stop a HELPER
+            # from opening its own window: Git Credential Manager has a separate interactivity
+            # switch, and without this one it can raise a browser sign-in flow that nothing in
+            # the UI asked for.  Belt and braces, since the reset above already leaves GCM out of
+            # the chain for this repository.
+            repo.git.config("--local", "credential.interactive", "false")
         except Exception as e:
-            logging.warning(f"MorphoDepot: `gh auth setup-git` did not succeed: {e}")
+            logging.warning(f"MorphoDepot: could not configure repository credentials: {e}")
             return False
-        self._gitCredentialsCache = self.gitCredentialsConfigured()
-        return self._gitCredentialsCache
+        return True
 
     def checkGitDependencies(self):
         """Check that git, and gh are available

@@ -144,34 +144,11 @@ class EnableModuleMixin:
                 qt.QDesktopServices.openUrl(qt.QUrl("https://github.com/SlicerMorph/SlicerMorphoDepot?tab=readme-ov-file#prerequisites-for-morphodepot"))
             return False
 
-        # check that saving back to GitHub will actually be possible.  Deliberately here and not at
-        # Commit: with a working login but no credential helper, everything looks fine until the
-        # push, so the failure used to land after the segmentation was finished.  This does not
-        # gate the module -- searching and browsing need no credential -- so a failure warns and
-        # continues.
-        # Warned once per session, not once per enter: a user who cannot fix this right now must
-        # not have to dismiss the same dialog on every visit to the module.  The check itself
-        # still runs each time, so a sign-in fixed elsewhere is picked up without a restart.
-        if not self.logic.ensureGitCredentialHelper() and not getattr(self, "gitCredentialWarningShown", False):
-            self.gitCredentialWarningShown = True
-            msgBox = qt.QMessageBox()
-            msgBox.setWindowTitle("MorphoDepot GitHub Sign-in")
-            msgBox.setText("MorphoDepot can read from GitHub, but cannot yet save your work back to it.")
-            # Does NOT tell the user to run `gh auth setup-git`: that is exactly what MorphoDepot
-            # just tried, under better conditions than a terminal can offer (it hands gh the git
-            # from the Configure tab, #214).  Recommending it again would send the user to a
-            # command that has already failed for them.  What actually helps is the cause.
-            informativeText = "Saving a segmentation will fail until this is fixed, so it is worth "
-            informativeText += "sorting out before you start work.\n\n"
-            informativeText += "MorphoDepot already tried to set this up for you and could not.\n\n"
-            informativeText += "The usual cause is that git is not on your system PATH: add the folder "
-            informativeText += "holding git to it, or install a git that puts itself there, then restart Slicer.\n\n"
-            informativeText += "If git is already on the PATH, open a terminal, run:  gh auth login\n"
-            informativeText += "and complete every step, then reopen this module."
-            msgBox.setInformativeText(informativeText)
-            msgBox.setIcon(qt.QMessageBox.Warning)
-            msgBox.addButton(qt.QMessageBox.Ok)
-            msgBox.exec_()
+        # No credential check here any more.  Signing in is configured per REPOSITORY, at the
+        # moment each one is cloned or created (configureRepositoryCredentials), delegating to the
+        # active gh account -- so there is no global state left to be wrong, nothing to warn about
+        # on the way in, and no probe on the UI thread.  `gh auth status` in checkGitDependencies
+        # above is what establishes that gh can sign in at all, which is now the only requirement.
 
         # check local directory
         repoDirectory = self.logic.localRepositoryDirectory()
