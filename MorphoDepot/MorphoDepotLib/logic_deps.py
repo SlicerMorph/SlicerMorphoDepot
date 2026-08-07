@@ -197,7 +197,14 @@ class DepsMixin:
         empty credential.helper resets the accumulated list, so only this one runs.  (That is the
         same two-entry shape `gh auth setup-git` writes globally.)
 
-        Returns True when the repository was configured.
+        The reset also suppresses a helper the user configured DELIBERATELY for github.com --
+        inside MorphoDepot's own clones, and nowhere else.  That is the intent (it is what closes
+        the wrong-account hazard above), but it is a real behavior change for anyone with a
+        curated credential setup, so it is written down rather than left to be discovered.
+
+        Returns True when the repository was configured.  Callers do not check it: the only way
+        to fail early is a missing gh, which checkGitDependencies() has already made impossible
+        by gating the UI, and a later failure is undone below rather than left half-applied.
         """
         if not self.ghExecutablePath:
             logging.warning("MorphoDepot: no gh to configure repository credentials with")
@@ -218,6 +225,17 @@ class DepsMixin:
             repo.git.config("--local", "credential.interactive", "false")
         except Exception as e:
             logging.warning(f"MorphoDepot: could not configure repository credentials: {e}")
+            # Undo a PARTIAL write.  The two commands are not atomic, and the order matters: if
+            # the reset lands but the helper does not, the repository is left WORSE than before
+            # this ran -- an empty accumulated list suppresses the machine's own helpers with
+            # nothing put in their place, so the push fails and commitAndPush tells the user to
+            # run `gh auth login`, which cannot fix a local config write.  Unsetting the key
+            # returns the repository to its previous behavior (whatever global helper it had),
+            # which may well work.  Failing open beats failing closed and misdiagnosed.
+            try:
+                repo.git.config("--local", "--unset-all", helperKey)
+            except Exception:
+                pass
             return False
         return True
 
