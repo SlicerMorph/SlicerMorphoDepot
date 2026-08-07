@@ -199,6 +199,12 @@ class DepsMixin:
         normal path: this runs on every module enter, and when nothing is configured git exits
         immediately, so the cost of the common failing case is milliseconds.  Kept short anyway,
         because enter() must not stall the UI (see its own no-hang contract).
+
+        Note that a helper CAN put a dialog on screen from here: an osxkeychain entry whose
+        keychain is locked prompts the user to unlock it, so the first entry into the module on
+        such a machine may raise a system password box that was not asked for.  Answering it
+        leaves the probe true; dismissing it reads as "no credential", which is also what the
+        subsequent push would hit -- so the warning that follows is not a false alarm.
         """
         if not self.gitExecutablePath:
             return False
