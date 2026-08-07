@@ -182,6 +182,16 @@ class DepsMixin:
         manager on Windows) and not just the one gh installs.  `credential fill` consults the
         helpers and returns what git would use for a push; with prompting disabled it fails
         outright when nothing answers, so this never blocks on input.
+
+        HTTPS only, deliberately: MorphoDepot builds its remotes as https://github.com/... itself
+        (_ensureUpstream, and the origin set by the accession path), so an HTTPS credential is
+        needed for the normal workflow no matter what protocol gh was configured to clone with.
+        A user who has switched a remote to SSH by hand still needs one to reach upstream, so a
+        False here is not a false alarm for them either -- but their push, alone, would work.
+
+        The timeout is a backstop against a credential helper that hangs, since this runs on the
+        way into the module: generous enough for a keychain that has to be unlocked, short enough
+        that a wedged helper does not hold the UI.
         """
         if not self.gitExecutablePath:
             return False
@@ -191,8 +201,8 @@ class DepsMixin:
         if os.name == "nt":
             # Hide the console window, the way slicer.util.launchConsoleProcess does.
             startupInfo = subprocess.STARTUPINFO()
-            startupInfo.dwFlags = 1
-            startupInfo.wShowWindow = 0
+            startupInfo.dwFlags = subprocess.STARTF_USESHOWWINDOW
+            startupInfo.wShowWindow = subprocess.SW_HIDE
             popenArguments["startupinfo"] = startupInfo
         try:
             completed = subprocess.run(
@@ -200,7 +210,7 @@ class DepsMixin:
                 input="protocol=https\nhost=github.com\n\n",
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=20,
                 env=environment,
                 **popenArguments)
         except (OSError, subprocess.SubprocessError) as e:
@@ -231,7 +241,12 @@ class DepsMixin:
             return True
         self.progressMethod("Setting up GitHub sign-in for git...")
         try:
-            self.gh(["auth", "setup-git"])
+            # Bounded, unlike the default gh timeout: this sits in front of module entry, and it
+            # runs again on every enter for as long as the problem lasts.  Retrying rather than
+            # attempting once per session is deliberate -- a user who fixes the underlying cause
+            # (puts git on PATH, finishes a login) is then repaired automatically on the way back
+            # in, instead of having to know to run setup-git themselves.
+            self.gh(["auth", "setup-git"], timeout=60)
         except Exception as e:
             logging.warning(f"MorphoDepot: `gh auth setup-git` did not succeed: {e}")
             return False
