@@ -54,16 +54,21 @@ class GitHubMixin:
         self.progressMethod(" ".join(commandList))
         fullCommandList = [self.ghExecutablePath] + commandList
 
+        # S6: give gh a UTF-8 locale via the child's environment.  The previous code mutated the
+        # Python process C-locale, which (a) raised locale.Error and broke every gh call on hosts
+        # where en_US.UTF-8 isn't generated (minimal Linux/CI), and (b) doesn't even propagate to
+        # the spawned child -- the subprocess env is what gh actually reads.
+        # The PATH entry is what lets `gh repo clone` (and the rest of gh's git-backed commands)
+        # find a git that is not on the system PATH -- a portable git chosen in the Configure tab.
+        updateEnvironment = {"LC_ALL": "en_US.UTF-8", "LANG": "en_US.UTF-8"}
+        updateEnvironment.update(self.toolPathEnvironmentUpdate())
+
         baseDelay = 1
         attempts = 4
         for attempt in range(attempts):
-            # S6: give gh a UTF-8 locale via the child's environment.  The previous code mutated the
-            # Python process C-locale, which (a) raised locale.Error and broke every gh call on hosts
-            # where en_US.UTF-8 isn't generated (minimal Linux/CI), and (b) doesn't even propagate to
-            # the spawned child -- the subprocess env is what gh actually reads.
             process = slicer.util.launchConsoleProcess(
                 fullCommandList,
-                updateEnvironment={"LC_ALL": "en_US.UTF-8", "LANG": "en_US.UTF-8"})
+                updateEnvironment=updateEnvironment)
             try:
                 # S7: a hung or auth-prompting gh child must not block the Slicer UI thread forever.
                 result = process.communicate(timeout=timeout)
