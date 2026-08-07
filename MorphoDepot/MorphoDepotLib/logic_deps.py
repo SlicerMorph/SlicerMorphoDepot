@@ -69,6 +69,37 @@ class DepsMixin:
             return False
         return True
 
+    # Environment that makes git fail instead of trying to ask a human for a password.  git only
+    # reaches for a prompt when no credential helper answered, and inside Slicer there is nobody
+    # to ask: there is no console for the terminal prompt, and an askpass program inherited from
+    # whatever launched Slicer (VS Code sets GIT_ASKPASS for the terminals it spawns) is no longer
+    # connected to anything.  Without this, a push with no credential dies deep in git with
+    # "failed to execute prompt script" / "could not read Username", which says nothing about the
+    # actual problem; with it, the failure is immediate and identifiable ("terminal prompts
+    # disabled"), which is what commitAndPush turns into an explanation the user can act on.
+    #
+    # Empty strings rather than deletions: these variables can be INHERITED from the process that
+    # launched Slicer, and GitPython layers its own overrides over os.environ, so removing them
+    # here would not keep them out of the child.  git tests the askpass value with `*askpass`, so
+    # an empty string reads as "none configured" -- which is exactly what is wanted.
+    gitNonInteractiveEnvironment = {
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_ASKPASS": "",
+        "SSH_ASKPASS": "",
+    }
+
+    def applyGitNonInteractiveEnvironment(self):
+        """Apply gitNonInteractiveEnvironment to this process, for every git child that follows.
+
+        Set process-wide rather than per-repository on purpose: GitPython copies os.environ at
+        each invocation, so this reaches the pushes in logic_contribute/logic_release/
+        logic_accession and any added later, with no per-call-site plumbing to forget.  Only the
+        GIT_*/SSH_* variables are set this way -- PATH is deliberately left alone (#214), since
+        prepending a portable git's directory would put its bash.exe and sh.exe ahead of
+        everything for every subprocess Slicer launches.
+        """
+        os.environ.update(self.gitNonInteractiveEnvironment)
+
     def refreshGitPython(self):
         """Point GitPython at the git executable this logic resolved.
 
@@ -82,6 +113,8 @@ class DepsMixin:
         user has not installed or configured one yet) and is reported by checkGitDependencies(),
         which is what gates the UI -- so it is logged here, not raised.
         """
+        # Done here because this runs before any git child does, whether or not a git was resolved.
+        self.applyGitNonInteractiveEnvironment()
         if not self.gitExecutablePath:
             return False
         try:
@@ -133,6 +166,77 @@ class DepsMixin:
         if not missing:
             return {}
         return {"PATH": os.pathsep.join(missing + entries)}
+
+    def gitCredentialsConfigured(self):
+        """True when git can obtain a GitHub credential without asking a human.
+
+        The credential helper is written by `gh auth setup-git` (run for the user as part of
+        `gh auth login`), and that can only happen if gh can RUN git -- which is not the case on a
+        machine whose git is a portable install that was never put on PATH.  That is #214's
+        dependency in the other direction, and it fails silently: gh authenticates fine, `gh auth
+        status` is green, the Configure tab is green, every gh-driven operation works, and the one
+        operation that goes through GitPython instead -- the push in commitAndPush -- is the one
+        that fails, after the segmentation work is done.
+
+        Asks git rather than reading config, so any working helper counts (osxkeychain on macOS,
+        manager on Windows) and not just the one gh installs.  `credential fill` consults the
+        helpers and returns what git would use for a push; with prompting disabled it fails
+        outright when nothing answers, so this never blocks on input.
+        """
+        if not self.gitExecutablePath:
+            return False
+        environment = os.environ.copy()
+        environment.update(self.gitNonInteractiveEnvironment)
+        popenArguments = {}
+        if os.name == "nt":
+            # Hide the console window, the way slicer.util.launchConsoleProcess does.
+            startupInfo = subprocess.STARTUPINFO()
+            startupInfo.dwFlags = 1
+            startupInfo.wShowWindow = 0
+            popenArguments["startupinfo"] = startupInfo
+        try:
+            completed = subprocess.run(
+                [self.gitExecutablePath, "credential", "fill"],
+                input="protocol=https\nhost=github.com\n\n",
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=environment,
+                **popenArguments)
+        except (OSError, subprocess.SubprocessError) as e:
+            logging.warning(f"MorphoDepot: could not ask git for a GitHub credential: {e}")
+            return False
+        # NEVER log or progressMethod this stdout: on success it contains the access token itself.
+        return completed.returncode == 0 and "password=" in (completed.stdout or "")
+
+    def ensureGitCredentialHelper(self):
+        """Make sure git has a credential source for github.com, installing one if it has none.
+
+        Running `gh auth setup-git` through self.gh() is what makes this work in the case that
+        breaks: gh is handed a PATH containing the configured git (#214), so it can write the
+        credential config even when git is not on the system PATH and the same command typed in a
+        terminal would fail.  Returns True when git ends up able to answer.
+
+        A False is reported to the user, not raised: searching and browsing work without a push
+        credential, so this warns rather than gating the module.
+        """
+        # Cached like whoami(), and for the same reason: this runs on every module enter, and a
+        # helper that answered once will answer again for the life of this logic instance.  Only
+        # the success is cached -- a user who goes and fixes their sign-in gets a fresh check on
+        # the next enter rather than being told it is still broken.
+        if getattr(self, "_gitCredentialsCache", False):
+            return True
+        if self.gitCredentialsConfigured():
+            self._gitCredentialsCache = True
+            return True
+        self.progressMethod("Setting up GitHub sign-in for git...")
+        try:
+            self.gh(["auth", "setup-git"])
+        except Exception as e:
+            logging.warning(f"MorphoDepot: `gh auth setup-git` did not succeed: {e}")
+            return False
+        self._gitCredentialsCache = self.gitCredentialsConfigured()
+        return self._gitCredentialsCache
 
     def checkGitDependencies(self):
         """Check that git, and gh are available

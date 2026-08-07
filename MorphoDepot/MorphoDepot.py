@@ -144,6 +144,25 @@ class EnableModuleMixin:
                 qt.QDesktopServices.openUrl(qt.QUrl("https://github.com/SlicerMorph/SlicerMorphoDepot?tab=readme-ov-file#prerequisites-for-morphodepot"))
             return False
 
+        # check that saving back to GitHub will actually be possible.  Deliberately here and not at
+        # Commit: with a working login but no credential helper, everything looks fine until the
+        # push, so the failure used to land after the segmentation was finished.  This does not
+        # gate the module -- searching and browsing need no credential -- so a failure warns and
+        # continues.
+        if not self.logic.ensureGitCredentialHelper():
+            msgBox = qt.QMessageBox()
+            msgBox.setWindowTitle("MorphoDepot GitHub Sign-in")
+            msgBox.setText("MorphoDepot can read from GitHub, but cannot yet save your work back to it.")
+            informativeText = "Saving a segmentation will fail until this is fixed.\n\n"
+            informativeText += "In a terminal window, run:  gh auth setup-git\n"
+            informativeText += "then come back to Slicer and reopen this module.\n\n"
+            informativeText += "If that command reports that it cannot find git, add the folder holding "
+            informativeText += "git to your system PATH, or install git so that it is on the PATH, and run it again."
+            msgBox.setInformativeText(informativeText)
+            msgBox.setIcon(qt.QMessageBox.Warning)
+            msgBox.addButton(qt.QMessageBox.Ok)
+            msgBox.exec_()
+
         # check local directory
         repoDirectory = self.logic.localRepositoryDirectory()
         if not os.path.exists(repoDirectory):

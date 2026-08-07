@@ -28,6 +28,23 @@ from slicer.i18n import translate
 
 
 class ContributeMixin:
+    # What git says when nothing could supply a GitHub credential and it has no one to ask.  The
+    # first is what it reports with prompting disabled (see gitNonInteractiveEnvironment); the
+    # others are what earlier versions surfaced -- an inherited askpass program that failed, or the
+    # raw terminal read failing on a process with no console ("Device not configured" on macOS,
+    # "No such file or directory" on Windows).  Matched so the user gets told what to fix instead
+    # of a traceback, at the one moment that is most expensive: the end of a segmentation session.
+    missingCredentialMarkers = (
+        "could not read Username",
+        "terminal prompts disabled",
+        "failed to execute prompt script",
+    )
+
+    def isMissingCredentialError(self, error):
+        """True when a git failure is 'no GitHub credential available', not a real push rejection."""
+        text = f"{getattr(error, 'stderr', '') or ''}\n{error}"
+        return any(marker in text for marker in self.missingCredentialMarkers)
+
     def commitAndPush(self, message):
         """Create a PR if needed and push current segmentation
         Mark the PR as a draft
@@ -43,16 +60,27 @@ class ContributeMixin:
         branchName = self.localRepo.active_branch.name
         remote = self.localRepo.remote(name="origin")
 
-        # rebase branch if it exists in case other changes have been made (e.g. on another machine)
-        branchNames = [branch.name.split("/")[1] for branch in self.localRepo.remotes['origin'].refs]
-        if branchName in branchNames:
-            pullResult = self.localRepo.git.pull(f"--rebase", "origin", branchName)
-            self.progressMethod(pullResult)
+        # The segmentation is saved and committed locally by this point, so anything that fails
+        # from here on has cost the user nothing but the upload -- which is what the message says.
+        try:
+            # rebase branch if it exists in case other changes have been made (e.g. on another machine)
+            branchNames = [branch.name.split("/")[1] for branch in self.localRepo.remotes['origin'].refs]
+            if branchName in branchNames:
+                pullResult = self.localRepo.git.pull(f"--rebase", "origin", branchName)
+                self.progressMethod(pullResult)
 
-        # Workaround for missing origin.push().raise_if_error() in 3.1.14
-        # (see https://github.com/gitpython-developers/GitPython/issues/621):
-        # https://github.com/gitpython-developers/GitPython/issues/621
-        pushInfoList = remote.push(branchName)
+            # Workaround for missing origin.push().raise_if_error() in 3.1.14
+            # (see https://github.com/gitpython-developers/GitPython/issues/621):
+            # https://github.com/gitpython-developers/GitPython/issues/621
+            pushInfoList = remote.push(branchName)
+        except git.exc.GitCommandError as e:
+            if not self.isMissingCredentialError(e):
+                raise
+            raise RuntimeError(
+                "Your segmentation was saved on this computer, but could not be sent to GitHub "
+                "because MorphoDepot could not sign in.\n\n"
+                "In a terminal window, run:  gh auth setup-git\n"
+                "then click Commit again -- your work is still here and nothing has been lost.") from e
         for pi in pushInfoList:
             for flag in [pi.REJECTED, pi.REMOTE_REJECTED, pi.REMOTE_FAILURE, pi.ERROR]:
                 if pi.flags & flag:

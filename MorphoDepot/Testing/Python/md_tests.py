@@ -86,6 +86,38 @@ def _logic_tool_path_environment():
         assert directory in entries, f"{executablePath} directory missing from the gh child PATH"
 
 
+def _logic_git_noninteractive_environment():
+    # A git child that finds no credential must FAIL rather than try to ask: Slicer has no console
+    # for a terminal prompt, and an askpass inherited from whatever launched it is not connected to
+    # anything.  Building the logic is what applies this, so it holds for every git child that
+    # follows -- the pushes in contribute/release/accession included.
+    import os
+    for key, value in H.logic.gitNonInteractiveEnvironment.items():
+        assert os.environ.get(key) == value, f"{key} was not applied to the git child environment"
+
+
+def _logic_credential_probe_answers():
+    # The probe backs the module-entry check, so it must return an answer on any machine -- with a
+    # helper, without one, and with no git configured at all -- and must never block on input.
+    result = H.logic.gitCredentialsConfigured()
+    assert isinstance(result, bool), f"gitCredentialsConfigured() returned {result!r}, not a bool"
+
+
+def _logic_missing_credential_detection():
+    # The three ways git reports "nobody could give me a credential", across platforms and across
+    # whether prompting was disabled.  A real push rejection must NOT be mistaken for one, or the
+    # user would be told to fix their sign-in when the actual problem is something else.
+    import git
+    for stderr in ("fatal: could not read Username for 'https://github.com': Device not configured",
+                   "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+                   "error: failed to execute prompt script (exit code 1)"):
+        error = git.exc.GitCommandError(["git", "push"], 128, stderr)
+        assert H.logic.isMissingCredentialError(error), f"not recognized: {stderr}"
+    rejected = git.exc.GitCommandError(
+        ["git", "push"], 1, "! [rejected] main -> main (non-fast-forward)")
+    assert not H.logic.isMissingCredentialError(rejected), "a push rejection was read as a sign-in failure"
+
+
 def _baseline_nochange_helper():
     # Unit-touch of the M6 no-change check: a file compared to itself is 'unchanged'.
     import tempfile, os, shutil
@@ -258,6 +290,9 @@ TESTS = [
     ("logic_mixins_touch", _logic_mixins_touch),
     ("logic_gitpython_refreshed", _logic_gitpython_refreshed),
     ("logic_tool_path_environment", _logic_tool_path_environment),
+    ("logic_git_noninteractive_environment", _logic_git_noninteractive_environment),
+    ("logic_credential_probe_answers", _logic_credential_probe_answers),
+    ("logic_missing_credential_detection", _logic_missing_credential_detection),
     ("baseline_nochange_helper", _baseline_nochange_helper),
     ("version_change_filter", _version_change_filter),
     ("version_installed_shape", _version_installed_shape),
