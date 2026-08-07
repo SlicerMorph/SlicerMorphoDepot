@@ -70,6 +70,22 @@ def _logic_gitpython_refreshed():
     assert git.GIT_OK, "GitPython has no git executable after the logic was built"
 
 
+def _logic_tool_path_environment():
+    # gh runs git BY NAME, so whatever PATH a gh child gets must contain both tools' directories
+    # -- otherwise a git picked in the Configure tab but absent from the system PATH gives
+    # "unable to find git executable in PATH" on clone.  Empty update == already reachable.
+    import os
+    update = H.logic.toolPathEnvironmentUpdate()
+    childPath = update.get("PATH") or slicer.util.startupEnvironment().get("PATH", "")
+    entries = {os.path.normcase(os.path.normpath(entry))
+               for entry in childPath.split(os.pathsep) if entry}
+    for executablePath in (H.logic.gitExecutablePath, H.logic.ghExecutablePath):
+        if not executablePath:
+            continue  # nothing configured yet -- checkGitDependencies() is what reports that
+        directory = os.path.normcase(os.path.normpath(os.path.dirname(executablePath)))
+        assert directory in entries, f"{executablePath} directory missing from the gh child PATH"
+
+
 def _baseline_nochange_helper():
     # Unit-touch of the M6 no-change check: a file compared to itself is 'unchanged'.
     import tempfile, os, shutil
@@ -241,6 +257,7 @@ TESTS = [
     ("logic_whoami", _logic_whoami),
     ("logic_mixins_touch", _logic_mixins_touch),
     ("logic_gitpython_refreshed", _logic_gitpython_refreshed),
+    ("logic_tool_path_environment", _logic_tool_path_environment),
     ("baseline_nochange_helper", _baseline_nochange_helper),
     ("version_change_filter", _version_change_filter),
     ("version_installed_shape", _version_installed_shape),

@@ -91,6 +91,49 @@ class DepsMixin:
             return False
         return bool(git.GIT_OK)
 
+    def toolPathEnvironmentUpdate(self):
+        """PATH override that lets a child process find the git and gh we were configured with.
+
+        MorphoDepot always calls git and gh by absolute path, but those two tools call each other
+        BY NAME: `gh repo clone` runs git, and the credential helper `gh auth setup-git` installs
+        runs gh.  So a tool the user selected in the Configure tab -- a portable install that was
+        never added to PATH, which is the whole reason that setting exists -- is invisible to the
+        other one, and gh fails with "unable to find git executable in PATH".
+
+        Returns a dict suitable for slicer.util.launchConsoleProcess's updateEnvironment (which
+        REPLACES a variable rather than extending it, so the full value is built here), or an
+        empty dict when the child's PATH already covers both directories.  The child environment
+        is the startup environment, not this process's, so that is what is extended.
+        """
+        # Windows paths are case-insensitive and a path typed into the Configure tab need not
+        # match the one a QFileDialog produced, so every comparison here is on the normalized
+        # form: C:\Program Files\GitHub CLI and c:\program files\github cli\ are one directory
+        # and must not be prepended twice -- whether the duplication comes from git and gh
+        # living together or from the directory already being on the child's PATH.
+        def pathKey(path):
+            return os.path.normcase(os.path.normpath(path))
+
+        directories = []
+        keys = set()
+        for executablePath in (self.gitExecutablePath, self.ghExecutablePath):
+            directory = os.path.dirname(executablePath) if executablePath else ""
+            if not directory or pathKey(directory) in keys:
+                continue
+            keys.add(pathKey(directory))
+            directories.append(directory)
+        if not directories:
+            return {}
+        try:
+            basePath = slicer.util.startupEnvironment().get("PATH", "")
+        except Exception:
+            basePath = os.environ.get("PATH", "")
+        entries = [entry for entry in basePath.split(os.pathsep) if entry]
+        present = {pathKey(entry) for entry in entries}
+        missing = [directory for directory in directories if pathKey(directory) not in present]
+        if not missing:
+            return {}
+        return {"PATH": os.pathsep.join(missing + entries)}
+
     def checkGitDependencies(self):
         """Check that git, and gh are available
         """
