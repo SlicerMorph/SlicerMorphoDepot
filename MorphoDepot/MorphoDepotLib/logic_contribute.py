@@ -28,6 +28,33 @@ from slicer.i18n import translate
 
 
 class ContributeMixin:
+    # What git says when nothing could supply a GitHub credential and it has no one to ask.
+    #
+    # Only the FIRST of these is load-bearing, and it is worth knowing why it is safe: git raises
+    # it from prompt.c as die("could not read %s%s", ...), which upstream does NOT wrap in _().
+    # That string is therefore never translated, so matching it survives a non-English install --
+    # the kind of assumption someone later "fixes" by forcing a locale, so it is written down.
+    #
+    # The other two are historical and defensive.  "terminal prompts disabled" is the tail of the
+    # same message once GIT_TERMINAL_PROMPT=0 is in force (see gitNonInteractiveEnvironment), and
+    # "failed to execute prompt script" is a Git-for-Windows flavor, not an upstream string at all
+    # -- current git emits "unable to read askpass response from ..." or "cannot exec ..." there.
+    # Those are deliberately absent: every one of them is accompanied by "could not read Username"
+    # on the following line, so the first marker already covers them.
+    #
+    # Matched so the user gets told what to fix instead of a traceback, at the one moment that is
+    # most expensive: the end of a segmentation session.
+    missingCredentialMarkers = (
+        "could not read Username",
+        "terminal prompts disabled",
+        "failed to execute prompt script",
+    )
+
+    def isMissingCredentialError(self, error):
+        """True when a git failure is 'no GitHub credential available', not a real push rejection."""
+        text = f"{getattr(error, 'stderr', '') or ''}\n{error}"
+        return any(marker in text for marker in self.missingCredentialMarkers)
+
     def commitAndPush(self, message):
         """Create a PR if needed and push current segmentation
         Mark the PR as a draft
@@ -43,16 +70,32 @@ class ContributeMixin:
         branchName = self.localRepo.active_branch.name
         remote = self.localRepo.remote(name="origin")
 
-        # rebase branch if it exists in case other changes have been made (e.g. on another machine)
-        branchNames = [branch.name.split("/")[1] for branch in self.localRepo.remotes['origin'].refs]
-        if branchName in branchNames:
-            pullResult = self.localRepo.git.pull(f"--rebase", "origin", branchName)
-            self.progressMethod(pullResult)
+        # The segmentation is saved and committed locally by this point, so anything that fails
+        # from here on has cost the user nothing but the upload -- which is what the message says.
+        try:
+            # rebase branch if it exists in case other changes have been made (e.g. on another machine)
+            branchNames = [branch.name.split("/")[1] for branch in self.localRepo.remotes['origin'].refs]
+            if branchName in branchNames:
+                pullResult = self.localRepo.git.pull(f"--rebase", "origin", branchName)
+                self.progressMethod(pullResult)
 
-        # Workaround for missing origin.push().raise_if_error() in 3.1.14
-        # (see https://github.com/gitpython-developers/GitPython/issues/621):
-        # https://github.com/gitpython-developers/GitPython/issues/621
-        pushInfoList = remote.push(branchName)
+            # Workaround for missing origin.push().raise_if_error() in 3.1.14
+            # (see https://github.com/gitpython-developers/GitPython/issues/621):
+            # https://github.com/gitpython-developers/GitPython/issues/621
+            pushInfoList = remote.push(branchName)
+        except git.exc.GitCommandError as e:
+            if not self.isMissingCredentialError(e):
+                raise
+            # This repository is configured to sign in through gh (configureRepositoryCredentials),
+            # so reaching here means gh itself could not produce a credential -- signed out, or a
+            # token that has expired or been revoked.  There is nothing about git configuration
+            # for the user to fix, so the message names the one thing that does help.
+            raise RuntimeError(
+                "Your segmentation was saved on this computer, but could not be sent to GitHub "
+                "because MorphoDepot could not sign in. Nothing has been lost -- the work is "
+                "here and will go up once you are signed in again.\n\n"
+                "Open a terminal window, run:  gh auth login\n"
+                "and complete every step, then come back and click Commit again.") from e
         for pi in pushInfoList:
             for flag in [pi.REJECTED, pi.REMOTE_REJECTED, pi.REMOTE_FAILURE, pi.ERROR]:
                 if pi.flags & flag:

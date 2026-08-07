@@ -345,6 +345,9 @@ jobs:
 
         # create initial repo
         repo = git.Repo.init(repoDir, initial_branch='main')
+        # Configured on the freshly created repo, before the push below, for the same
+        # reason as the clones: the push must go up as the active gh account.
+        self.configureRepositoryCredentials(repo)
 
         repoFileNames += [
             "README.md",
@@ -924,6 +927,7 @@ jobs:
             shutil.rmtree(repoDir, ignore_errors=True)
         self.gh(["repo", "clone", nameWithOwner, repoDir])
         self.localRepo = git.Repo(repoDir)
+        self.configureRepositoryCredentials(self.localRepo)
 
         accession = {}
         accessionPath = os.path.join(repoDir, "MorphoDepotAccession.json")

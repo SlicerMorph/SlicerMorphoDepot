@@ -69,6 +69,43 @@ class DepsMixin:
             return False
         return True
 
+    # Environment that makes git fail instead of trying to ask a human for a password.  git only
+    # reaches for a prompt when no credential helper answered, and inside Slicer there is nobody
+    # to ask: there is no console for the terminal prompt, and an askpass program inherited from
+    # whatever launched Slicer (VS Code sets GIT_ASKPASS for the terminals it spawns) is no longer
+    # connected to anything.  Without this, a push with no credential dies deep in git with
+    # "failed to execute prompt script" / "could not read Username", which says nothing about the
+    # actual problem; with it, the failure is immediate and identifiable ("terminal prompts
+    # disabled"), which is what commitAndPush turns into an explanation the user can act on.
+    #
+    # Empty strings rather than deletions: these variables can be INHERITED from the process that
+    # launched Slicer, and GitPython layers its own overrides over os.environ, so removing them
+    # here would not keep them out of the child.  git tests the askpass value with `*askpass`, so
+    # an empty string reads as "none configured" -- which is exactly what is wanted.
+    gitNonInteractiveEnvironment = {
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_ASKPASS": "",
+        "SSH_ASKPASS": "",
+    }
+
+    def applyGitNonInteractiveEnvironment(self):
+        """Apply gitNonInteractiveEnvironment to this process, for every git child that follows.
+
+        Set process-wide rather than per-repository on purpose: GitPython copies os.environ at
+        each invocation, so this reaches the pushes in logic_contribute/logic_release/
+        logic_accession and any added later, with no per-call-site plumbing to forget.  The
+        scoped alternative exists -- repo.git.update_environment() applies to one Repo -- and is
+        rejected for that reason, not because nothing else is affected: Slicer's own Extension
+        Wizard pushes through GitPython in this same process (ExtensionWizard.py), so once this
+        logic has been built, an extension publish from the same session also gets prompting
+        disabled.  That is judged acceptable because a git prompt inside Slicer has nowhere to
+        appear either way -- the Wizard user gets a clear failure instead of a hang.
+
+        PATH is deliberately NOT set this way (#214): prepending a portable git's directory would
+        put its bash.exe and sh.exe ahead of everything for every subprocess Slicer launches.
+        """
+        os.environ.update(self.gitNonInteractiveEnvironment)
+
     def refreshGitPython(self):
         """Point GitPython at the git executable this logic resolved.
 
@@ -82,6 +119,8 @@ class DepsMixin:
         user has not installed or configured one yet) and is reported by checkGitDependencies(),
         which is what gates the UI -- so it is logged here, not raised.
         """
+        # Done here because this runs before any git child does, whether or not a git was resolved.
+        self.applyGitNonInteractiveEnvironment()
         if not self.gitExecutablePath:
             return False
         try:
@@ -133,6 +172,72 @@ class DepsMixin:
         if not missing:
             return {}
         return {"PATH": os.pathsep.join(missing + entries)}
+
+    def configureRepositoryCredentials(self, repo):
+        """Make this repository sign in to GitHub as the gh account MorphoDepot is actually using.
+
+        Written into the repository's OWN config, not the user's global one (which is what
+        `gh auth setup-git` edits).  Three things that buys:
+
+        * It authenticates as the RIGHT account.  A host-keyed helper -- osxkeychain, or Windows'
+          Credential Manager -- answers for github.com with whatever credential was stored there
+          by whoever stored it, and `gh auth switch` does not touch it.  On a shared teaching
+          machine, in the three-persona test harness, or on any computer where the user pushed to
+          GitHub before installing MorphoDepot, that means commits going up as somebody else
+          while whoami() reports the account they picked.  Delegating to `gh auth git-credential`
+          follows the active gh account by construction, so the question cannot arise.
+        * It changes nothing outside MorphoDepot's own clones.  setup-git rewrites the global
+          config, and with no --hostname it does so for EVERY host the user is logged into, not
+          just github.com.
+        * It does not depend on setup-git succeeding -- which it cannot when gh has no git to run
+          (#214), the failure this whole change exists to fix.
+
+        The empty value written first is what makes the first point hold: git ACCUMULATES helpers
+        across config scopes, so a global osxkeychain entry would still answer first and win.  An
+        empty credential.helper resets the accumulated list, so only this one runs.  (That is the
+        same two-entry shape `gh auth setup-git` writes globally.)
+
+        The reset also suppresses a helper the user configured DELIBERATELY for github.com --
+        inside MorphoDepot's own clones, and nowhere else.  That is the intent (it is what closes
+        the wrong-account hazard above), but it is a real behavior change for anyone with a
+        curated credential setup, so it is written down rather than left to be discovered.
+
+        Returns True when the repository was configured.  Callers do not check it: the only way
+        to fail early is a missing gh, which checkGitDependencies() has already made impossible
+        by gating the UI, and a later failure is undone below rather than left half-applied.
+        """
+        if not self.ghExecutablePath:
+            logging.warning("MorphoDepot: no gh to configure repository credentials with")
+            return False
+        # Quoted because the path routinely contains spaces (C:\Program Files\GitHub CLI), and
+        # git hands this string to a shell.  The escape covers the pathological apostrophe.
+        quotedGhPath = self.ghExecutablePath.replace("'", "'\\''")
+        helper = f"!'{quotedGhPath}' auth git-credential"
+        helperKey = "credential.https://github.com.helper"
+        try:
+            repo.git.config("--local", "--replace-all", helperKey, "")
+            repo.git.config("--local", "--add", helperKey, helper)
+            # GIT_TERMINAL_PROMPT stops git asking on a terminal, but it does not stop a HELPER
+            # from opening its own window: Git Credential Manager has a separate interactivity
+            # switch, and without this one it can raise a browser sign-in flow that nothing in
+            # the UI asked for.  Belt and braces, since the reset above already leaves GCM out of
+            # the chain for this repository.
+            repo.git.config("--local", "credential.interactive", "false")
+        except Exception as e:
+            logging.warning(f"MorphoDepot: could not configure repository credentials: {e}")
+            # Undo a PARTIAL write.  The two commands are not atomic, and the order matters: if
+            # the reset lands but the helper does not, the repository is left WORSE than before
+            # this ran -- an empty accumulated list suppresses the machine's own helpers with
+            # nothing put in their place, so the push fails and commitAndPush tells the user to
+            # run `gh auth login`, which cannot fix a local config write.  Unsetting the key
+            # returns the repository to its previous behavior (whatever global helper it had),
+            # which may well work.  Failing open beats failing closed and misdiagnosed.
+            try:
+                repo.git.config("--local", "--unset-all", helperKey)
+            except Exception:
+                pass
+            return False
+        return True
 
     def checkGitDependencies(self):
         """Check that git, and gh are available

@@ -144,6 +144,12 @@ class EnableModuleMixin:
                 qt.QDesktopServices.openUrl(qt.QUrl("https://github.com/SlicerMorph/SlicerMorphoDepot?tab=readme-ov-file#prerequisites-for-morphodepot"))
             return False
 
+        # No credential check here any more.  Signing in is configured per REPOSITORY, at the
+        # moment each one is cloned or created (configureRepositoryCredentials), delegating to the
+        # active gh account -- so there is no global state left to be wrong, nothing to warn about
+        # on the way in, and no probe on the UI thread.  `gh auth status` in checkGitDependencies
+        # above is what establishes that gh can sign in at all, which is now the only requirement.
+
         # check local directory
         repoDirectory = self.logic.localRepositoryDirectory()
         if not os.path.exists(repoDirectory):

@@ -86,6 +86,58 @@ def _logic_tool_path_environment():
         assert directory in entries, f"{executablePath} directory missing from the gh child PATH"
 
 
+def _logic_git_noninteractive_environment():
+    # A git child that finds no credential must FAIL rather than try to ask: Slicer has no console
+    # for a terminal prompt, and an askpass inherited from whatever launched it is not connected to
+    # anything.  Building the logic is what applies this, so it holds for every git child that
+    # follows -- the pushes in contribute/release/accession included.
+    import os
+    for key, value in H.logic.gitNonInteractiveEnvironment.items():
+        assert os.environ.get(key) == value, f"{key} was not applied to the git child environment"
+
+
+def _logic_repository_credentials():
+    # The one path here that WRITES configuration.  Two invariants matter, and the second is the
+    # one that keeps a shared machine honest: the helper must delegate to gh (so the push follows
+    # the active gh account rather than whatever credential the machine had stored for github.com),
+    # and it must be preceded by an empty entry, because git ACCUMULATES helpers across config
+    # scopes -- without the reset a global osxkeychain/manager entry answers first and wins.
+    import os, tempfile, shutil, git
+    repoDirectory = tempfile.mkdtemp(prefix="md-credential-test-")
+    try:
+        repo = git.Repo.init(repoDirectory, initial_branch="main")
+        assert H.logic.configureRepositoryCredentials(repo), "configureRepositoryCredentials failed"
+
+        values = repo.git.config("--local", "--get-all", "credential.https://github.com.helper")
+        entries = values.split("\n")
+        assert entries[0] == "", f"helper list is not reset first: {entries!r}"
+        assert len(entries) == 2, f"expected a reset plus one helper, got {entries!r}"
+        assert "auth git-credential" in entries[1], f"helper does not delegate to gh: {entries[1]!r}"
+        assert H.logic.ghExecutablePath in entries[1], f"helper is not the configured gh: {entries[1]!r}"
+
+        # Written to THIS repository only -- the user's global config is not MorphoDepot's to edit.
+        assert repo.git.config("--local", "credential.interactive") == "false"
+        localConfig = os.path.join(repoDirectory, ".git", "config")
+        assert "auth git-credential" in open(localConfig).read(), "helper did not land in the repo config"
+    finally:
+        shutil.rmtree(repoDirectory, ignore_errors=True)
+
+
+def _logic_missing_credential_detection():
+    # The three ways git reports "nobody could give me a credential", across platforms and across
+    # whether prompting was disabled.  A real push rejection must NOT be mistaken for one, or the
+    # user would be told to fix their sign-in when the actual problem is something else.
+    import git
+    for stderr in ("fatal: could not read Username for 'https://github.com': Device not configured",
+                   "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+                   "error: failed to execute prompt script (exit code 1)"):
+        error = git.exc.GitCommandError(["git", "push"], 128, stderr)
+        assert H.logic.isMissingCredentialError(error), f"not recognized: {stderr}"
+    rejected = git.exc.GitCommandError(
+        ["git", "push"], 1, "! [rejected] main -> main (non-fast-forward)")
+    assert not H.logic.isMissingCredentialError(rejected), "a push rejection was read as a sign-in failure"
+
+
 def _baseline_nochange_helper():
     # Unit-touch of the M6 no-change check: a file compared to itself is 'unchanged'.
     import tempfile, os, shutil
@@ -258,6 +310,9 @@ TESTS = [
     ("logic_mixins_touch", _logic_mixins_touch),
     ("logic_gitpython_refreshed", _logic_gitpython_refreshed),
     ("logic_tool_path_environment", _logic_tool_path_environment),
+    ("logic_git_noninteractive_environment", _logic_git_noninteractive_environment),
+    ("logic_repository_credentials", _logic_repository_credentials),
+    ("logic_missing_credential_detection", _logic_missing_credential_detection),
     ("baseline_nochange_helper", _baseline_nochange_helper),
     ("version_change_filter", _version_change_filter),
     ("version_installed_shape", _version_installed_shape),
