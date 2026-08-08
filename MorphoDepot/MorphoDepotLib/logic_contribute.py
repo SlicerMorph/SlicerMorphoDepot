@@ -145,9 +145,10 @@ class ContributeMixin:
         upstreamNameWithOwner = self.nameWithOwner("upstream")
         pr = self.issuePR(role="segmenter")
         if not pr:
-            # The RepoClerk journal that issuePR() reads lags, so a just-opened PR may not appear
-            # there yet -- fall back to an authoritative direct lookup before giving up (same root
-            # cause as the commitAndPush duplicate-PR bug).
+            # issuePR() -> prList() is a live query now, so this is no longer a lag fallback.
+            # It is kept because it asks a narrower question: issuePR() matches by PR *title*
+            # against the branch name, which misses a PR someone retitled, while this matches the
+            # head branch itself -- the thing that actually decides whether a PR exists.
             branchName = self.localRepo.active_branch.name
             originOwner = self.nameWithOwner("origin").split("/")[0]
             pr = self._openPRForBranch(upstreamNameWithOwner, originOwner, branchName)

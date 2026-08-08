@@ -102,6 +102,29 @@ class WorkStateMixin:
             raise RuntimeError(f"GitHub GraphQL error: {messages}")
         return payload.get("data") or {}
 
+    def _paginate(self, query, connectionKey, what):
+        """Every node of `viewer.<connectionKey>`, following pages until GitHub says stop.
+
+        `_MAX_PAGES` is a backstop against an unbounded loop, not a supported limit, so hitting
+        it is reported rather than passed over: a truncated answer here is a Review tab that
+        quietly lists fewer pull requests than the user actually has, with nothing on screen to
+        say so.  A silently short list is the failure mode this whole module exists to remove.
+        """
+        nodes = []
+        cursor = None
+        for _ in range(_MAX_PAGES):
+            data = self._graphql(query, cursor=cursor)
+            connection = ((data.get("viewer") or {}).get(connectionKey) or {})
+            nodes.extend(connection.get("nodes") or [])
+            pageInfo = connection.get("pageInfo") or {}
+            if not pageInfo.get("hasNextPage"):
+                return nodes
+            cursor = pageInfo.get("endCursor")
+        logging.warning(
+            f"Stopped after {_MAX_PAGES} pages of {what} ({len(nodes)} fetched); "
+            "the list shown is incomplete.")
+        return nodes
+
     def _hasMorphoTopic(self, repositoryNode):
         topics = [n["topic"]["name"]
                   for n in ((repositoryNode.get("repositoryTopics") or {}).get("nodes") or [])]
@@ -134,7 +157,10 @@ class WorkStateMixin:
             if MORPHODEPOT_TOPIC not in (repository.get("topics") or []):
                 continue
             nameWithOwner = repository.get("full_name") or ""
-            if not nameWithOwner:
+            if not nameWithOwner or entry.get("number") is None:
+                # Every other field has a sensible empty value; a number does not -- loadIssue()
+                # builds the branch name and the fork checkout from it.  Skip rather than emit an
+                # entry that would fail later, and rather than KeyError out of the whole list.
                 continue
             issues.append({
                 "number": entry["number"],
@@ -173,19 +199,11 @@ class WorkStateMixin:
           }
         """ % _PAGE
         pullRequests = []
-        cursor = None
-        for _ in range(_MAX_PAGES):
-            data = self._graphql(query, cursor=cursor)
-            connection = ((data.get("viewer") or {}).get("pullRequests") or {})
-            for node in (connection.get("nodes") or []):
-                repository = node.get("repository") or {}
-                if not self._hasMorphoTopic(repository):
-                    continue
-                pullRequests.append(self._prRecord(node, repository.get("nameWithOwner", "")))
-            pageInfo = connection.get("pageInfo") or {}
-            if not pageInfo.get("hasNextPage"):
-                break
-            cursor = pageInfo.get("endCursor")
+        for node in self._paginate(query, "pullRequests", "your open pull requests"):
+            repository = node.get("repository") or {}
+            if not self._hasMorphoTopic(repository):
+                continue
+            pullRequests.append(self._prRecord(node, repository.get("nameWithOwner", "")))
         return pullRequests
 
     def curatedRepositories(self):
@@ -218,20 +236,10 @@ class WorkStateMixin:
             }
           }
         """ % _PAGE
-        owned = []
-        cursor = None
-        for _ in range(_MAX_PAGES):
-            data = self._graphql(query, cursor=cursor)
-            connection = ((data.get("viewer") or {}).get("repositories") or {})
-            for node in (connection.get("nodes") or []):
-                if self._hasMorphoTopic(node) and node.get("nameWithOwner"):
-                    owned.append(node["nameWithOwner"])
-            pageInfo = connection.get("pageInfo") or {}
-            if not pageInfo.get("hasNextPage"):
-                break
-            cursor = pageInfo.get("endCursor")
-
-        curated = set(owned)
+        curated = set()
+        for node in self._paginate(query, "repositories", "the repositories you own"):
+            if self._hasMorphoTopic(node) and node.get("nameWithOwner"):
+                curated.add(node["nameWithOwner"])
         try:
             for repo in self.administratedRepoList():
                 if repo.get("nameWithOwner"):
@@ -286,7 +294,15 @@ class WorkStateMixin:
                 if not repository:
                     continue  # deleted, renamed, or no longer visible to this user
                 nameWithOwner = repository.get("nameWithOwner") or f"{owner}/{name}"
-                for node in ((repository.get("pullRequests") or {}).get("nodes") or []):
+                nodes = ((repository.get("pullRequests") or {}).get("nodes") or [])
+                if len(nodes) >= _PRS_PER_REPO:
+                    # Not paginated: _PRS_PER_REPO is set well above what a MorphoDepot repo
+                    # sees (one open PR per issue under review).  If it is ever reached the
+                    # list is short by an unknown amount, which must not pass unremarked.
+                    logging.warning(
+                        f"{nameWithOwner} has at least {_PRS_PER_REPO} open pull requests; "
+                        "the Review list is truncated.")
+                for node in nodes:
                     pullRequests.append(self._prRecord(node, nameWithOwner))
         return pullRequests
 

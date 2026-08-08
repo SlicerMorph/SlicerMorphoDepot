@@ -30,6 +30,18 @@ def check(name, cond):
     assert cond, name
 
 
+def _captureWarnings(fn):
+    """Run fn() and return the warning messages it logged, so 'it warns' is assertable."""
+    captured = []
+    original = workstate.logging.warning
+    workstate.logging.warning = lambda message, *a, **k: captured.append(str(message))
+    try:
+        fn()
+    finally:
+        workstate.logging.warning = original
+    return captured
+
+
 class FakeLogic(workstate.WorkStateMixin):
     """A WorkStateMixin with the two GitHub call sites stubbed.
 
@@ -171,6 +183,23 @@ def test_malformed_entries_do_not_break_the_list():
     check("a junk entry is skipped rather than raising", len(logic.issueList()) == 1)
 
 
+def test_an_entry_with_no_number_is_skipped_not_fatal():
+    """Every other field has a sensible empty value; a number does not.
+
+    loadIssue() builds the branch name and the fork checkout from it, so an entry without one
+    cannot be acted on.  The point is that it takes the rest of the list down with it if it
+    raises -- one malformed row must not empty the Annotate tab.
+    """
+    entry = restIssue(2, "Segment the premaxilla", "muratmaga/rana-clamitans-full-body", MD)
+    del entry["number"]
+    logic = FakeLogic(restResponse=[
+        entry,
+        restIssue(3, "Segment the skull", "muratmaga/rana-clamitans-full-body", MD),
+    ])
+    check("the numberless entry is skipped and the rest survive",
+          [i["number"] for i in logic.issueList()] == [3])
+
+
 # --- authored pull requests (Annotate, segmenter) ----------------------------------------
 
 def _viewerPRPage(nodes, hasNext=False, cursor=None):
@@ -195,6 +224,29 @@ def test_authored_prs_paginate():
     prs = logic.prList(role="segmenter")
     check("both pages are collected", [p["number"] for p in prs] == [1, 2])
     check("the second request carries the cursor", len(logic.queries) == 2)
+
+
+def test_hitting_the_page_backstop_is_reported():
+    """A truncated list must not look like a complete one.
+
+    _MAX_PAGES is a runaway guard, not a supported limit.  If it is ever reached the Review or
+    Annotate tab shows fewer items than the user has, and a short list that says nothing about
+    being short is the exact failure this module was written to remove.
+    """
+    page = _viewerPRPage([prNode(1, "issue-1", repo=("o/r", ["morphodepot"]))],
+                         hasNext=True, cursor="c")
+    logic = FakeLogic(graphqlPages=[page] * workstate._MAX_PAGES)
+    warnings = _captureWarnings(lambda: logic.prList(role="segmenter"))
+    check("the loop stops at the backstop", len(logic.queries) == workstate._MAX_PAGES)
+    check("and says so", any("Stopped after" in w for w in warnings))
+
+
+def test_a_repo_at_the_per_repo_pr_cap_is_reported():
+    nodes = [prNode(n, f"issue-{n}") for n in range(workstate._PRS_PER_REPO)]
+    logic = FakeLogic(graphqlPages=[_batchPage({"r0": ("o/busy", nodes)})])
+    warnings = _captureWarnings(lambda: logic.openPullRequestsForRepositories(["o/busy"]))
+    check("a repo at the un-paginated PR cap warns",
+          any("truncated" in w for w in warnings))
 
 
 def test_pr_shape_is_what_the_tabs_consume():
