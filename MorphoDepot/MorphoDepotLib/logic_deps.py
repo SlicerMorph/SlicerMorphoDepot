@@ -54,7 +54,12 @@ class DepsMixin:
 
     def checkCommand(self, command):
         try:
-            completedProcess = subprocess.run(command, capture_output=True)
+            # A timeout so a dependency check can never hang Slicer.  This runs on the UI thread at
+            # module entry, and `gh auth status` makes a network round trip to validate the token --
+            # on an unreachable network that call would otherwise block forever.  15s is a hang-guard,
+            # not a tight SLA (the command normally returns in well under a second); a timeout raises
+            # TimeoutExpired, which the except below already turns into a graceful "not available".
+            completedProcess = subprocess.run(command, capture_output=True, timeout=15)
             returnCode = completedProcess.returncode
             stdout = completedProcess.stdout
             stderr = completedProcess.stderr

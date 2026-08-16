@@ -65,6 +65,15 @@ class SearchTabMixin:
         self.searchUI.resultsModel.clear()
         self.searchUI.saveSearchResultsButton.enabled = False
         self.searchResultsByItem = {}
+        # Screenshot thumbnails load lazily (issue #78).  Building the table used to download every
+        # matching repo's screenshots up front -- a cold-cache search of the whole fleet meant
+        # hundreds of blocking downloads before the table appeared.  Now rows render immediately
+        # with whatever is already cached, and missing thumbnails are fetched one repo at a time
+        # after the table is shown.  A generation counter lets a newer search cancel an older
+        # backfill so a stale chain never writes tooltips into a replaced table.
+        self._searchThumbGeneration = getattr(self, "_searchThumbGeneration", 0) + 1
+        thumbnailGeneration = self._searchThumbGeneration
+        pendingThumbnailRows = []
         headers = ["Size (GB)", "Repository", "Owner", "Species", "Modality", "Active", "Spacing", "Dimensions"]
         self.searchUI.resultsModel.setHorizontalHeaderLabels(headers)
         for repoDataKey, repoData in results.items():
@@ -147,8 +156,13 @@ class SearchTabMixin:
             tooltipParts.append(f"<tr><td><b>Spacing:</b></td><td>{esc(spacingText)}</td></tr>")
             tooltipParts.append(f"<tr><td><b>Dimensions:</b></td><td>{esc(dimensionsText)}</td></tr>")
             tooltipParts.append("</table>")
-            screenshotCount = repoData.get('screenshotCount', 0)
 
+            # Resolve (but do not download) this row's screenshots into cache-path specs.  The
+            # image fetch is deferred to _backfillSearchThumbnails so it never blocks the table
+            # build (issue #78).  The metadata tooltip above is complete on its own; thumbnails are
+            # an enrichment appended by _composeSearchTooltip from whatever is cached.
+            screenshotCount = repoData.get('screenshotCount', 0)
+            screenshotSpecs = []
             if screenshotCount > 0 and 'screenshotCaptions' in repoData:
                 tooltipParts.append("<hr><b>Screenshots:</b><br>")
                 screenshotCacheDir = os.path.join(self.logic.localRepositoryDirectory(), "MorphoDepotCaches", "Screenshots")
@@ -166,11 +180,9 @@ class SearchTabMixin:
                             normalized[f"screenshot-{n}.png"] = entry
                     screenshotCaptions = normalized
                 # Limit to 5 thumbnails to avoid overly large tooltips
-                for i, (filename, caption) in enumerate(screenshotCaptions.items()):
+                for i, filename in enumerate(screenshotCaptions.keys()):
                     if i >= 5:
-                        tooltipParts.append(f"<i>...and {screenshotCount - 5} more.</i>")
                         break
-
                     # S3: filename is a key from a RepoClerk journal (mirrored from arbitrary public
                     # repos); accept only a bare screenshot basename so it can't traverse out of the
                     # cache dir when downloadFile writes to it (path-traversal write primitive).
@@ -178,23 +190,15 @@ class SearchTabMixin:
                     if not re.fullmatch(r"screenshot-\d+\.png", safeName):
                         logging.warning(f"Skipping screenshot with unexpected filename: {filename!r}")
                         continue
-                    urlPrefix = "https://raw.githubusercontent.com"
-                    imageURL = f"{urlPrefix}/{owner}/{repoName}/main/screenshots/{safeName}"
+                    imageURL = f"https://raw.githubusercontent.com/{owner}/{repoName}/main/screenshots/{safeName}"
                     localImagePath = os.path.join(screenshotCacheDir, owner, repoName, safeName)
+                    screenshotSpecs.append((localImagePath, imageURL))
 
-                    if not os.path.exists(localImagePath):
-                        try:
-                            os.makedirs(os.path.dirname(localImagePath), exist_ok=True)
-                            slicer.util.downloadFile(imageURL, localImagePath)
-                        except Exception as e:
-                            logging.warning(f"Could not download screenshot {imageURL}: {e}")
-
-                    if os.path.exists(localImagePath):
-                        # S9: owner/repoName are also in this path -- escape so a crafted value
-                        # can't break out of the src="" attribute.
-                        tooltipParts.append(f'<img src="file:///{html.escape(localImagePath)}" width="128"> ')
-
-            tooltipText = "".join(tooltipParts)
+            # Stash the header + specs on the row so the tooltip can be recomposed as thumbnails
+            # arrive, then show whatever is already cached right now.
+            tooltipSpec = {'header': "".join(tooltipParts), 'specs': screenshotSpecs, 'count': screenshotCount}
+            sizeItem.setData(tooltipSpec, qt.Qt.UserRole + 2)
+            tooltipText = self._composeSearchTooltip(tooltipSpec)
 
             # Set the same tooltip for all items in the row
             for item in rowItems:
@@ -202,9 +206,65 @@ class SearchTabMixin:
 
             self.searchUI.resultsModel.appendRow(rowItems)
 
+            # Queue rows whose thumbnails are not all cached yet for background backfill.
+            if any(not os.path.exists(path) for path, _ in screenshotSpecs):
+                pendingThumbnailRows.append(rowItems)
+
         self.searchUI.resultsTable.resizeColumnsToContents()
         self.searchUI.saveSearchResultsButton.enabled = len(results) > 0
         slicer.util.showStatusMessage(f"{len(results.keys())} matching repositories")
+
+        # Fetch the missing thumbnails after the table is on screen, one repo per event-loop turn.
+        if pendingThumbnailRows:
+            qt.QTimer.singleShot(
+                0, lambda: self._backfillSearchThumbnails(pendingThumbnailRows, thumbnailGeneration, 0))
+
+    def _composeSearchTooltip(self, tooltipSpec):
+        """Build a row's tooltip HTML from its stored spec, embedding only the screenshots that are
+        already in the local cache.  No network -- the backfill downloads missing images and then
+        calls this again to refresh the tooltip (issue #78)."""
+        parts = [tooltipSpec['header']]
+        for localImagePath, _imageURL in tooltipSpec['specs']:
+            if os.path.exists(localImagePath):
+                # S9: the cached path contains owner/repoName -- escape so a crafted value can't
+                # break out of the src="" attribute.
+                parts.append(f'<img src="file:///{html.escape(localImagePath)}" width="128"> ')
+        if tooltipSpec['count'] > 5:
+            parts.append(f"<i>...and {tooltipSpec['count'] - 5} more.</i>")
+        return "".join(parts)
+
+    def _ensureRowThumbnails(self, tooltipSpec):
+        """Download any of a row's (<=5) screenshots that are not yet cached.  Blocking, but bounded
+        to one row; the backfill chain runs one row per event-loop turn so the UI stays responsive."""
+        for localImagePath, imageURL in tooltipSpec['specs']:
+            if os.path.exists(localImagePath):
+                continue
+            try:
+                os.makedirs(os.path.dirname(localImagePath), exist_ok=True)
+                slicer.util.downloadFile(imageURL, localImagePath)
+            except Exception as e:
+                logging.warning(f"Could not download screenshot {imageURL}: {e}")
+
+    def _backfillSearchThumbnails(self, pendingRows, generation, index):
+        """Fill in screenshot thumbnails after the results table is already visible, one repo per
+        event-loop turn so a cold-cache search does not freeze the UI (issue #78).  Bails as soon as
+        a newer search has bumped the generation, so a stale chain never touches a replaced table."""
+        if generation != getattr(self, "_searchThumbGeneration", 0):
+            return
+        if index >= len(pendingRows):
+            return
+        rowItems = pendingRows[index]
+        try:
+            tooltipSpec = rowItems[0].data(qt.Qt.UserRole + 2)
+            if tooltipSpec:
+                self._ensureRowThumbnails(tooltipSpec)
+                tooltipText = self._composeSearchTooltip(tooltipSpec)
+                for item in rowItems:
+                    item.setToolTip(tooltipText)
+        except Exception as e:
+            logging.warning(f"Search thumbnail backfill failed: {e}")
+        qt.QTimer.singleShot(
+            0, lambda: self._backfillSearchThumbnails(pendingRows, generation, index + 1))
 
     def onSearchResultsContextMenu(self, point):
         index = self.searchUI.resultsTable.indexAt(point)
