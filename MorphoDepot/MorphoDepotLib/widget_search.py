@@ -163,6 +163,7 @@ class SearchTabMixin:
             # an enrichment appended by _composeSearchTooltip from whatever is cached.
             screenshotCount = repoData.get('screenshotCount', 0)
             screenshotSpecs = []
+            screenshotHasMore = False
             if screenshotCount > 0 and 'screenshotCaptions' in repoData:
                 tooltipParts.append("<hr><b>Screenshots:</b><br>")
                 screenshotCacheDir = os.path.join(self.logic.localRepositoryDirectory(), "MorphoDepotCaches", "Screenshots")
@@ -179,6 +180,11 @@ class SearchTabMixin:
                         else:
                             normalized[f"screenshot-{n}.png"] = entry
                     screenshotCaptions = normalized
+                # "...and N more" is shown when there are more than 5 captions, matching the
+                # pre-lazy behaviour (which appended it on reaching the 6th caption).  Keyed on the
+                # caption count, not screenshotCount, so a repo whose metadata count disagrees with
+                # its actual captions can't wrongly trigger it.
+                screenshotHasMore = len(screenshotCaptions) > 5
                 # Limit to 5 thumbnails to avoid overly large tooltips
                 for i, filename in enumerate(screenshotCaptions.keys()):
                     if i >= 5:
@@ -196,7 +202,8 @@ class SearchTabMixin:
 
             # Stash the header + specs on the row so the tooltip can be recomposed as thumbnails
             # arrive, then show whatever is already cached right now.
-            tooltipSpec = {'header': "".join(tooltipParts), 'specs': screenshotSpecs, 'count': screenshotCount}
+            tooltipSpec = {'header': "".join(tooltipParts), 'specs': screenshotSpecs,
+                           'count': screenshotCount, 'has_more': screenshotHasMore}
             sizeItem.setData(tooltipSpec, qt.Qt.UserRole + 2)
             tooltipText = self._composeSearchTooltip(tooltipSpec)
 
@@ -229,7 +236,7 @@ class SearchTabMixin:
                 # S9: the cached path contains owner/repoName -- escape so a crafted value can't
                 # break out of the src="" attribute.
                 parts.append(f'<img src="file:///{html.escape(localImagePath)}" width="128"> ')
-        if tooltipSpec['count'] > 5:
+        if tooltipSpec.get('has_more'):
             parts.append(f"<i>...and {tooltipSpec['count'] - 5} more.</i>")
         return "".join(parts)
 
