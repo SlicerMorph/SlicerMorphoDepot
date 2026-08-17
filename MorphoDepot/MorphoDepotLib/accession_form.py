@@ -103,6 +103,10 @@ class MorphoDepotAccessionForm():
         self.questions["iDigBioURL"] = FormTextQuestion(q, self.validateForm)
         self.questions["iDigBioURL"].questionBox.toolTip = t
         layout.addWidget(self.questions["iDigBioURL"].questionBox)
+        q,a,t = form["institutionalAccession"]
+        self.questions["institutionalAccession"] = FormTextQuestion(q, self.validateForm)
+        self.questions["institutionalAccession"].questionBox.toolTip = t
+        layout.addWidget(self.questions["institutionalAccession"].questionBox)
 
         # section 3
         layout = self.sectionWidgets[3].layout()
@@ -143,6 +147,9 @@ class MorphoDepotAccessionForm():
         q,a,t = form["anatomicalAreas"]
         self.questions["anatomicalAreas"] = FormCheckBoxesQuestion(q, a, self.validateForm)
         layout.addWidget(self.questions["anatomicalAreas"].questionBox)
+        q,a,t = form["anatomicalAreasOther"]
+        self.questions["anatomicalAreasOther"] = FormTextQuestion(q, self.validateForm)
+        layout.addWidget(self.questions["anatomicalAreasOther"].questionBox)
 
         # section 6
         layout = self.sectionWidgets[6].layout()
@@ -263,12 +270,20 @@ class MorphoDepotAccessionForm():
                 if self.questions["iDigBioAccessioned"].answer() == "Yes":
                     self.questions["iDigBioURL"].questionBox.show()
                     self.gotoAccessionButton.show()
+                    self.questions["institutionalAccession"].questionBox.hide()
+                elif self.questions["iDigBioAccessioned"].answer() == "No":
+                    self.questions["iDigBioURL"].questionBox.hide()
+                    self.gotoAccessionButton.hide()
+                    self.questions["institutionalAccession"].questionBox.show()
                 else:
                     self.questions["iDigBioURL"].questionBox.hide()
                     self.gotoAccessionButton.hide()
+                    self.questions["institutionalAccession"].questionBox.hide()
 
             if self.questions["imageContents"].answer() == "Partial specimen":
                 self.sectionWidgets[5].show()
+                self.questions["anatomicalAreasOther"].questionBox.setVisible(
+                    "Other" in self.questions["anatomicalAreas"].answer())
             else:
                 self.sectionWidgets[5].hide()
         else: # Not biological
@@ -285,6 +300,13 @@ class MorphoDepotAccessionForm():
         if isBiological:
             if self.questions["specimenSource"].answer() == "":
                 valid = False
+            if self.questions["specimenSource"].answer() == "Accessioned specimen":
+                # The Yes/No must be answered (else neither the record URL nor
+                # the institutional identifier is ever shown), and a specimen
+                # NOT in a public database needs its institutional identifier.
+                valid = valid and self.questions["iDigBioAccessioned"].answer() != ""
+                if self.questions["iDigBioAccessioned"].answer() == "No":
+                    valid = valid and self.questions["institutionalAccession"].answer().strip() != ""
             # The accessioned-specimen record URL is captured but does NOT gate staging: a missing
             # or malformed URL never blocks Create (a valid record often isn't an iDigBio portal
             # link -- it may be GBIF, Arctos, etc.).  For archival repos its presence and validity
@@ -299,6 +321,8 @@ class MorphoDepotAccessionForm():
 
             if self.questions["imageContents"].answer() == "Partial specimen":
                 valid = valid and self.questions["anatomicalAreas"].answer() != []
+                if "Other" in self.questions["anatomicalAreas"].answer():
+                    valid = valid and self.questions["anatomicalAreasOther"].answer().strip() != ""
         else: # Not biological
             valid = valid and self.questions["otherSubjectDescription"].answer() != ""
 
