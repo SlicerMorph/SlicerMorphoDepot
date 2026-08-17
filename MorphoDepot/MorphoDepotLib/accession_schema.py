@@ -59,6 +59,12 @@ FORM_QUESTIONS = {
         ["Yes", "No"],
         ""
     ),
+    "institutionalAccession": (
+        "What is the institutional specimen identifier?",
+        "",
+        "The catalog/accession number of the physical specimen in its "
+        "holding institution, e.g. UWBM-25254 or NMNH-123455."
+    ),
     "iDigBioURL": (
         "Paste the record URL:",
         "",
@@ -86,7 +92,7 @@ FORM_QUESTIONS = {
     # section 4
     "modality": (
         "What is the modality of the acquisition?",
-        ["Micro CT (or synchrotron)", "Medical CT", "MRI", "Lightsheet microscopy", "3D confocal microscopy", "Surface model (photogrammetry, structured light, or laser scanning)"],
+        ["Micro CT (or synchrotron)", "Medical CT", "MRI", "Lightsheet microscopy", "3D confocal microscopy"],
         ""
     ),
     "contrastEnhancement": (
@@ -103,6 +109,11 @@ FORM_QUESTIONS = {
     "anatomicalAreas": (
         "What anatomical area(s) is/are present in the scan?",
         ["Head and neck (e.g., cranium, mandible, proximal vertebral colum)", "Pectoral girdle", "Forelimb", "Trunk (e.g. body cavity, torso, spine, ribs)", "Pelvic girdle", "Hind limb", "Tail", "Other"],
+        ""
+    ),
+    "anatomicalAreasOther": (
+        "Please describe the other anatomical area(s).",
+        "",
         ""
     ),
     # section 6
@@ -134,13 +145,15 @@ FORM_QUESTIONS = {
 SECTION_LAYOUT = {
     0: [("subjectType", "radio")],
     1: [("specimenSource", "radio")],
-    2: [("iDigBioAccessioned", "radio"), ("iDigBioURL", "text")],
+    2: [("iDigBioAccessioned", "radio"), ("iDigBioURL", "text"),
+        ("institutionalAccession", "text")],
     3: [("species", "species"), ("biologicalSex", "radio"),
         ("developmentalStage", "radio")],
     4: [("modality", "radio"), ("contrastEnhancement", "radio"),
         ("imageContents", "radio")],
     "4a": [("otherSubjectDescription", "text")],
-    5: [("anatomicalAreas", "checkboxes")],
+    5: [("anatomicalAreas", "checkboxes"),
+        ("anatomicalAreasOther", "text")],
     6: [("redistributionAcknowledgement", "checkboxes"),
         ("license", "radio")],
     7: [("githubRepoName", "text"), ("repoType", "radio")],
@@ -160,7 +173,8 @@ DEFAULTS = {
 # CONTRACT: question-level rules are the FULL preconditions for that
 # question (they repeat any parent-section conditions), so a renderer may
 # evaluate them independently; questions WITHOUT a rule inherit their
-# section's visibility.
+# section's visibility.  A condition against a CHECKBOX question holds
+# when the required value is among the selected answers.
 VISIBILITY_RULES = {
     "sections": {
         1: {"subjectType": "Biological specimen"},
@@ -177,6 +191,12 @@ VISIBILITY_RULES = {
         "iDigBioURL": {"subjectType": "Biological specimen",
                        "specimenSource": "Accessioned specimen",
                        "iDigBioAccessioned": "Yes"},
+        "institutionalAccession": {"subjectType": "Biological specimen",
+                                   "specimenSource": "Accessioned specimen",
+                                   "iDigBioAccessioned": "No"},
+        "anatomicalAreasOther": {"subjectType": "Biological specimen",
+                                 "imageContents": "Partial specimen",
+                                 "anatomicalAreas": "Other"},
     },
 }
 
@@ -188,11 +208,12 @@ VISIBILITY_RULES = {
 REQUIRED_RULES = {
     "always": ["subjectType", "modality", "license", "githubRepoName",
                "repoType"],
-    "when_visible": ["specimenSource", "species", "biologicalSex",
-                     "developmentalStage", "contrastEnhancement",
-                     "imageContents", "anatomicalAreas",
-                     "otherSubjectDescription"],
-    "never": ["iDigBioURL", "iDigBioAccessioned"],
+    "when_visible": ["specimenSource", "iDigBioAccessioned", "species",
+                     "biologicalSex", "developmentalStage",
+                     "contrastEnhancement", "imageContents",
+                     "anatomicalAreas", "otherSubjectDescription",
+                     "institutionalAccession", "anatomicalAreasOther"],
+    "never": ["iDigBioURL"],
     "species_two_words": True,
     "redistribution_required_when_repoType_prefix": "Archival",
 }
@@ -204,7 +225,6 @@ MODALITY_SLUGS = {
     "MRI": "mri",
     "Lightsheet microscopy": "lightsheet",
     "3D confocal microscopy": "confocal",
-    "Surface model (photogrammetry, structured light, or laser scanning)": "surface",
 }
 CONTENTS_SLUGS = {"Whole specimen": "whole", "Partial specimen": "partial"}
 
