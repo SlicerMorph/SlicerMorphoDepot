@@ -10,7 +10,7 @@ from slicer.i18n import translate
 from MorphoDepotLib.forms import (FormBaseQuestion, FormRadioQuestion, FormCheckBoxesQuestion,
     FormTextQuestion, FormComboBoxQuestion, FormSpeciesQuestion)
 from MorphoDepotLib.accession_schema import (FORM_QUESTIONS, SECTION_TITLES,
-    MODALITY_SLUGS, CONTENTS_SLUGS, REPO_NAME_REGEX)
+    SECTION_ORDER, DEFAULTS, MODALITY_SLUGS, CONTENTS_SLUGS, REPO_NAME_REGEX)
 
 
 class MorphoDepotAccessionForm():
@@ -25,7 +25,7 @@ class MorphoDepotAccessionForm():
         """based on this form: https://docs.google.com/forms/d/1HbSL2lmslmeAggim4qlxjcyLy6KhQWcNPisrURA2Udo/edit"""
         self.workflowMode = workflowMode
         self.validationCallback = validationCallback
-        sectionKeys = [0, 1, 2, 3, 4, "4a", 5, 6, 7]
+        sectionKeys = list(SECTION_ORDER)
         self.form = qt.QWidget()
         layout = qt.QVBoxLayout()
         self.form.setLayout(layout)
@@ -151,7 +151,7 @@ class MorphoDepotAccessionForm():
         layout.addWidget(self.questions["redistributionAcknowledgement"].questionBox)
         q,a,t = form["license"]
         self.questions["license"] = FormRadioQuestion(q, a, self.validateForm)
-        self.questions["license"].optionButtons[a[0]].checked=True
+        self.questions["license"].optionButtons[DEFAULTS["license"]].checked=True
         layout.addWidget(self.questions["license"].questionBox)
 
         # section 7

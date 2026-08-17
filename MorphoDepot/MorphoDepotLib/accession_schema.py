@@ -102,7 +102,7 @@ FORM_QUESTIONS = {
     # section 5
     "anatomicalAreas": (
         "What anatomical area(s) is/are present in the scan?",
-        ["Head and neck (e.g., cranium, mandible, proximal vertebral colum)", "Pectoral girdle", "Forelimb", "Trunk (e.g. body cavity, torso, spine, ribs)", "Pelvic girdle", "Hind limg", "Tail", "Other"],
+        ["Head and neck (e.g., cranium, mandible, proximal vertebral colum)", "Pectoral girdle", "Forelimb", "Trunk (e.g. body cavity, torso, spine, ribs)", "Pelvic girdle", "Hind limb", "Tail", "Other"],
         ""
     ),
     # section 6
@@ -154,6 +154,10 @@ DEFAULTS = {
 # Declarative mirror of accession_form.validateForm's visibility logic.
 # A section/question is shown when ALL its conditions hold; conditions
 # reference other answers as {question key: required answer}.
+# CONTRACT: question-level rules are the FULL preconditions for that
+# question (they repeat any parent-section conditions), so a renderer may
+# evaluate them independently; questions WITHOUT a rule inherit their
+# section's visibility.
 VISIBILITY_RULES = {
     "sections": {
         1: {"subjectType": "Biological specimen"},
@@ -167,7 +171,9 @@ VISIBILITY_RULES = {
     "questions": {
         "contrastEnhancement": {"subjectType": "Biological specimen"},
         "imageContents": {"subjectType": "Biological specimen"},
-        "iDigBioURL": {"iDigBioAccessioned": "Yes"},
+        "iDigBioURL": {"subjectType": "Biological specimen",
+                       "specimenSource": "Accessioned specimen",
+                       "iDigBioAccessioned": "Yes"},
     },
 }
 
