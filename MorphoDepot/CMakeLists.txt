@@ -10,6 +10,7 @@ set(MODULE_PYTHON_SCRIPTS
   # Slicer's factory scans top-level scripts and would register a bare helper as a broken module.
   ${MODULE_NAME}Lib/__init__.py
   ${MODULE_NAME}Lib/accession_form.py
+  ${MODULE_NAME}Lib/accession_schema.py
   ${MODULE_NAME}Lib/contributors.py
   ${MODULE_NAME}Lib/forms.py
   ${MODULE_NAME}Lib/logic_accession.py

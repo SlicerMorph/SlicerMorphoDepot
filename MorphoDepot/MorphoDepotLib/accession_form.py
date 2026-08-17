@@ -9,128 +9,17 @@ from slicer.i18n import tr as _
 from slicer.i18n import translate
 from MorphoDepotLib.forms import (FormBaseQuestion, FormRadioQuestion, FormCheckBoxesQuestion,
     FormTextQuestion, FormComboBoxQuestion, FormSpeciesQuestion)
+from MorphoDepotLib.accession_schema import (FORM_QUESTIONS, SECTION_TITLES,
+    MODALITY_SLUGS, CONTENTS_SLUGS, REPO_NAME_REGEX)
 
 
 class MorphoDepotAccessionForm():
     """Customized interface to collect data about MorphoDepot accessions"""
 
-    sectionTitles = {
-        0: "Subject Type",
-        1: "Acquisition type",
-        2: "Accessioned specimen",
-        3: "Species information",
-        4: "Image data description",
-        "4a": "Subject Description",
-        5: "Partial specimen",
-        6: "Licensing",
-        7: "Github"
-    }
+    # Shared with the deposit portal's web renderer -- see accession_schema.py
+    sectionTitles = SECTION_TITLES
 
-    formQuestions = {
-        # each question is a tuple of question, answer options, and tooltip
-        # This info is pure data, but is closely coupled to the GUI and validation code below for usability
-
-        # section 4a
-        "otherSubjectDescription" : (
-            "Please describe the subject of the data.",
-            "",
-            "Provide a description for this non-biological subject."
-        ),
-        # section 1
-        "subjectType" : (
-            "What is the subject type?",
-            ["Biological specimen", "Other"],
-            "Select the type of subject for this data."
-        ),
-
-
-
-        "specimenSource" : (
-            "Is your data from a commercially acquired organism or from an accessioned specimen (i.e., from a natural history collection)?",
-           ["Non-accessioned", "Accessioned specimen"],
-           ""
-        ),
-
-        # section 2
-        "iDigBioAccessioned" : (
-            "Is your specimen accessioned in a public database or repository (e.g. GBIF, iDigBio, Arctos)?",
-            ["Yes", "No"],
-            ""
-        ),
-        "iDigBioURL" : (
-            "Paste the record URL:",
-            "",
-            "Paste the URL of this specimen's record in a public database. For example:\n"
-            "  GBIF:     https://www.gbif.org/occurrence/1702720653\n"
-            "  iDigBio:  https://portal.idigbio.org/portal/records/<record-uuid>\n"
-            "  Arctos:   https://arctos.database.museum/guid/UWBM:Mamm:82522"
-        ),
-
-        # section 3
-        "species" : (
-            "What is your specimen's species?",
-            "",
-            "Enter a valid genus and species for your specimen.  If unsure, use the 'Search taxon in GBIF' button to look it up and pick the correct name."
-        ),
-        "biologicalSex" : (
-            "What is your specimen's sex?",
-            ["Male", "Female", "Unknown"],
-            ""
-        ),
-        "developmentalStage" : (
-            "What is your specimen's developmental stage?",
-            ["Prenatal (fetus, embryo)", "Juvenile (neonatal to subadult)", "Adult"],
-            ""
-        ),
-
-        # section 4
-        "modality" : (
-            "What is the modality of the acquisition?",
-            ["Micro CT (or synchrotron)", "Medical CT", "MRI", "Lightsheet microscopy", "3D confocal microscopy", "Surface model (photogrammetry, structured light, or laser scanning)"],
-            ""
-        ),
-        "contrastEnhancement" : (
-            "Is there contrast enhancement treatment applied to the specimen?",
-            ["Yes", "No"],
-            ""
-        ),
-        "imageContents" : (
-            "What is in the image?",
-            ["Whole specimen", "Partial specimen"],
-            ""
-        ),
-
-        # section 5
-        "anatomicalAreas" : (
-            "What anatomical area(s) is/are present in the scan?",
-            ["Head and neck (e.g., cranium, mandible, proximal vertebral colum)", "Pectoral girdle", "Forelimb", "Trunk (e.g. body cavity, torso, spine, ribs)", "Pelvic girdle", "Hind limg", "Tail", "Other"],
-            ""
-        ),
-
-        # section 6
-        "redistributionAcknowledgement" : (
-            "Acknowledgement:",
-            ["I have the right to allow redistribution of this data."],
-            ""
-        ),
-        "license" : (
-            "Choose a license:",
-            ["CC BY 4.0 (requires attribution, allows commercial usage)", "CC BY-NC 4.0 (requires attribution, non-commercial usage only)"],
-            ""
-        ),
-
-        # section 7
-        "githubRepoName" : (
-            "What should the repository in your github account called? This needs to be unique value for your account.",
-            "",
-            "Name should be fairly short and contain only letters, numbers, and the dash, underscore, or dot characters."
-        ),
-        "repoType" : (
-            "What is the intended lifespan of this repository?",
-            ["Archival (intended for long-term maintenance)", "Short-term (e.g. repositories for classroom exercises, that are not meant to be maintained for long-term)"],
-            ""
-        ),
-    }
+    formQuestions = FORM_QUESTIONS
 
     def __init__(self, workflowMode=False, validationCallback=None):
         """based on this form: https://docs.google.com/forms/d/1HbSL2lmslmeAggim4qlxjcyLy6KhQWcNPisrURA2Udo/edit"""
@@ -314,15 +203,8 @@ class MorphoDepotAccessionForm():
         genus-species so two scans of the same species are less likely to collide and the name is
         self-describing.  Falls back to the free-text subject description for non-biological subjects.
         Returns "" when there is nothing to base a name on yet."""
-        modalitySlug = {
-            "Micro CT (or synchrotron)": "microct",
-            "Medical CT": "medicalct",
-            "MRI": "mri",
-            "Lightsheet microscopy": "lightsheet",
-            "3D confocal microscopy": "confocal",
-            "Surface model (photogrammetry, structured light, or laser scanning)": "surface",
-        }
-        contentsSlug = {"Whole specimen": "whole", "Partial specimen": "partial"}
+        modalitySlug = MODALITY_SLUGS
+        contentsSlug = CONTENTS_SLUGS
         base = self._slug(self.questions["species"].answer())
         if not base:
             base = self._slug(self.questions["otherSubjectDescription"].answer())
@@ -432,7 +314,7 @@ class MorphoDepotAccessionForm():
         valid = valid and self.questions["repoType"].answer() != ""
         # Reject "." / ".." as the repo name (review S2): such a name flows into a local
         # os.path.join + shutil.rmtree and would otherwise target the whole working dir / its parent.
-        repoNameRegex = r"^(?:([a-zA-Z\d]+(?:-[a-zA-Z\d]+)*)/)?((?!\.\.?$)[\w.-]+)$"
+        repoNameRegex = REPO_NAME_REGEX
         valid = valid and (re.match(repoNameRegex, self.questions["githubRepoName"].answer()) != None)
         # The contact email is validated separately at Go-live (see _updatePublishEnabled), not here.
         self.validationCallback(valid)
