@@ -145,15 +145,20 @@ class AccessionMixin:
         yields ``accessionResolved = False`` with the raw URL retained."""
         url = self._accessionURL(accessionData)
         info = extractAccession(url) if url else {}
-        manual = accessionData.get('institutionalAccession')
-        if isinstance(manual, (list, tuple)) and len(manual) >= 2:
-            manual = (manual[1] or "").strip()
-        else:
-            manual = (manual or "").strip() if isinstance(manual, str) else ""
+        manual = self._institutionalAccessionId(accessionData)
         accessionData['specimenIdentifier'] = info.get('specimenIdentifier') or manual or None
         accessionData['accessionSource'] = info.get('source', 'Unknown')
         accessionData['accessionResolved'] = bool(info.get('resolved'))
         return info
+
+    def _institutionalAccessionId(self, accessionData):
+        """The manually-entered institutional specimen identifier from
+        accessionData (a ``[label, answer]`` pair like other questions).
+        '' when absent."""
+        value = accessionData.get('institutionalAccession')
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            return (value[1] or "").strip()
+        return value.strip() if isinstance(value, str) else ""
 
     def _writeLicense(self, repoDir, accessionData):
         """Write LICENSE.txt for the chosen Creative Commons license."""
@@ -173,17 +178,14 @@ class AccessionMixin:
         # public record when we have both, else the bare record URL, else nothing.
         specimenId = accessionData.get('specimenIdentifier')
         accessionURL = self._accessionURL(accessionData)
-        institutional = accessionData.get('institutionalAccession')
-        if isinstance(institutional, (list, tuple)) and len(institutional) >= 2:
-            institutional = (institutional[1] or "").strip()
-        else:
-            institutional = (institutional or "").strip() if isinstance(institutional, str) else ""
         if specimenId and accessionURL:
             specimenLine = f"* Accessioned specimen: {specimenId} ([record]({accessionURL}))\n"
         elif accessionURL:
             specimenLine = f"* Accessioned specimen record: {accessionURL}\n"
-        elif institutional:
-            specimenLine = f"* Accessioned specimen: {institutional}\n"
+        elif specimenId:
+            # covers the manual institutional identifier too --
+            # _injectAccessionFields folds it into specimenIdentifier
+            specimenLine = f"* Accessioned specimen: {specimenId}\n"
         else:
             specimenLine = ""
         readme_content = f"""
