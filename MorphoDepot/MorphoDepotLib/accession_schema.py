@@ -149,6 +149,9 @@ SECTION_LAYOUT = {
 DEFAULTS = {
     # the Qt form pre-checks the first license option
     "license": "CC BY 4.0 (requires attribution, allows commercial usage)",
+    # it is the depositor's own data -- they know whether they may share it
+    "redistributionAcknowledgement":
+        ["I have the right to allow redistribution of this data."],
 }
 
 # Declarative mirror of accession_form.validateForm's visibility logic.

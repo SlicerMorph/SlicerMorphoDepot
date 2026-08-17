@@ -148,6 +148,8 @@ class MorphoDepotAccessionForm():
         layout = self.sectionWidgets[6].layout()
         q,a,t = form["redistributionAcknowledgement"]
         self.questions["redistributionAcknowledgement"] = FormCheckBoxesQuestion(q, a, self.validateForm)
+        for _opt in DEFAULTS.get("redistributionAcknowledgement", []):
+            self.questions["redistributionAcknowledgement"].optionButtons[_opt].checked = True
         layout.addWidget(self.questions["redistributionAcknowledgement"].questionBox)
         q,a,t = form["license"]
         self.questions["license"] = FormRadioQuestion(q, a, self.validateForm)

@@ -982,6 +982,42 @@ jobs:
         if not (repoDir and repo and os.path.exists(repoDir)):
             raise RuntimeError("No local working copy is available to apply edits.")
 
+        # Staged repos may be renamed freely -- the prohibition is publish-time
+        # (published names are load-bearing for citations and links).  When the
+        # form's name differs from the staged repo's, rename on GitHub FIRST so
+        # a failed rename aborts the save before any content is rewritten.
+        renamed = False
+        currentNameWithOwner = ctx["personalNameWithOwner"]
+        owner, currentName = currentNameWithOwner.split("/", 1)
+        newName = ((accessionData.get('githubRepoName') or ["", ""])[1] or "").split("/")[-1].strip()
+        if newName and newName != currentName:
+            from MorphoDepotLib.accession_schema import REPO_NAME_REGEX
+            if not re.match(REPO_NAME_REGEX, newName):
+                raise ValueError(f"Invalid repository name {newName!r}.")
+            newNameWithOwner = f"{owner}/{newName}"
+            if self.repoExists(newNameWithOwner):
+                raise ValueError(
+                    f"A repository named '{newName}' already exists in {owner} -- "
+                    "choose a different name.")
+            self.progressMethod(f"Renaming {currentNameWithOwner} to {newNameWithOwner}...")
+            self.gh(["api", "--method", "PATCH", f"/repos/{currentNameWithOwner}",
+                     "--field", f"name={newName}"])
+            # GitHub redirects the old URL, but keep the clone's origin explicit.
+            try:
+                repo.remote(name="origin").set_url(f"https://github.com/{newNameWithOwner}.git")
+            except Exception as e:
+                logging.warning(f"Could not update origin URL after rename: {e}")
+            ctx["personalNameWithOwner"] = newNameWithOwner
+            ctx["repoName"] = newName
+            # Move the local clone with the repo so no orphaned OldName/
+            # directory lingers and ctx stays fully consistent (review note).
+            newRepoDir = os.path.join(os.path.dirname(repoDir), newName)
+            if not os.path.exists(newRepoDir):
+                os.rename(repoDir, newRepoDir)
+                repoDir = ctx["repoDir"] = newRepoDir
+                repo = self.localRepo = git.Repo(repoDir)
+            renamed = True
+
         # Capture the already-recorded species (from the committed README, before we rewrite
         # it) so a transient iDigBio outage during re-resolution can't blank it.
         priorSpecies = self._speciesFromReadme(repoDir)
@@ -1037,7 +1073,7 @@ jobs:
         # Push only if the working tree actually changed.
         repo.git.add("-A")
         if not repo.git.diff("--cached", "--name-only").strip():
-            return False
+            return renamed
 
         # Reset history to a single clean commit ("as if created correctly") and force-push.
         repo.git.checkout("--orphan", "_morphodepot_clean")
