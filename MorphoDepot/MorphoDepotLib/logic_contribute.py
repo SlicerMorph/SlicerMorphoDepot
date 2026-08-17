@@ -102,12 +102,12 @@ class ContributeMixin:
                     self.progressMethod(f"Push failed with {flag}")
                     return False
 
-        # Create a PR if one does not already exist.  Check AUTHORITATIVELY (direct gh), NOT via the
-        # RepoClerk journal that issuePR()/prList() read: the journal lags minutes behind GitHub, so
-        # right after the first push it still reports "no PR" and the old `if not self.issuePR()`
-        # guard would try to open a SECOND PR for the same head->base.  gh rejects that ("a pull
-        # request ... already exists"), which surfaced as a spurious "Failed to commit and push"
-        # even though the push succeeded -- for repo owners and outside segmenters alike.
+        # Create a PR if one does not already exist.  Ask about THIS branch specifically rather
+        # than going through issuePR()/prList(): those answer "which PRs concern me", which is a
+        # superset and was historically cached, and the old `if not self.issuePR()` guard would
+        # try to open a SECOND PR for the same head->base.  gh rejects that ("a pull request ...
+        # already exists"), which surfaced as a spurious "Failed to commit and push" even though
+        # the push succeeded -- for repo owners and outside segmenters alike.
         upstreamNameWithOwner = self.nameWithOwner("upstream")
         originNameWithOwner = self.nameWithOwner("origin")
         originOwner = originNameWithOwner.split("/")[0]
@@ -145,9 +145,10 @@ class ContributeMixin:
         upstreamNameWithOwner = self.nameWithOwner("upstream")
         pr = self.issuePR(role="segmenter")
         if not pr:
-            # The RepoClerk journal that issuePR() reads lags, so a just-opened PR may not appear
-            # there yet -- fall back to an authoritative direct lookup before giving up (same root
-            # cause as the commitAndPush duplicate-PR bug).
+            # issuePR() -> prList() is a live query now, so this is no longer a lag fallback.
+            # It is kept because it asks a narrower question: issuePR() matches by PR *title*
+            # against the branch name, which misses a PR someone retitled, while this matches the
+            # head branch itself -- the thing that actually decides whether a PR exists.
             branchName = self.localRepo.active_branch.name
             originOwner = self.nameWithOwner("origin").split("/")[0]
             pr = self._openPRForBranch(upstreamNameWithOwner, originOwner, branchName)
@@ -166,8 +167,9 @@ class ContributeMixin:
         if not pr:
             branch = self.localRepo.active_branch.name if self.localRepo else "this branch"
             raise RuntimeError(
-                f"No open pull request found for '{branch}'. It may already be merged or closed "
-                f"(the Review list can lag a minute behind GitHub). Click 'Refresh Github' to update it.")
+                f"No open pull request found for '{branch}'. It may already be merged or closed, "
+                f"or be in a repository outside your reviewer scope (repositories you own, plus org "
+                f"repositories whose CURATOR file names you). Click 'Refresh Github' to reload the list.")
         upstreamNameWithOwner = self.nameWithOwner("upstream")
         # GitHub forbids submitting a review (--request-changes) on your OWN pull request, exactly like
         # --approve (see approvePR).  When the reviewer is also the PR author (their own contribution,
@@ -200,8 +202,9 @@ class ContributeMixin:
         if not pr:
             branch = self.localRepo.active_branch.name if self.localRepo else "this branch"
             raise RuntimeError(
-                f"No open pull request found for '{branch}'. It may already be merged or closed "
-                f"(the Review list can lag a minute behind GitHub). Click 'Refresh Github' to update it.")
+                f"No open pull request found for '{branch}'. It may already be merged or closed, "
+                f"or be in a repository outside your reviewer scope (repositories you own, plus org "
+                f"repositories whose CURATOR file names you). Click 'Refresh Github' to reload the list.")
         upstreamNameWithOwner = self.nameWithOwner("upstream")
         # GitHub forbids approving your OWN pull request (addPullRequestReview fails with
         # "Can not approve your own pull request"), regardless of repo role — an "approve" review

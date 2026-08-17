@@ -50,6 +50,7 @@ from MorphoDepotLib.logic_github import GitHubMixin
 from MorphoDepotLib.logic_controlplane import ControlPlaneMixin
 from MorphoDepotLib.logic_objectstore import ObjectStoreMixin
 from MorphoDepotLib.logic_repoclerk import RepoClerkMixin
+from MorphoDepotLib.logic_workstate import WorkStateMixin
 from MorphoDepotLib.logic_repo import RepoMixin
 from MorphoDepotLib.logic_contribute import ContributeMixin
 from MorphoDepotLib.logic_release import ReleaseMixin
@@ -836,7 +837,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
             self._refreshArchivalAvailability()
             self.refreshStagedReposList()
 
-class MorphoDepotLogic(ScriptedLoadableModuleLogic, DepsMixin, GitHubMixin, ControlPlaneMixin, ObjectStoreMixin, RepoClerkMixin, RepoMixin, ContributeMixin, ReleaseMixin, AccessionMixin, SearchMixin, CollectionsMixin, VersionMixin):
+class MorphoDepotLogic(ScriptedLoadableModuleLogic, DepsMixin, GitHubMixin, ControlPlaneMixin, ObjectStoreMixin, RepoClerkMixin, WorkStateMixin, RepoMixin, ContributeMixin, ReleaseMixin, AccessionMixin, SearchMixin, CollectionsMixin, VersionMixin):
     """This class should implement all the actual
     computation done by your module.  The interface
     should be such that other python code can import
@@ -1069,18 +1070,15 @@ class MorphoDepotTest(ScriptedLoadableModuleTest):
         # 9. Switch to Annotator to work on issues
         switchUser(annotator)
         self.delayDisplay("Annotator listing assigned issues")
-        # Avoid logic.issueList() here: it relies on GitHub's repository search index
-        # (topic:MorphoDepot), which lags for newly-created repos. A direct REST query
-        # against the known repo is immediate. Synthesize the dict shape loadIssue expects.
-        rawIssues = logic.ghJSON(
-            f"issue list --repo {repoNameWithOwner} --assignee {annotator} --state open --json number,title"
-        )
+        # This is the real Annotate-tab path, not a stand-in.  It used to be one: issueList()
+        # read the RepoClerk journal, which is populated from GitHub's repository search index
+        # and lags for a repo created a minute ago, so the test had to query REST directly and
+        # synthesize the dict shape.  issueList() is now that direct query (see
+        # MorphoDepotLib/logic_workstate.py), so the test exercises what the annotator uses.
+        # Filtered to the test repo because the endpoint is account-wide.
         repoNameOnly = repoNameWithOwner.split("/")[1]
-        annotatorIssues = [
-            {'number': i['number'], 'title': i['title'],
-             'repository': {'name': repoNameOnly, 'nameWithOwner': repoNameWithOwner}}
-            for i in rawIssues
-        ]
+        annotatorIssues = [i for i in logic.issueList()
+                           if i['repository']['nameWithOwner'] == repoNameWithOwner]
         self.assertEqual(len(annotatorIssues), 2, f"Annotator should have 2 issues for repo {repoNameWithOwner}.")
 
         # 10. Annotator loads each issue, makes a change, and creates a PR.
@@ -1108,10 +1106,11 @@ class MorphoDepotTest(ScriptedLoadableModuleTest):
             widget.onCommit()
             slicer.app.processEvents()
 
-            # 11. Mark PR as ready. widget.onRequestReview -> requestReview -> issuePR ->
-            # prList -> search index, which lags for the freshly created PR (silent failure
-            # would leave the PR in draft and break the later merge). Find the PR via direct
-            # REST and use gh directly.
+            # 11. Mark PR as ready, via gh rather than widget.onRequestReview.  The original
+            # reason (onRequestReview -> requestReview -> issuePR -> prList -> the lagging
+            # search index) no longer holds: prList() is a live query now.  Kept direct for the
+            # moment so this change does not rewrite the release-path assertions in the same
+            # commit that changes the query layer — converting it is a deliberate follow-up.
             self.delayDisplay(f"Requesting review for work on issue #{issue['number']}")
             branchName = f"issue-{issue['number']}"
             rawPRs = logic.ghJSON(f"pr list --repo {repoNameWithOwner} --state open --json number,title")
@@ -1132,8 +1131,11 @@ class MorphoDepotTest(ScriptedLoadableModuleTest):
             issueID = f"issue-{issue['number']}"
             issueIDs.append(issueID)
             issuesByID[issueID] = issue
-        # Avoid logic.prList("reviewer") here for the same reason as issueList above:
-        # it relies on the topic search index. Direct REST against the known repo is reliable.
+        # Avoid logic.prList("reviewer") here, but no longer because of the search index.  The
+        # reviewer list is the union of "repos I own" and "org repos whose CURATOR names me",
+        # and this test repo is in the MorphoDepotTesting scratch org — owned by neither the
+        # creator nor the MorphoDepot org, so neither half reaches it.  (That gap predates this
+        # change: the old owner-of-the-closing-issue test missed it for the same reason.)
         rawPRs = logic.ghJSON(
             f"pr list --repo {repoNameWithOwner} --state open --json number,title,author"
         )
@@ -1150,10 +1152,10 @@ class MorphoDepotTest(ScriptedLoadableModuleTest):
         prToRequestChanges = repoPRsByIssueID[issueIDs[1]]
         issueToChange = issuesByID[issueIDs[1]]
 
-        # Approve the first PR. logic.approvePR() and logic.requestChanges() resolve the PR
-        # via logic.issuePR() -> logic.prList() -> ghTopicData() -> the topic search index, which
-        # lags for freshly created PRs. We have the PR numbers from the REST query above, so
-        # invoke gh directly to avoid the indexing dependency.
+        # Approve the first PR.  logic.approvePR() and logic.requestChanges() resolve the PR via
+        # logic.issuePR() -> logic.prList(role="reviewer"), which cannot see a MorphoDepotTesting
+        # repo for the reason given just above.  We have the PR numbers from the REST query, so
+        # invoke gh directly.
         self.delayDisplay(f"Approving and merging PR #{prToApprove['number']}")
         logic.loadPR(prToApprove, repoDirectory)
         approveNum = str(prToApprove['number'])

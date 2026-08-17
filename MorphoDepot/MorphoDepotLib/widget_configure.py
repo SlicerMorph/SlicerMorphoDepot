@@ -138,18 +138,17 @@ class ConfigureTabMixin:
     # Review
 
     def onRefresh(self):
+        # No RepoClerk wait here any more: both lists are queried live from GitHub (see
+        # MorphoDepotLib/logic_workstate.py), so there is no journal update to wait for and
+        # nothing that can be stale.  Refresh is one round of queries and it is done.
         self.annotateUI.repoClerkStatusLabel.text = "Updating..."
         self.annotateUI.repoClerkStatusLabel.show()
         slicer.app.processEvents()
-        with slicer.util.tryWithErrorDisplay("Failed to refresh from GitHub", waitCursor=True):
-            self.annotateUI.issueList.clear()
-            self.annotateUI.prList.clear()
-            self.updateIssueList()
-            self.updateAnnotatePRList()
-        if self._waitForRepoClerkUpdate(self.annotateUI.repoClerkStatusLabel):
+        try:
             with slicer.util.tryWithErrorDisplay("Failed to refresh from GitHub", waitCursor=True):
                 self.annotateUI.issueList.clear()
                 self.annotateUI.prList.clear()
                 self.updateIssueList()
                 self.updateAnnotatePRList()
-        self.annotateUI.repoClerkStatusLabel.hide()
+        finally:
+            self.annotateUI.repoClerkStatusLabel.hide()

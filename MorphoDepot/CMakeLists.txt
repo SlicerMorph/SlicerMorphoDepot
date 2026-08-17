@@ -24,6 +24,7 @@ set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}Lib/logic_repoclerk.py
   ${MODULE_NAME}Lib/logic_search.py
   ${MODULE_NAME}Lib/logic_version.py
+  ${MODULE_NAME}Lib/logic_workstate.py
   ${MODULE_NAME}Lib/screenshot_dialog.py
   ${MODULE_NAME}Lib/search_form.py
   ${MODULE_NAME}Lib/widget_annotate.py

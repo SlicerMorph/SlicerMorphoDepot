@@ -101,55 +101,17 @@ class RepoClerkMixin:
                 pass
         return False
 
-    def _journalsToTopicData(self, journals):
-        """Convert RepoClerk journal list to the dict shape that ghTopicData() returned."""
-        result = []
-        for j in journals:
-            issues_nodes = [
-                {
-                    "number": issue["number"],
-                    "title": issue["title"],
-                    "url": issue["url"],
-                    "author": {"login": issue["author"]} if issue.get("author") else None,
-                    "assignees": {"nodes": [{"login": a} for a in issue.get("assignees", [])]},
-                }
-                for issue in j.get("openIssues", [])
-            ]
-            prs_nodes = [
-                {
-                    "number": pr["number"],
-                    "title": pr["title"],
-                    "isDraft": pr["isDraft"],
-                    "url": pr["url"],
-                    "author": {"login": pr["author"]} if pr.get("author") else None,
-                    "closingIssuesReferences": {
-                        "nodes": [
-                            {
-                                "number": pr["closingIssue"]["number"],
-                                "title": pr["closingIssue"]["title"],
-                                "repository": {"owner": {"login": pr["closingIssue"]["repoOwner"]}},
-                            }
-                        ] if pr.get("closingIssue") else []
-                    },
-                }
-                for pr in j.get("openPRs", [])
-            ]
-            result.append({
-                "nameWithOwner": j["nameWithOwner"],
-                "curator": j.get("curator"),
-                "pullRequests": {"nodes": prs_nodes},
-                "issues": {"nodes": issues_nodes},
-            })
-        return result
-
-    def ghTopicData(self, topic="MorphoDepot"):
-        clonePath = self.refreshRepoClerk()
-        if clonePath:
-            journals = self.repoClerkJournals(clonePath)
-            if journals:
-                return self._journalsToTopicData(journals)
-        logging.warning("RepoClerk journals unavailable — returning empty topic data")
-        return []
+    # ghTopicData() lived here: it read every journal, reshaped it into the fleet-wide
+    # {repo: {issues, pullRequests}} form, and the Annotate and Review tabs then filtered it
+    # client-side for the current user.  It is gone, deliberately and not just because it has no
+    # callers left — while it existed, "what am I assigned?" could be answered from a cache that
+    # only refreshes when a sweep notices, which is exactly how the 2026-08-07 classroom outage
+    # happened.  Those two questions are per-user and are now asked of GitHub directly; see
+    # MorphoDepotLib/logic_workstate.py.
+    #
+    # morphoRepos() below still carries issue and PR counts from the journal.  That is the
+    # Release tab's fleet-wide view of org repos (counts, announcement targets, tooltips), not a
+    # per-user work list, so it stays index-side.
 
     def morphoRepos(self):
         clonePath = self.refreshRepoClerk()
