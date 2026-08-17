@@ -167,8 +167,9 @@ class ContributeMixin:
         if not pr:
             branch = self.localRepo.active_branch.name if self.localRepo else "this branch"
             raise RuntimeError(
-                f"No open pull request found for '{branch}'. It may already be merged or closed "
-                f"(the Review list can lag a minute behind GitHub). Click 'Refresh Github' to update it.")
+                f"No open pull request found for '{branch}'. It may already be merged or closed, "
+                f"or be in a repository outside your reviewer scope (repositories you own, plus org "
+                f"repositories whose CURATOR file names you). Click 'Refresh Github' to reload the list.")
         upstreamNameWithOwner = self.nameWithOwner("upstream")
         # GitHub forbids submitting a review (--request-changes) on your OWN pull request, exactly like
         # --approve (see approvePR).  When the reviewer is also the PR author (their own contribution,
@@ -201,8 +202,9 @@ class ContributeMixin:
         if not pr:
             branch = self.localRepo.active_branch.name if self.localRepo else "this branch"
             raise RuntimeError(
-                f"No open pull request found for '{branch}'. It may already be merged or closed "
-                f"(the Review list can lag a minute behind GitHub). Click 'Refresh Github' to update it.")
+                f"No open pull request found for '{branch}'. It may already be merged or closed, "
+                f"or be in a repository outside your reviewer scope (repositories you own, plus org "
+                f"repositories whose CURATOR file names you). Click 'Refresh Github' to reload the list.")
         upstreamNameWithOwner = self.nameWithOwner("upstream")
         # GitHub forbids approving your OWN pull request (addPullRequestReview fails with
         # "Can not approve your own pull request"), regardless of repo role — an "approve" review
