@@ -516,6 +516,13 @@ class CreateTabMixin:
         form = getattr(self.createUI, "accessionForm", None)
         if form is None or not hasattr(form, "repoNameStatus"):
             return
+        if form.questions["githubRepoName"].answerText.readOnly:
+            # Edit path: the repo already exists and cannot be renamed here --
+            # never show the "you can edit it" availability text.
+            form.repoNameStatus.text = (
+                "<span style='color:#5a6b7a;'>The repository name cannot be "
+                "changed after creation.</span>")
+            return
         name = (form.questions["githubRepoName"].answer() or "").strip()
         if not name:
             form.repoNameStatus.text = ""
