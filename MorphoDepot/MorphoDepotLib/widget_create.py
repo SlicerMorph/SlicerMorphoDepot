@@ -192,8 +192,8 @@ class CreateTabMixin:
                 self._resumedForEdit = True
                 if accession:
                     self.createUI.accessionForm.setAccessionData(accession)
-                # The repo already exists; its name cannot be changed by editing the field.
-                self.createUI.accessionForm.questions["githubRepoName"].answerText.readOnly = True
+                # Staged repos may be renamed: the field stays editable, and Save
+                # edits performs the rename (publish is what freezes the name).
 
                 # Load the submitted data into the scene so Subject Data looks exactly as
                 # submitted: source volume (from the v1 release asset, shown read-only), and the
@@ -516,24 +516,26 @@ class CreateTabMixin:
         form = getattr(self.createUI, "accessionForm", None)
         if form is None or not hasattr(form, "repoNameStatus"):
             return
-        if form.questions["githubRepoName"].answerText.readOnly:
-            # Edit path: the repo already exists and cannot be renamed here --
-            # never show the "you can edit it" availability text.
-            form.repoNameStatus.text = (
-                "<span style='color:#5a6b7a;'>The repository name cannot be "
-                "changed after creation.</span>")
-            return
         name = (form.questions["githubRepoName"].answer() or "").strip()
         if not name:
             form.repoNameStatus.text = ""
             return
+        stagedOwner = stagedName = None
+        if getattr(self, "_resumedForEdit", False) and self._stagedNameWithOwner:
+            stagedOwner, stagedName = self._stagedNameWithOwner.split("/", 1)
+        if stagedName is not None and name == stagedName:
+            form.repoNameStatus.text = ""   # unchanged name needs no advisory
+            self._lastCheckedRepoName = name
+            return
         if name == getattr(self, "_lastCheckedRepoName", None):
             return
         self._lastCheckedRepoName = name
-        try:
-            owner = self.logic.whoami()
-        except Exception:
-            owner = None
+        owner = stagedOwner
+        if owner is None:
+            try:
+                owner = self.logic.whoami()
+            except Exception:
+                owner = None
         if not owner:
             return
         try:
@@ -892,6 +894,11 @@ class CreateTabMixin:
             return
         slicer.util.showStatusMessage("")
         self._rebaselineResumedNodes()
+        savedName = (getattr(self.logic, "stagingContext", None) or {}).get(
+            "personalNameWithOwner") or self._stagedNameWithOwner
+        if savedName != self._stagedNameWithOwner:
+            self._stagedNameWithOwner = savedName
+            self._updateCreateSectionHeader()
         repoName = self._stagedNameWithOwner
         if changed:
             statusText = f"✓ Changes saved: {repoName} (still staged — not yet published)."
