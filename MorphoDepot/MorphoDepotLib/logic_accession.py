@@ -1009,6 +1009,13 @@ jobs:
                 logging.warning(f"Could not update origin URL after rename: {e}")
             ctx["personalNameWithOwner"] = newNameWithOwner
             ctx["repoName"] = newName
+            # Move the local clone with the repo so no orphaned OldName/
+            # directory lingers and ctx stays fully consistent (review note).
+            newRepoDir = os.path.join(os.path.dirname(repoDir), newName)
+            if not os.path.exists(newRepoDir):
+                os.rename(repoDir, newRepoDir)
+                repoDir = ctx["repoDir"] = newRepoDir
+                repo = self.localRepo = git.Repo(repoDir)
             renamed = True
 
         # Capture the already-recorded species (from the committed README, before we rewrite
