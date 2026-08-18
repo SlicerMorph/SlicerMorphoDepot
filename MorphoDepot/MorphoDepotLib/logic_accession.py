@@ -161,7 +161,7 @@ class AccessionMixin:
         return value.strip() if isinstance(value, str) else ""
 
     def _writeLicense(self, repoDir, accessionData):
-        """Write LICENSE.txt for the chosen Creative Commons license."""
+        """Write LICENSE.txt for the chosen Creative Commons license or public-domain dedication."""
         if accessionData["license"][1].startswith("CC BY-NC"):
             licenseURL = "https://creativecommons.org/licenses/by-nc/4.0/legalcode.txt"
         elif accessionData["license"][1].startswith("CC0"):
