@@ -164,6 +164,8 @@ class AccessionMixin:
         """Write LICENSE.txt for the chosen Creative Commons license."""
         if accessionData["license"][1].startswith("CC BY-NC"):
             licenseURL = "https://creativecommons.org/licenses/by-nc/4.0/legalcode.txt"
+        elif accessionData["license"][1].startswith("CC0"):
+            licenseURL = "https://creativecommons.org/publicdomain/zero/1.0/legalcode.txt"
         else:
             licenseURL = "https://creativecommons.org/licenses/by/4.0/legalcode.txt"
         response = requests.get(licenseURL, timeout=15)
