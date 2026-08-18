@@ -124,7 +124,7 @@ FORM_QUESTIONS = {
     ),
     "license": (
         "Choose a license:",
-        ["CC BY 4.0 (requires attribution, allows commercial usage)", "CC BY-NC 4.0 (requires attribution, non-commercial usage only)"],
+        ["CC BY 4.0 (requires attribution, allows commercial usage)", "CC BY-NC 4.0 (requires attribution, non-commercial usage only)", "CC0 1.0 (public domain dedication, no restrictions on reuse)"],
         ""
     ),
     # section 7
