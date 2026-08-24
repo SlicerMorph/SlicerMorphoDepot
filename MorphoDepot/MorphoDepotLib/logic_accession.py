@@ -799,12 +799,16 @@ jobs:
         scope, which we deliberately do not request — so instead of calling the API, we hand
         the user off to the repo's GitHub Settings page (Danger Zone) to delete it from the
         web, and clean up our own side: remove the local clone and the in-memory staging
-        state.  Returns the repo's settings URL for the caller to open.  Note: if the user
-        does not actually delete it, the repo keeps its `morphodepot-staging` topic and so
-        correctly stays in the unpublished list."""
+        state.  Note: if the user does not actually delete it, the repo keeps its
+        `morphodepot-staging` topic and so correctly stays in the unpublished list.
+
+        Returns ``{"settingsURL": str or None, "volume": dict or None}``.  ``volume`` is what
+        the App reports about the stored scan -- ``status`` is released / refused / failed /
+        absent -- so the caller can say when the scan was NOT freed.  Discard used to report
+        the same success either way, which is how a stranded scan went unnoticed."""
         ctx = getattr(self, "stagingContext", None)
         if not ctx:
-            return None
+            return {"settingsURL": None, "volume": None}
         personal = ctx["personalNameWithOwner"]
         repoDir = ctx.get("repoDir")
         if ctx.get("isMember"):
@@ -824,12 +828,14 @@ jobs:
             if repoDir and os.path.exists(repoDir):
                 shutil.rmtree(repoDir, ignore_errors=True)
             self.stagingContext = None
-            return None    # member's view is cleared; the marked repo is removed by the cleanup job
+            # member's view is cleared; the marked repo is removed by the cleanup job
+            return {"settingsURL": None, "volume": resp.get("volume")}
         self.localRepo = None
         if repoDir and os.path.exists(repoDir):
             shutil.rmtree(repoDir, ignore_errors=True)
         self.stagingContext = None
-        return f"https://github.com/{personal}/settings"
+        # Non-member: the volume is a GitHub release asset, and it goes when the repo does.
+        return {"settingsURL": f"https://github.com/{personal}/settings", "volume": None}
 
     # --- Staged-repo recovery via the `morphodepot-staging` topic.  GitHub is the source of
     # truth: a staged-but-unpublished repo is simply one carrying this topic.  No durable
