@@ -1260,15 +1260,16 @@ class CreateTabMixin:
                 "(scroll to the Danger Zone -> 'Delete this repository').  The local copy will "
                 "be removed.", windowTitle="Discard repository")):
             return
-        settingsURL = None
+        result = {}
         try:
             with slicer.util.tryWithErrorDisplay(_("Trouble discarding repository"), waitCursor=True):
                 slicer.util.showStatusMessage("Discarding...")
-                settingsURL = self.logic.discardStagedRepo()
+                result = self.logic.discardStagedRepo() or {}
         except Exception as e:
             slicer.util.showStatusMessage("")
             return
         slicer.util.showStatusMessage("")
+        settingsURL = result.get("settingsURL")
         if settingsURL and not self.testingMode:
             qt.QDesktopServices.openUrl(qt.QUrl(settingsURL))
         self.refreshStagedReposList(force=True)
@@ -1276,6 +1277,14 @@ class CreateTabMixin:
         if settingsURL:
             msg += ("\n\nIts GitHub Settings page was opened -- scroll to the Danger Zone and click "
                     "'Delete this repository' to remove it from GitHub.")
+        # Freeing the stored scan can fail on its own, and used to do so silently -- the discard
+        # looked identical whether or not the scan was released.  Say which happened.
+        volume = result.get("volume") or {}
+        if volume.get("status") in ("refused", "failed"):
+            detail = volume.get("detail") or "the reason was not reported"
+            msg += ("\n\nThe scan we were storing for it could NOT be released: "
+                    f"{detail}. Nothing else is lost, and the next MorphoDepot review will "
+                    "pick this up. Please mention it if you get in touch.")
         self._completeStepReset("Discard is successfully completed", msg)
 
     def showConfirmationDialog(self, sourceVolume, colorTable, accessionData, sourceSegmentation, screenshots, useOrg=False):
