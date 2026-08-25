@@ -238,6 +238,9 @@ class GitHubMixin:
         self.gh(["api", "--method", "PATCH", f"/repos/{nameWithOwner}",
                  "-F", f"private={privateValue}"])
 
+    # GitHub's API spells the Write role "push" (the UI and our docs call it Write).
+    WRITE_PERMISSION = "push"
+
     def dropOwnRepoAdmin(self, nameWithOwner):
         """Reduce the caller's OWN permission on an org repo from admin to Write.
 
@@ -260,7 +263,7 @@ class GitHubMixin:
             raise RuntimeError("Could not determine the active GitHub login.")
         self.gh(["api", "--method", "PUT",
                  f"/repos/{nameWithOwner}/collaborators/{me}",
-                 "-f", "permission=push"])
+                 "-f", f"permission={self.WRITE_PERMISSION}"])
 
     def addMorphoTopics(self, nameWithOwner, speciesTopicString):
         """Publish topic transition (last step of go-live): add the discoverability topic(s)

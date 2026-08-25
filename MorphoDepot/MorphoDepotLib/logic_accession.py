@@ -769,6 +769,12 @@ jobs:
             return finalNameWithOwner
 
         # Backstop: a non-gated immediate publish (legacy App-flips mode) already made it public.
+        # Set the discovery topics here too before giving up admin.  The legacy App set them itself,
+        # but this path exists precisely because we cannot be sure which App answered: surrendering
+        # admin first would leave a public repo still carrying `morphodepot-staging`, stuck in the
+        # unpublished list, and its curator unable to fix it (topics need admin).  addMorphoTopics is
+        # idempotent, so re-setting topics the App already set costs nothing.
+        self.addMorphoTopics(finalNameWithOwner, species)
         self.ghTopicClearCache()
         self._freezeRepoAdmin(finalNameWithOwner)
         self.localRepo = None
