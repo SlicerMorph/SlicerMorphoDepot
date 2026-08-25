@@ -700,6 +700,16 @@ jobs:
                 f"The repository is published, but its curator still holds admin and could rename "
                 f"or un-publish it; an org owner should set them to Write.")
 
+    # A repository created from a web deposit is named for the deposit, not by the depositor:
+    # naming a specimen well is a job for after you have seen the conversion, and the portal
+    # asks its questions before anyone has looked at anything.  The generated name is meant to
+    # be replaced here, while the repo is still staged and renaming is free.
+    placeholderRepoNamePattern = re.compile(r"^md-deposit-[0-9a-f]{6,}$", re.IGNORECASE)
+
+    def isPlaceholderRepoName(self, name):
+        """Whether `name` is still the generated staging name a web deposit starts with."""
+        return bool(self.placeholderRepoNamePattern.match((name or "").strip()))
+
     def _publishStagedRepoInOrg(self, ctx):
         """Member tier (#20): submit the staged org repo to the App's review gate.  The App validates
         (#19): on a hard-check failure it AUTO-BOUNCES (returns changes_requested) — the repo stays
@@ -713,6 +723,16 @@ jobs:
         topics = ["morphodepot"] + ([f"md-{species}"] if species else [])
         finalNameWithOwner = ctx["personalNameWithOwner"]
         repoDir = ctx.get("repoDir")
+        # Refuse before the reviewer is ever paged: a deposit's repository is created with a
+        # generated name, and publishing is the moment that name becomes permanent.
+        if self.isPlaceholderRepoName(repoName):
+            raise RuntimeError(
+                f"This repository is still called '{repoName}' — the temporary name it was "
+                "given when your files were converted.\n\n"
+                "Publishing is permanent: the name becomes the address people cite for your "
+                "data, and it cannot be changed afterwards.\n\n"
+                "Give it a real name first — open it under 'Staged repositories' in the Create "
+                "tab, enter a name for the specimen, and click 'Update Repository (staged)'.")
         self.progressMethod(f"Submitting {finalNameWithOwner} for review...")
         resp = self.controlPlaneRequest("repos/publish", {"repo": repoName, "topics": topics}) or {}
         status = resp.get("status")
