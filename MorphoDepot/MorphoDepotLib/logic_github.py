@@ -238,6 +238,30 @@ class GitHubMixin:
         self.gh(["api", "--method", "PATCH", f"/repos/{nameWithOwner}",
                  "-F", f"private={privateValue}"])
 
+    def dropOwnRepoAdmin(self, nameWithOwner):
+        """Reduce the caller's OWN permission on an org repo from admin to Write.
+
+        A member is admin of a repo only because GitHub grants a repository's creator admin, and the
+        Administration-free cutover made the member the creator (org-design Sec.12.1/12.2).  Admin is a
+        means to the staging steps -- create, team-grant, topics, the publish flip -- not the intended
+        resting state: the roles table (Sec.3) puts a member at "Write on their own org repos; no Admin",
+        and governance Sec.6.5 says publishing is a one-way door the curator alone cannot un-publish or
+        hide.  While the grant stands, they can do both.
+
+        Called as the LAST step of go-live, because everything before it needs admin (topics included).
+        Verified against GitHub: Write keeps the entire curator role -- the Review tab's approve+merge
+        and request-changes+draft, releases, pushes, dismissing reviews -- and blocks only rename,
+        visibility and topics.  The member cannot restore their own admin afterwards (the call needs the
+        permission it just gave up), so this is one-way, as intended; an org owner can still restore it.
+
+        Org OWNERS are unaffected in practice: their admin comes from ownership, not this grant."""
+        me = self.whoami()
+        if not me:
+            raise RuntimeError("Could not determine the active GitHub login.")
+        self.gh(["api", "--method", "PUT",
+                 f"/repos/{nameWithOwner}/collaborators/{me}",
+                 "-f", "permission=push"])
+
     def addMorphoTopics(self, nameWithOwner, speciesTopicString):
         """Publish topic transition (last step of go-live): add the discoverability topic(s)
         and REMOVE the `morphodepot-staging` marker, so the repo becomes findable by RepoClerk
