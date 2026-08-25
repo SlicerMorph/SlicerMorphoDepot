@@ -684,6 +684,22 @@ jobs:
             shutil.rmtree(repoDir, ignore_errors=True)
         return repoNameWithOwner
 
+    def _freezeRepoAdmin(self, nameWithOwner):
+        """Reduce the curator to Write now that the repo is public (see dropOwnRepoAdmin).
+
+        Best-effort by design: the repo IS public and go-live HAS succeeded by the time this runs, so
+        a failure here must not fail the publish or tell the curator their dataset did not go out.
+        What it does leave behind is a published repo its curator can still rename or make private
+        again -- which an owner can correct -- so it is logged loudly rather than swallowed."""
+        try:
+            self.dropOwnRepoAdmin(nameWithOwner)
+            logging.info(f"{nameWithOwner}: curator permission reduced to Write on publish")
+        except Exception as e:
+            logging.warning(
+                f"Could not reduce the curator's permission on {nameWithOwner} to Write: {e}  "
+                f"The repository is published, but its curator still holds admin and could rename "
+                f"or un-publish it; an org owner should set them to Write.")
+
     def _publishStagedRepoInOrg(self, ctx):
         """Member tier (#20): submit the staged org repo to the App's review gate.  The App validates
         (#19): on a hard-check failure it AUTO-BOUNCES (returns changes_requested) — the repo stays
@@ -739,6 +755,9 @@ jobs:
                                 f"(the repo is public; re-run Publish to finish the DOI): {e}")
             self.addMorphoTopics(finalNameWithOwner, species)
             self.ghTopicClearCache()
+            # LAST privileged step: everything above needs admin (the flip and the topics), so the
+            # curator keeps it until here and gives it up once the dataset is out.
+            self._freezeRepoAdmin(finalNameWithOwner)
             self.localRepo = None
             if repoDir and os.path.exists(repoDir):
                 shutil.rmtree(repoDir, ignore_errors=True)
@@ -750,7 +769,14 @@ jobs:
             return finalNameWithOwner
 
         # Backstop: a non-gated immediate publish (legacy App-flips mode) already made it public.
+        # Set the discovery topics here too before giving up admin.  The legacy App set them itself,
+        # but this path exists precisely because we cannot be sure which App answered: surrendering
+        # admin first would leave a public repo still carrying `morphodepot-staging`, stuck in the
+        # unpublished list, and its curator unable to fix it (topics need admin).  addMorphoTopics is
+        # idempotent, so re-setting topics the App already set costs nothing.
+        self.addMorphoTopics(finalNameWithOwner, species)
         self.ghTopicClearCache()
+        self._freezeRepoAdmin(finalNameWithOwner)
         self.localRepo = None
         if repoDir and os.path.exists(repoDir):
             shutil.rmtree(repoDir, ignore_errors=True)
