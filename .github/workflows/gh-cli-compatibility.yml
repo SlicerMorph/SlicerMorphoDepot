@@ -1,0 +1,69 @@
+name: gh CLI Compatibility Check
+
+on:
+  schedule:
+    # Run weekly on Monday at 09:00 UTC
+    - cron: "0 9 * * 1"
+  workflow_dispatch: # Allow manual triggering
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check-compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install gh CLI
+        run: |
+          gh --version
+
+      - name: Extract gh CLI commands from codebase
+        run: |
+          python .github/scripts/extract_gh_commands.py . > gh_inventory.json
+          echo "### Extracted inventory"
+          cat gh_inventory.json
+
+      - name: Check compatibility against recent releases
+        id: compat
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # The check script exits with 1 when alerts are found;
+          # capture exit code so the workflow can still create an issue.
+          python .github/scripts/check_gh_compatibility.py \
+            --inventory gh_inventory.json \
+            --releases 20 \
+            --output compatibility_report.md || true
+          cat compatibility_report.md
+
+      - name: Create or update issue on alerts
+        if: ${{ hashFiles('compatibility_report.md') != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="gh CLI compatibility report"
+          # Check if there is an existing open issue with this title
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+            --state open --search "in:title $TITLE" \
+            --json number --jq '.[0].number // empty' 2>/dev/null || true)
+
+          if [ -n "$EXISTING" ]; then
+            gh issue edit "$EXISTING" --repo "$GITHUB_REPOSITORY" \
+              --body-file compatibility_report.md
+            echo "Updated existing issue #$EXISTING"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "$TITLE" \
+              --body-file compatibility_report.md \
+              --label "maintenance"
+            echo "Created new compatibility issue"
+          fi
