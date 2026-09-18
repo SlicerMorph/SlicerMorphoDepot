@@ -312,9 +312,8 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         repoDirectoryPath.filters = (repoDirectoryPath.Dirs | repoDirectoryPath.Drives
                                      | repoDirectoryPath.NoDotAndDotDot
                                      | repoDirectoryPath.Readable | repoDirectoryPath.Executable)
-        repoDir = os.path.normpath(self.logic.localRepositoryDirectory())
-        self.configureUI.repoDirectory.currentPath = repoDir
-        self.configureUI.repoDirectory.toolTip = "Be sure to use a real local directory, not an iCloud or OneDrive online location"
+        repoDirectoryPath.currentPath = os.path.normpath(self.logic.localRepositoryDirectory())
+        repoDirectoryPath.toolTip = "Be sure to use a real local directory, not an iCloud or OneDrive online location"
         self.configureUI.gitPath.currentPath = os.path.normpath(self.logic.gitExecutablePath) if self.logic.gitExecutablePath else ""
         self.configureUI.gitPath.toolTip = "Restart Slicer after setting new path"
         self.configureUI.ghPath.currentPath = os.path.normpath(self.logic.ghExecutablePath) if self.logic.ghExecutablePath else ""
