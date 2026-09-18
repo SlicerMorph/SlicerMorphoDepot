@@ -106,11 +106,16 @@ class EnableModuleMixin:
         msg = "An extra python package (pygbif) is required."
         msg += "\nClick OK to install them for MorphoDepot."
         install = slicer.util.confirmOkCancelDisplay(msg)
-        if install:
-            logic = MorphoDepotLogic(progressMethod=MorphoDepotWidget.progressMethod)
-            logic.installPythonDependencies()
-            msg = "Python package installation complete"
-            slicer.util.messageBox(msg)
+        if not install:
+            # Declining is an answer, not an error.  Report the dependency as still missing so
+            # checkModuleEnabled() gates the module; falling through to `logic` here (which is
+            # only bound inside the branch above) raised UnboundLocalError instead, and that
+            # escaped enter() before it could disable a single tab -- leaving every tab live and
+            # nothing on screen to say why.
+            return False
+        logic = MorphoDepotLogic(progressMethod=MorphoDepotWidget.progressMethod)
+        logic.installPythonDependencies()
+        slicer.util.messageBox("Python package installation complete")
         return logic.checkPythonDependencies()
 
     def checkModuleEnabled(self):
@@ -295,11 +300,20 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.setupLogic()
 
         # Configure
-        # only allow picking directories (bitwise AND NOT file filter bit)
-        self.configureUI.repoDirectory.filters = self.configureUI.repoDirectory.filters & ~self.configureUI.repoDirectory.Files
-        repoDir = os.path.normpath(self.logic.localRepositoryDirectory())
-        self.configureUI.repoDirectory.currentPath = repoDir
-        self.configureUI.repoDirectory.toolTip = "Be sure to use a real local directory, not an iCloud or OneDrive online location"
+        # Only allow picking directories.  Spelled out rather than subtracting the Files bit from
+        # whatever the widget currently has: Slicer 5.13 hands `filters` back as a QFlags wrapper
+        # that supports no Python bitwise arithmetic, so `filters & ~Files` raises TypeError and
+        # takes the whole of setup() down with it -- the Configure paths never get filled in, no
+        # signal is ever connected, and the tabs keep the enabled state they had in the .ui, so the
+        # module looks configured when nothing has been set up.  These are ctkPathLineEdit's own
+        # defaults (AllEntries | NoDotAndDotDot | Readable | Executable) minus Files, which is what
+        # the subtraction produced.
+        repoDirectoryPath = self.configureUI.repoDirectory
+        repoDirectoryPath.filters = (repoDirectoryPath.Dirs | repoDirectoryPath.Drives
+                                     | repoDirectoryPath.NoDotAndDotDot
+                                     | repoDirectoryPath.Readable | repoDirectoryPath.Executable)
+        repoDirectoryPath.currentPath = os.path.normpath(self.logic.localRepositoryDirectory())
+        repoDirectoryPath.toolTip = "Be sure to use a real local directory, not an iCloud or OneDrive online location"
         self.configureUI.gitPath.currentPath = os.path.normpath(self.logic.gitExecutablePath) if self.logic.gitExecutablePath else ""
         self.configureUI.gitPath.toolTip = "Restart Slicer after setting new path"
         self.configureUI.ghPath.currentPath = os.path.normpath(self.logic.ghExecutablePath) if self.logic.ghExecutablePath else ""
