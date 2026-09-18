@@ -54,7 +54,7 @@ def _gitPythonWouldFindAWorkingGit():
     if os.name == "nt":
         # Hide the console window, the way slicer.util.launchConsoleProcess does.
         startupInfo = subprocess.STARTUPINFO()
-        startupInfo.dwFlags = 1
+        startupInfo.dwFlags = subprocess.STARTF_USESHOWWINDOW
         startupInfo.wShowWindow = 0
         popenArguments["startupinfo"] = startupInfo
     try:
@@ -71,8 +71,9 @@ _previousExecutableSetting = os.environ.get("GIT_PYTHON_GIT_EXECUTABLE")
 os.environ["GIT_PYTHON_REFRESH"] = "quiet"
 if not _gitPythonWouldFindAWorkingGit():
     # A path GitPython cannot find, so it takes the quiet route rather than running the broken git
-    # a second time.  refreshGitPython() hands it the git the Configure tab resolved.
-    os.environ["GIT_PYTHON_GIT_EXECUTABLE"] = os.path.join(os.path.dirname(__file__), "no-git-found-at-import-time")
+    # a second time.  refreshGitPython() hands it the git the Configure tab resolved.  The last
+    # component sits under a directory that does not exist, so no file can ever occupy this path.
+    os.environ["GIT_PYTHON_GIT_EXECUTABLE"] = os.path.join(os.path.dirname(__file__), "no-git-found-at-import-time", "git")
 try:
     import git  # noqa: F401  (imported for its side effect: initializing GitPython quietly)
 finally:
