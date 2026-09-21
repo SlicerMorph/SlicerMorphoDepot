@@ -27,6 +27,44 @@ from slicer.i18n import translate
 
 
 class GitHubMixin:
+    def _launchTool(self, commandList, updateEnvironment):
+        """Start a tool the way slicer.util.launchConsoleProcess does -- startup environment plus
+        `updateEnvironment`, output captured, no console window on Windows -- but as the leader of
+        its own process group / session, so that on a timeout _killProcessTree can take down the
+        children it spawned (gh runs git) and not just the tool itself."""
+        environment = slicer.util.startupEnvironment()
+        environment.update(updateEnvironment or {})
+        popenArguments = {"env": environment, "stdout": subprocess.PIPE, "stderr": subprocess.STDOUT,
+                          "universal_newlines": True}
+        if os.name == "nt":
+            startupInfo = subprocess.STARTUPINFO()
+            startupInfo.dwFlags = subprocess.STARTF_USESHOWWINDOW
+            startupInfo.wShowWindow = 0
+            popenArguments["startupinfo"] = startupInfo
+            popenArguments["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            popenArguments["start_new_session"] = True
+        return subprocess.Popen(commandList, **popenArguments)
+
+    @staticmethod
+    def _killProcessTree(process):
+        """Kill `process` and every descendant.  POSIX: the process group _launchTool created
+        (SIGKILL, so a child that ignores SIGTERM -- or is exec-looping -- still dies).  Windows:
+        taskkill /T walks the tree."""
+        try:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                               capture_output=True, timeout=30)
+            else:
+                import signal
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except Exception as e:
+            logging.warning(f"MorphoDepot: could not kill process tree of pid {process.pid}: {e}")
+            try:
+                process.kill()
+            except Exception:
+                pass
+
     def gh(self, command, timeout=300, quietErrors=False):
         """Execute `gh` command.  Multiline input string accepted for readablity.
         Do not include `gh` in the command string.  `timeout` (seconds) bounds each attempt so a
@@ -66,18 +104,24 @@ class GitHubMixin:
         baseDelay = 1
         attempts = 4
         for attempt in range(attempts):
-            process = slicer.util.launchConsoleProcess(
-                fullCommandList,
-                updateEnvironment=updateEnvironment)
+            process = self._launchTool(fullCommandList, updateEnvironment)
             try:
                 # S7: a hung or auth-prompting gh child must not block the Slicer UI thread forever.
                 result = process.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
-                process.kill()
+                # Kill gh AND everything it started.  `process.kill()` alone reaps only gh: a git it
+                # spawned keeps running and keeps the output pipe open, and the `communicate()` that
+                # used to follow then blocked forever on that pipe -- so a timed-out clone did not
+                # error after `timeout`s, it hung Slicer until force-quit (2026-09-21, MorphoCloud).
+                self._killProcessTree(process)
                 try:
-                    process.communicate()
+                    process.communicate(timeout=10)
                 except Exception:
-                    pass
+                    for stream in (process.stdout, process.stderr):
+                        try:
+                            stream and stream.close()
+                        except Exception:
+                            pass
                 # S7: a timeout is fatal (not retried, unlike the transient 503 below) -- a process
                 # still alive after `timeout`s is not a transient condition.
                 raise RuntimeError(f"gh command timed out after {timeout}s: {' '.join(commandList)}")

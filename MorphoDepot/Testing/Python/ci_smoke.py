@@ -82,6 +82,12 @@ def main():
     say(f"[smoke] PATH for gh's child: {childPath}")
     record("git resolved", bool(gitPath), gitPath or "no git found")
     record("gh resolved", bool(ghPath), ghPath or "no gh found")
+    # Slicer's own bin must never be on the child PATH: on Linux its git is a wrapper that only
+    # works inside the launcher environment and exec-loops outside it (see toolPathEnvironmentUpdate).
+    slicerHome = os.path.normcase(os.path.normpath(slicer.app.slicerHome))
+    leaked = [entry for entry in logic.toolPathEnvironmentUpdate().get("PATH", "").split(os.pathsep)
+              if entry and os.path.normcase(os.path.normpath(entry)).startswith(slicerHome)]
+    record("child PATH excludes Slicer's own directories", not leaked, ", ".join(leaked) or "none on it")
     if not (gitPath and ghPath):
         shutil.rmtree(workDir, ignore_errors=True)
         return
