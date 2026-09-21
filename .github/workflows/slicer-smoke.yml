@@ -22,7 +22,7 @@ jobs:
       matrix:
         include:
           - name: Linux
-            os: ubuntu-latest
+            os: ubuntu-24.04     # pinned: the apt package names below are the 24.04 ones (libasound2t64)
             slicer_os: linux
           - name: macOS
             os: macos-latest
@@ -83,8 +83,17 @@ jobs:
       - name: Run smoke test (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          MD_SMOKE_LOG: ${{ runner.temp }}\ci_smoke.log
         run: |
-          & C:\Slicer\Slicer.exe --launcher-no-splash --no-splash --no-main-window --testing `
-            --additional-module-paths "$env:GITHUB_WORKSPACE\MorphoDepot" `
-            --python-script "$env:GITHUB_WORKSPACE\MorphoDepot\Testing\Python\ci_smoke.py"
-          exit $LASTEXITCODE
+          # Slicer.exe is a GUI-subsystem launcher: `&` returns at once without waiting and its
+          # console output never reaches this shell.  Wait for it explicitly, then print the log
+          # the script writes to MD_SMOKE_LOG, and use the launcher's exit code (= the app's).
+          $p = Start-Process -Wait -PassThru -NoNewWindow -FilePath C:\Slicer\Slicer.exe -ArgumentList @(
+            '--launcher-no-splash', '--no-splash', '--no-main-window', '--testing',
+            '--additional-module-paths', "$env:GITHUB_WORKSPACE\MorphoDepot",
+            '--python-script', "$env:GITHUB_WORKSPACE\MorphoDepot\Testing\Python\ci_smoke.py")
+          if (Test-Path $env:MD_SMOKE_LOG) { Get-Content $env:MD_SMOKE_LOG } else { Write-Host "(no smoke log written)" }
+          Write-Host "launcher exit code: $($p.ExitCode)"
+          if (-not (Test-Path $env:MD_SMOKE_LOG)) { exit 1 }
+          exit $p.ExitCode

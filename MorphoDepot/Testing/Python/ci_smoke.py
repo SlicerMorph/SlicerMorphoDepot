@@ -38,11 +38,24 @@ PUBLIC_REPO = "MorphoDepot/docs"        # small, public, ours
 CLONE_TIMEOUT_SECONDS = 120             # a clone of a 600 KB repo takes seconds; a loop never ends
 
 results = []
+# Everything printed here also goes to this file when set: on Windows the GUI launcher does not
+# hand the app's console output back to the calling shell, so CI prints the file afterwards.
+LOG_PATH = os.environ.get("MD_SMOKE_LOG")
+
+
+def say(line):
+    print(line, flush=True)
+    if LOG_PATH:
+        try:
+            with open(LOG_PATH, "a", encoding="utf-8") as fp:
+                fp.write(line + "\n")
+        except Exception:
+            pass
 
 
 def record(name, ok, detail=""):
     results.append((name, ok, detail))
-    print(f"[smoke] {'PASS' if ok else 'FAIL'}  {name}{(': ' + detail) if detail else ''}", flush=True)
+    say(f"[smoke] {'PASS' if ok else 'FAIL'}  {name}{(': ' + detail) if detail else ''}")
 
 
 def killProcessesMentioning(text):
@@ -58,18 +71,19 @@ def killProcessesMentioning(text):
 
 def main():
     workDir = tempfile.mkdtemp(prefix="md-smoke-")
-    print(f"[smoke] platform={sys.platform} slicer={slicer.app.applicationVersion} "
-          f"home={slicer.app.slicerHome} workDir={workDir}", flush=True)
+    say(f"[smoke] platform={sys.platform} slicer={slicer.app.applicationVersion} "
+        f"home={slicer.app.slicerHome} workDir={workDir}")
 
     import MorphoDepot
     logic = MorphoDepot.MorphoDepotLogic(progressMethod=lambda *a: None)
     gitPath, ghPath = logic.gitExecutablePath, logic.ghExecutablePath
-    print(f"[smoke] resolved git={gitPath!r} gh={ghPath!r}", flush=True)
+    say(f"[smoke] resolved git={gitPath!r} gh={ghPath!r}")
     childPath = logic.toolPathEnvironmentUpdate().get("PATH", "(startup PATH unchanged)")
-    print(f"[smoke] PATH for gh's child: {childPath}", flush=True)
+    say(f"[smoke] PATH for gh's child: {childPath}")
     record("git resolved", bool(gitPath), gitPath or "no git found")
     record("gh resolved", bool(ghPath), ghPath or "no gh found")
     if not (gitPath and ghPath):
+        shutil.rmtree(workDir, ignore_errors=True)
         return
 
     # --- 1. gh --version through the logic (exercises launchConsoleProcess + the child env) ---
@@ -132,12 +146,12 @@ exitCode = 1
 try:
     main()
     failed = [name for name, ok, _ in results if not ok]
-    print(f"[smoke] {len(results) - len(failed)}/{len(results)} passed"
-          + (f"; FAILED: {', '.join(failed)}" if failed else ""), flush=True)
+    say(f"[smoke] {len(results) - len(failed)}/{len(results)} passed"
+        + (f"; FAILED: {', '.join(failed)}" if failed else ""))
     exitCode = 1 if (failed or not results) else 0
 except Exception:
     traceback.print_exc()
-    print("[smoke] FAIL  unexpected error (see traceback)", flush=True)
+    say("[smoke] FAIL  unexpected error: " + traceback.format_exc().strip().splitlines()[-1])
 finally:
     sys.stdout.flush()
     slicer.util.exit(exitCode)
