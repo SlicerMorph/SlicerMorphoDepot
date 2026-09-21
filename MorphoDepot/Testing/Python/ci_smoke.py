@@ -128,11 +128,10 @@ def main():
     t0 = time.time()
     try:
         import git
-        try:
-            git.Repo.clone_from(f"https://github.com/{PUBLIC_REPO}.git", target,
-                                kill_after_timeout=CLONE_TIMEOUT_SECONDS)
-        except TypeError:  # older GitPython without kill_after_timeout
-            git.Repo.clone_from(f"https://github.com/{PUBLIC_REPO}.git", target)
+        # GitPython rejects kill_after_timeout on Windows ("feature is not supported"), so the
+        # clone runs unbounded there; the job's timeout-minutes is the backstop.
+        options = {} if os.name == "nt" else {"kill_after_timeout": CLONE_TIMEOUT_SECONDS}
+        git.Repo.clone_from(f"https://github.com/{PUBLIC_REPO}.git", target, **options)
         ok = os.path.isdir(os.path.join(target, ".git"))
         record("GitPython clone", ok, f"{time.time() - t0:.1f}s")
     except Exception as e:
