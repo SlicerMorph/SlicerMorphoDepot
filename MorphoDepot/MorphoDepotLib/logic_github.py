@@ -57,7 +57,8 @@ class GitHubMixin:
                                capture_output=True, timeout=30)
             else:
                 import signal
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                # start_new_session made the child its own group leader, so its pgid is its pid.
+                os.killpg(process.pid, signal.SIGKILL)
         except Exception as e:
             logging.warning(f"MorphoDepot: could not kill process tree of pid {process.pid}: {e}")
             try:
@@ -117,11 +118,10 @@ class GitHubMixin:
                 try:
                     process.communicate(timeout=10)
                 except Exception:
-                    for stream in (process.stdout, process.stderr):
-                        try:
-                            stream and stream.close()
-                        except Exception:
-                            pass
+                    try:
+                        process.stdout.close()  # stderr is merged into stdout by _launchTool
+                    except Exception:
+                        pass
                 # S7: a timeout is fatal (not retried, unlike the transient 503 below) -- a process
                 # still alive after `timeout`s is not a transient condition.
                 raise RuntimeError(f"gh command timed out after {timeout}s: {' '.join(commandList)}")
