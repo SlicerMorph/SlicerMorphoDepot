@@ -157,11 +157,32 @@ class DepsMixin:
         def pathKey(path):
             return os.path.normcase(os.path.normpath(path))
 
+        # A tool living inside Slicer's own install is not a portable one the user pointed us at,
+        # and must NOT be put on the child's PATH.  Linux Slicer packages ship <Slicer>/bin/git,
+        # a wrapper script that only works inside the launcher environment: it needs the
+        # APPLAUNCHER_* variables to restore the system environment before it execs the real git.
+        # The child here gets the STARTUP environment, where those variables are absent -- there
+        # the wrapper resolves `git` to itself and re-executes forever (2026-09-21: every gh clone
+        # on MorphoCloud hung this way).  The startup PATH already reaches the system git the
+        # wrapper stands in for, so leaving Slicer's directories off costs nothing.
+        try:
+            slicerHome = pathKey(slicer.app.slicerHome)
+        except Exception:
+            slicerHome = None
+
+        def insideSlicer(directory):
+            if not slicerHome:
+                return False
+            try:
+                return os.path.commonpath([slicerHome, pathKey(directory)]) == slicerHome
+            except ValueError:  # e.g. different drives on Windows
+                return False
+
         directories = []
         keys = set()
         for executablePath in (self.gitExecutablePath, self.ghExecutablePath):
             directory = os.path.dirname(executablePath) if executablePath else ""
-            if not directory or pathKey(directory) in keys:
+            if not directory or pathKey(directory) in keys or insideSlicer(directory):
                 continue
             keys.add(pathKey(directory))
             directories.append(directory)
