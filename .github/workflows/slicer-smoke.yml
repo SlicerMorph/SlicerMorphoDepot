@@ -1,0 +1,90 @@
+name: Slicer smoke test
+
+# Installs the current stable Slicer release on Linux, macOS and Windows runners, loads the
+# checked-out MorphoDepot module into it, and runs MorphoDepot/Testing/Python/ci_smoke.py:
+# a clone through the extension's gh helper and one through GitPython, on each platform.
+# This is the part of the extension that has repeatedly broken on one platform while being
+# fixed on another (git/gh discovery, subprocess environments), so it runs on every PR.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            os: ubuntu-latest
+            slicer_os: linux
+          - name: macOS
+            os: macos-latest
+            slicer_os: macosx
+          - name: Windows
+            os: windows-latest
+            slicer_os: win
+    env:
+      GH_TOKEN: ${{ github.token }}   # what `gh` (and the gh child the extension launches) authenticates with
+      SLICER_URL: https://download.slicer.org/download?os=${{ matrix.slicer_os }}&stability=release
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---------------------------------------------------------------- Linux
+      - name: Install Slicer (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends xvfb libsm6 libxt6 libpulse-mainloop-glib0 \
+            libxcb-icccm4 libxdamage1 libnss3 libqt5gui5 libxcomposite1 libxrandr2 libxcursor1 libxi6 \
+            libasound2t64 libgssapi-krb5-2 libgomp1 libglu1-mesa
+          curl -sSL -o slicer.tar.gz "$SLICER_URL"
+          mkdir -p "$HOME/slicer" && tar xzf slicer.tar.gz -C "$HOME/slicer" --strip-components=1
+          ls "$HOME/slicer/bin/git" "$HOME/slicer/bin/exec-outside-slicer-env.sh" || echo "(no git wrapper in this package)"
+      - name: Run smoke test (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a "$HOME/slicer/Slicer" --no-splash --no-main-window --testing \
+            --additional-module-paths "$GITHUB_WORKSPACE/MorphoDepot" \
+            --python-script "$GITHUB_WORKSPACE/MorphoDepot/Testing/Python/ci_smoke.py"
+
+      # ---------------------------------------------------------------- macOS
+      - name: Install Slicer (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # Slicer ships an x86_64 build only; Apple-silicon runners need Rosetta.
+          if [ "$(uname -m)" = "arm64" ]; then sudo softwareupdate --install-rosetta --agree-to-license || true; fi
+          curl -sSL -o slicer.dmg "$SLICER_URL"
+          hdiutil attach -nobrowse -quiet -mountpoint /Volumes/Slicer slicer.dmg
+          mkdir -p "$HOME/slicer" && cp -R /Volumes/Slicer/Slicer.app "$HOME/slicer/"
+          hdiutil detach -quiet /Volumes/Slicer
+      - name: Run smoke test (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          "$HOME/slicer/Slicer.app/Contents/MacOS/Slicer" --no-splash --no-main-window --testing \
+            --additional-module-paths "$GITHUB_WORKSPACE/MorphoDepot" \
+            --python-script "$GITHUB_WORKSPACE/MorphoDepot/Testing/Python/ci_smoke.py"
+
+      # ---------------------------------------------------------------- Windows
+      - name: Install Slicer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri $env:SLICER_URL -OutFile slicer-installer.exe
+          # NSIS silent install; /D must be the last argument and unquoted.
+          Start-Process -Wait -FilePath .\slicer-installer.exe -ArgumentList '/S', '/D=C:\Slicer'
+          Get-ChildItem C:\Slicer | Select-Object -First 5
+      - name: Run smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & C:\Slicer\Slicer.exe --launcher-no-splash --no-splash --no-main-window --testing `
+            --additional-module-paths "$env:GITHUB_WORKSPACE\MorphoDepot" `
+            --python-script "$env:GITHUB_WORKSPACE\MorphoDepot\Testing\Python\ci_smoke.py"
+          exit $LASTEXITCODE
