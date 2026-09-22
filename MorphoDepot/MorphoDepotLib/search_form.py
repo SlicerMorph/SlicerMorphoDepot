@@ -15,12 +15,24 @@ from MorphoDepotLib.accession_form import MorphoDepotAccessionForm
 class MorphoDepotSearchForm():
     """Customized interface to specify MorphoDepot searches"""
 
-    questionsToIgnore = ['iDigBioURL', 'species', 'redistributionAcknowledgement', "githubRepoName", "repoType", "otherSubjectDescription"]
+    # Questions that HAVE answer options but are still not search filters.  Free-text questions
+    # are excluded automatically by isFilterable() -- do not list them here.
+    questionsToIgnore = ['redistributionAcknowledgement', "repoType"]
+
+    @staticmethod
+    def isFilterable(question, questionData):
+        """Whether a question becomes a search filter.  A free-text question (empty options) must
+        NEVER become one: it would build an EMPTY combo box, so criteria[question] is always [] and
+        MorphoDepotLogic.search() then excludes every repo that answered it -- from every search,
+        including the default browse.  Deciding this from the options instead of a hand-maintained
+        list means a new free-text question cannot reintroduce that bug (it did: the institutional
+        specimen identifier and the 'other anatomical area' description were both filtering)."""
+        return bool(questionData[1]) and question not in MorphoDepotSearchForm.questionsToIgnore
 
     # Use shorter labels for the search form to allow for a narrower UI
     shortLabels = {
         "specimenSource": "Specimen Source:",
-        "iDigBioAccessioned": "In iDigBio:",
+        "iDigBioAccessioned": "In public database:",
         "modality": "Modality:",
         "contrastEnhancement": "Contrast Enhanced:",
         "imageContents": "Image Contents:",
@@ -70,7 +82,7 @@ class MorphoDepotSearchForm():
         self.comboBoxesByQuestion = {}
         questions = MorphoDepotAccessionForm.formQuestions
         for question, questionData in questions.items():
-            if question not in MorphoDepotSearchForm.questionsToIgnore:
+            if MorphoDepotSearchForm.isFilterable(question, questionData):
                 label = MorphoDepotSearchForm.shortLabels.get(question, question)
                 comboBox = ctk.ctkCheckableComboBox()
                 self.searchFormLayout.addRow(label, comboBox)
@@ -100,7 +112,7 @@ class MorphoDepotSearchForm():
 
         questions = MorphoDepotAccessionForm.formQuestions
         for question, questionData in questions.items():
-            if question not in MorphoDepotSearchForm.questionsToIgnore:
+            if MorphoDepotSearchForm.isFilterable(question, questionData):
                 comboBox = self.comboBoxesByQuestion[question]
                 model = comboBox.checkableModel()
                 criteria[question] = []
