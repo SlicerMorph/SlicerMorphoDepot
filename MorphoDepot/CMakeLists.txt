@@ -28,6 +28,7 @@ set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}Lib/logic_workstate.py
   ${MODULE_NAME}Lib/screenshot_dialog.py
   ${MODULE_NAME}Lib/search_form.py
+  ${MODULE_NAME}Lib/tool_discovery.py
   ${MODULE_NAME}Lib/widget_annotate.py
   ${MODULE_NAME}Lib/widget_collections.py
   ${MODULE_NAME}Lib/widget_configure.py

@@ -13,7 +13,6 @@ import platform
 import random
 import re
 import requests
-import shutil
 import subprocess
 import sys
 import time
@@ -45,6 +44,7 @@ from MorphoDepotLib.forms import (FormBaseQuestion, FormRadioQuestion, FormCheck
 from MorphoDepotLib.accession_form import MorphoDepotAccessionForm
 from MorphoDepotLib.search_form import MorphoDepotSearchForm
 from MorphoDepotLib.screenshot_dialog import ScreenshotReviewDialog
+from MorphoDepotLib.tool_discovery import findExecutable
 from MorphoDepotLib.logic_deps import DepsMixin
 from MorphoDepotLib.logic_github import GitHubMixin
 from MorphoDepotLib.logic_controlplane import ControlPlaneMixin
@@ -885,17 +885,15 @@ class MorphoDepotLogic(ScriptedLoadableModuleLogic, DepsMixin, GitHubMixin, Cont
         modulePath = os.path.split(slicer.modules.morphodepot.path)[0]
         self.resourcesPath = os.path.normpath(modulePath + "/Resources")
 
-        # use configured git and gh paths if selected,
-        # else use system installed git and gh if available
+        # use configured git and gh paths if they work, else search PATH and the platform's
+        # common install locations (see MorphoDepotLib/tool_discovery.py -- a Dock-launched Slicer
+        # on macOS has no Homebrew on its PATH).  A saved path that no longer runs is re-detected,
+        # since the setting also holds whatever an earlier detection found.
         # note: normpath returns "." when given ""
         gitPath = os.path.normpath(slicer.util.settingsValue("MorphoDepot/gitPath", "") or "")
         ghPath = os.path.normpath(slicer.util.settingsValue("MorphoDepot/ghPath", "") or "")
-        if not gitPath or gitPath == "" or gitPath == ".":
-            gitPath = shutil.which("git") or ""
-        if not ghPath or ghPath == "" or ghPath == ".":
-            ghPath = shutil.which("gh") or ""
-        self.gitExecutablePath = gitPath
-        self.ghExecutablePath = ghPath
+        self.gitExecutablePath = findExecutable("git", "" if gitPath == "." else gitPath)
+        self.ghExecutablePath = findExecutable("gh", "" if ghPath == "." else ghPath)
 
         qt.QSettings().setValue("MorphoDepot/gitPath", self.gitExecutablePath)
         qt.QSettings().setValue("MorphoDepot/ghPath", self.ghExecutablePath)
