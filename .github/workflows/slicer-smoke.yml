@@ -36,6 +36,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Plain-Python unit tests: no Slicer needed, so they run before the install.  Not on
+      # Windows: the macOS expectations are written with "/" separators, and every platform's
+      # candidate list is already checked from the Linux and macOS runs.
+      - uses: actions/setup-python@v5
+        if: runner.os != 'Windows'
+        with:
+          python-version: "3.x"
+      - name: Unit test tool discovery
+        if: runner.os != 'Windows'
+        run: python MorphoDepot/Testing/Python/test_tool_discovery.py
+
       # ---------------------------------------------------------------- Linux
       - name: Install Slicer (Linux)
         if: runner.os == 'Linux'

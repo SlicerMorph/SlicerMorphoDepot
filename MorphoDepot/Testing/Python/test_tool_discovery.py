@@ -9,6 +9,7 @@ shutil.which("git") returned the /usr/bin/git xcrun shim, which does not run und
 """
 import importlib.util
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -38,6 +39,7 @@ def test_common_locations():
     macGit = discovery.commonLocations("git", platform="darwin")
     check("macOS gh: Apple Silicon Homebrew first", macGh[0] == "/opt/homebrew/bin/gh")
     check("macOS gh: Intel Homebrew searched", "/usr/local/bin/gh" in macGh)
+    check("macOS gh: ~/.local/bin searched (webi installer)", os.path.expanduser("~/.local/bin/gh") in macGh)
     check("macOS git: real binary behind the xcrun shim searched",
           "/Library/Developer/CommandLineTools/usr/bin/git" in macGit)
     check("macOS git: /usr/bin/git shim is not a common location", "/usr/bin/git" not in macGit)
@@ -46,6 +48,11 @@ def test_common_locations():
     windows = discovery.commonLocations("gh", platform="win32", environ={"ProgramFiles": r"C:\Program Files"})
     check("Windows gh: installer default", windows == [os.path.join(r"C:\Program Files", "GitHub CLI", "gh.exe")])
     check("Windows: no Homebrew", not any("brew" in path for path in windows))
+    windowsUser = discovery.commonLocations("gh", platform="win32",
+                                            environ={"ProgramFiles": r"C:\Program Files", "LOCALAPPDATA": r"C:\Users\u\AppData\Local"})
+    check("Windows gh: per-user install searched after Program Files",
+          windowsUser == [os.path.join(r"C:\Program Files", "GitHub CLI", "gh.exe"),
+                          os.path.join(r"C:\Users\u\AppData\Local", "Programs", "GitHub CLI", "gh.exe")])
 
 
 def test_find_executable():
@@ -88,6 +95,7 @@ def test_find_executable():
 def test_executable_runs():
     print("executableRuns")
     check("missing executable does not raise", discovery.executableRuns("/no/such/executable") is False)
+    check("real executable runs", discovery.executableRuns(sys.executable) is True)
 
 
 if __name__ == "__main__":

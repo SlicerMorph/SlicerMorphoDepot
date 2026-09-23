@@ -46,11 +46,12 @@ def commonLocations(name, platform=None, environ=None):
         programFiles = [environ.get(variable) for variable in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)")]
         programFiles = [directory for directory in dict.fromkeys(programFiles) if directory]
         localPrograms = os.path.join(environ["LOCALAPPDATA"], "Programs") if environ.get("LOCALAPPDATA") else None
+        # Machine-wide installs first, then the per-user installer location.
+        roots = programFiles + ([localPrograms] if localPrograms else [])
         if name == "git":
-            roots = programFiles + ([localPrograms] if localPrograms else [])
             return [os.path.join(root, "Git", "cmd", "git.exe") for root in roots]
         if name == "gh":
-            return [os.path.join(root, "GitHub CLI", "gh.exe") for root in programFiles]
+            return [os.path.join(root, "GitHub CLI", "gh.exe") for root in roots]
     return []
 
 
