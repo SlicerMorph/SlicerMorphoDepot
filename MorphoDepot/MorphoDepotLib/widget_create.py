@@ -266,12 +266,18 @@ class CreateTabMixin:
         except Exception as e:
             logging.warning(f"Could not load staged color table: {e}")
 
-        # Baseline segmentation: load it if the repo has one.
+        # Baseline segmentation: load it if the repo has one and tick the checkbox.
         baselinePath = os.path.join(repoDir, "baseline.seg.nrrd")
         if os.path.exists(baselinePath):
             try:
                 self._resumedBaselineNode = slicer.util.loadSegmentation(baselinePath)
                 self.createUI.segmentationSelector.setCurrentNode(self._resumedBaselineNode)
+                checkBox = getattr(self.createUI, "includeBaselineCheckBox", None)
+                if checkBox is not None:
+                    checkBox.checked = True
+                row = getattr(self.createUI, "baselineSelectorRow", None)
+                if row is not None:
+                    row.visible = True
             except Exception as e:
                 logging.warning(f"Could not load staged baseline segmentation: {e}")
 
@@ -359,6 +365,12 @@ class CreateTabMixin:
         self.createUI.inputSelector.enabled = True
         self.createUI.inputSelector.noneDisplay = "Select a source volume (required)"
         self.createUI.accessionForm.questions["githubRepoName"].answerText.readOnly = False
+        checkBox = getattr(self.createUI, "includeBaselineCheckBox", None)
+        if checkBox is not None:
+            checkBox.checked = False
+        row = getattr(self.createUI, "baselineSelectorRow", None)
+        if row is not None:
+            row.visible = False
         self._updateCreateSectionHeader()
 
     def _updateCreateSectionHeader(self):
@@ -494,6 +506,102 @@ class CreateTabMixin:
         if saveEdits is not None and getattr(self, "_resumedForEdit", False):
             saveEdits.enabled = valid
         self._scheduleRepoNameAvailabilityCheck()   # F4: advisory availability of the suggested name
+        self._updateBuildColorTableButton()
+
+    def _onIncludeBaselineChanged(self, checked):
+        """Show or hide the baseline selector row when the checkbox is toggled."""
+        row = getattr(self.createUI, "baselineSelectorRow", None)
+        if row is not None:
+            row.visible = bool(checked)
+        if not checked:
+            self.createUI.segmentationSelector.setCurrentNode(None)
+
+    def _updateBuildColorTableButton(self):
+        """Enable/disable the 'Build color table…' button based on form state.
+
+        Requires subject type; for biological specimens also requires species.
+        """
+        button = getattr(self.createUI, "buildColorTableButton", None)
+        if button is None:
+            return
+        try:
+            subjectType = (self.createUI.accessionForm.questions["subjectType"].answer() or "").strip()
+        except Exception:
+            button.enabled = False
+            button.toolTip = "Fill in the subject type in the Accession Form first."
+            return
+        if not subjectType:
+            button.enabled = False
+            button.toolTip = "Select a subject type in the Accession Form first."
+            return
+        if "biological specimen" in subjectType.lower():
+            try:
+                species = (self.createUI.accessionForm.questions["species"].answer() or "").strip()
+            except Exception:
+                species = ""
+            if not species:
+                button.enabled = False
+                button.toolTip = "Enter the species name in the Accession Form first."
+                return
+        button.enabled = True
+        button.toolTip = (
+            "Opens the MorphoDepot term-lookup tool to build a terminology-based "
+            "color table for this specimen and load it straight into the scene.")
+
+    def _buildColorTableTerms(self):
+        """Return segment/color names to pre-populate the term-lookup tool.
+
+        Priority: baseline segment names (checkbox ticked + baseline selected),
+        then existing color table names, then empty (user types in the page).
+        """
+        checkBox = getattr(self.createUI, "includeBaselineCheckBox", None)
+        if checkBox and checkBox.checked:
+            seg = self.createUI.segmentationSelector.currentNode()
+            if seg:
+                try:
+                    segObj = seg.GetSegmentation()
+                    return [segObj.GetNthSegment(i).GetName()
+                            for i in range(segObj.GetNumberOfSegments())]
+                except Exception:
+                    pass
+        color = self.createUI.colorSelector.currentNode()
+        if color:
+            try:
+                return [color.GetColorName(i)
+                        for i in range(1, color.GetNumberOfColors())]
+            except Exception:
+                pass
+        return []
+
+    def onBuildColorTable(self):
+        """Open the term-lookup tool for the Create tab and load the result."""
+        from MorphoDepotLib.widget_termlookup import openTermLookupDialog
+        try:
+            subjectType = (
+                self.createUI.accessionForm.questions["subjectType"].answer() or "").strip()
+        except Exception:
+            subjectType = ""
+        isBio = "biological specimen" in subjectType.lower()
+        try:
+            species = (
+                self.createUI.accessionForm.questions["species"].answer() or "").strip() if isBio else ""
+        except Exception:
+            species = ""
+        nonBio = bool(subjectType) and not isBio
+        terms = self._buildColorTableTerms()
+        try:
+            tableNameSuggestion = (
+                self.createUI.accessionForm.questions["githubRepoName"].answer() or "").strip()
+        except Exception:
+            tableNameSuggestion = ""
+        node = openTermLookupDialog(
+            parent=slicer.util.mainWindow(),
+            species=species,
+            terms=terms,
+            tableNameSuggestion=tableNameSuggestion,
+            nonBio=nonBio)
+        if node:
+            self.createUI.colorSelector.setCurrentNode(node)
 
     def _scheduleRepoNameAvailabilityCheck(self):
         """Debounce an advisory GitHub availability check for the (possibly auto-suggested) repo

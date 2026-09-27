@@ -37,6 +37,7 @@ set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}Lib/widget_review.py
   ${MODULE_NAME}Lib/widget_search.py
   ${MODULE_NAME}Lib/widget_validation.py
+  ${MODULE_NAME}Lib/widget_termlookup.py
   ${MODULE_NAME}Lib/widget_version.py
   )
 

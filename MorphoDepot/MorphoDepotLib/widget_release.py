@@ -772,3 +772,62 @@ class ReleaseTabMixin:
             ni, np = self.logic.announceUpcomingRelease(nameWithOwner, deadlineISO, message)
             slicer.util.showStatusMessage(f"Posted announcement to {ni} issues and {np} PRs.")
         self.updateAnnouncementState(nameWithOwner)  # reflect the just-posted announcement
+
+    def onBuildColorTableRelease(self):
+        """Open the term-lookup tool for the New Release form and load the result."""
+        from MorphoDepotLib.widget_termlookup import openTermLookupDialog
+
+        # Read species and subject type from the committed MorphoDepotAccession.json.
+        species = ""
+        nonBio = False
+        try:
+            if self.logic and self.logic.localRepo:
+                accPath = os.path.join(self.logic.localRepo.working_dir, "MorphoDepotAccession.json")
+                if os.path.exists(accPath):
+                    with open(accPath) as fh:
+                        accData = json.load(fh)
+                    subjectType = (accData.get("subjectType") or ["", ""])[1] or ""
+                    isBio = "biological specimen" in subjectType.lower()
+                    if isBio:
+                        species = (accData.get("species") or ["", ""])[1] or ""
+                    elif subjectType:
+                        nonBio = True
+        except Exception as e:
+            logging.warning(f"Could not read MorphoDepotAccession.json for term-lookup: {e}")
+
+        # Terms from selected baseline, else from current color table.
+        terms = []
+        seg = self.releaseUI.newBaselineSelector.currentNode()
+        if seg:
+            try:
+                segObj = seg.GetSegmentation()
+                terms = [segObj.GetNthSegment(i).GetName()
+                         for i in range(segObj.GetNumberOfSegments())]
+            except Exception:
+                pass
+        if not terms:
+            color = self.releaseUI.newColorSelector.currentNode()
+            if color:
+                try:
+                    terms = [color.GetColorName(i)
+                             for i in range(1, color.GetNumberOfColors())]
+                except Exception:
+                    pass
+
+        # Suggest a name from the current color table (if any).
+        tableNameSuggestion = ""
+        existing = self.releaseUI.newColorSelector.currentNode()
+        if existing:
+            try:
+                tableNameSuggestion = existing.GetName()
+            except Exception:
+                pass
+
+        node = openTermLookupDialog(
+            parent=slicer.util.mainWindow(),
+            species=species,
+            terms=terms,
+            tableNameSuggestion=tableNameSuggestion,
+            nonBio=nonBio)
+        if node:
+            self.releaseUI.newColorSelector.setCurrentNode(node)

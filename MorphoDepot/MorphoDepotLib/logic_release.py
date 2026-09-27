@@ -244,6 +244,8 @@ class ReleaseMixin:
             colorTablePath = os.path.join(repoDir, f"{colorTableNode.GetName()}.csv")
         if not slicer.util.saveNode(colorTableNode, colorTablePath):
             raise RuntimeError(f"Failed to save color table to {colorTablePath}")
+        colorTableBaseName = os.path.splitext(os.path.basename(colorTablePath))[0]
+        self._writeColorTableProvenance(repoDir, colorTableBaseName, colorTableNode)
 
         # New screenshots — continue sequential numbering from existing files.
         newScreenshotEntries = []
