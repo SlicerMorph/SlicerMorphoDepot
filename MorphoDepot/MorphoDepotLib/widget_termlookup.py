@@ -22,6 +22,18 @@ from slicer.i18n import tr as _
 TERM_LOOKUP_URL = "https://morphodepot.github.io/term-lookup/"
 _URL_SETTING = "MorphoDepot/termLookupUrl"
 
+# The one expression this dialog evaluates in the page. qSlicerWebWidget also calls evalJS itself (it
+# sets document.webkitHidden whenever the widget is shown or hidden) and emits evalResult for those
+# too, so results are only handled when they answer this exact expression.
+_EXPORT_JS = ("JSON.stringify(typeof window.TermLookupExport === 'function'"
+              " ? window.TermLookupExport() : {ready: false})")
+
+# Node attributes set on an imported table: the provenance JSON (written next to the CSV at staging and
+# release) and the species the terms were matched for (checked against the Accession Form at staging).
+PROVENANCE_ATTRIBUTE = "MorphoDepot.terminologyProvenanceJson"
+SPECIES_ATTRIBUTE = "MorphoDepot.terminologySpecies"
+NON_BIOLOGICAL = "(non-biological)"
+
 
 def _baseUrl():
     override = slicer.util.settingsValue(_URL_SETTING, "")
@@ -89,6 +101,26 @@ def openTermLookupDialog(parent, species="", terms=(), tableNameSuggestion="", n
     return _runEmbeddedDialog(parent, url)
 
 
+def _removePythonBridge(webWidget):
+    """Remove Slicer's 'slicerPython' object from this widget's web channel.
+
+    qSlicerWebWidget registers it on every page so JavaScript can ask to run Python in Slicer (after an
+    "Allow Python execution?" prompt that users can set to never ask again). The term-lookup page never
+    uses it, so this window should not offer it. Best effort; the outcome is logged either way.
+    """
+    try:
+        channel = webWidget.webView().page().webChannel()
+        registered = channel.registeredObjects()
+        proxy = registered.get("slicerPython") if hasattr(registered, "get") else None
+        if proxy is None:
+            logging.info("Term lookup: no slicerPython object registered on this page.")
+            return
+        channel.deregisterObject(proxy)
+        logging.info("Term lookup: removed the slicerPython bridge from the term-lookup window.")
+    except Exception as exc:
+        logging.warning(f"Term lookup: could not remove the slicerPython bridge ({exc}).")
+
+
 def _runEmbeddedDialog(parent, url):
     """Open the embedded browser dialog; return the loaded color node or None."""
     dialog = qt.QDialog(parent or slicer.util.mainWindow())
@@ -99,11 +131,12 @@ def _runEmbeddedDialog(parent, url):
     layout.setSpacing(6)
 
     webWidget = slicer.qSlicerWebWidget()
+    _removePythonBridge(webWidget)  # before any page loads
     # Keep the term-lookup page inside Slicer while "View in OLS" and similar
     # links open in the system browser via handleExternalUrlWithDesktopService.
     try:
         webWidget.handleExternalUrlWithDesktopService = True
-        webWidget.internalHosts = ["morphodepot.github.io"]
+        webWidget.internalHosts = [qt.QUrl(url).host()]
     except Exception:
         pass
     layout.addWidget(webWidget, 1)
@@ -127,24 +160,29 @@ def _runEmbeddedDialog(parent, url):
     resultHolder = {"node": None}
 
     def _onEvalResult(js, result):
+        if js != _EXPORT_JS:
+            return  # the widget's own evalJS calls (e.g. document.webkitHidden), not our request
         try:
             data = json.loads(result)
+            if not isinstance(data, dict):
+                raise ValueError(f"expected an object, got {type(data).__name__}")
         except Exception as exc:
-            logging.warning(f"TermLookupExport: invalid JSON — {exc}  raw={result!r}")
+            logging.warning(f"TermLookupExport: unreadable result ({exc}); raw={result!r}")
             slicer.util.warningDisplay(
                 _("Could not read the color table from the page. Please try again."),
                 windowTitle=_("Build color table"))
             return
         if not data.get("ready"):
+            reason = data.get("reason") or _("Run the lookup and fill in the table name.")
             slicer.util.warningDisplay(
-                _("The table is not ready yet.\n\n"
-                  "Run the lookup and make sure the table name is filled in, "
-                  "then click Use in Slicer again."),
+                _("The table is not ready yet.") + "\n\n" + reason + "\n\n"
+                + _("Then click Use in Slicer again."),
                 windowTitle=_("Build color table"))
             return
         csvContent = data.get("csv") or ""
         tableName = (data.get("name") or "terminology_color_table").strip()
         provenanceJson = data.get("provenance")
+        builtFor = NON_BIOLOGICAL if data.get("nonBiological") else (data.get("species") or "")
 
         tmpDir = tempfile.mkdtemp()
         try:
@@ -170,20 +208,20 @@ def _runEmbeddedDialog(parent, url):
         node.SetName(tableName)
         if provenanceJson is not None:
             try:
-                raw = (json.dumps(provenanceJson)
+                raw = (json.dumps(provenanceJson, indent=2)
                        if not isinstance(provenanceJson, str)
                        else provenanceJson)
-                node.SetAttribute("MorphoDepot.terminologyProvenanceJson", raw)
+                node.SetAttribute(PROVENANCE_ATTRIBUTE, raw)
             except Exception:
                 pass
+        if builtFor:
+            node.SetAttribute(SPECIES_ATTRIBUTE, builtFor)
 
         resultHolder["node"] = node
         dialog.accept()
 
     def _onUseClicked():
-        webWidget.evalJS(
-            "JSON.stringify(typeof window.TermLookupExport === 'function'"
-            " ? window.TermLookupExport() : {ready: false})")
+        webWidget.evalJS(_EXPORT_JS)
 
     # evalResult signal: Slicer 5.x emits evalResult(QString js, QString result).
     # Older builds may omit the first argument; try both signatures.
@@ -204,6 +242,6 @@ def _runEmbeddedDialog(parent, url):
     except Exception:
         useButton.enabled = True  # can't detect load — enable immediately
 
-    webWidget.url = qt.QUrl(url)
+    webWidget.url = url  # the property is a QString
     dialog.exec_()
     return resultHolder["node"]

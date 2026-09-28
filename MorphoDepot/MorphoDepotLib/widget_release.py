@@ -362,6 +362,16 @@ class ReleaseTabMixin:
                 return
 
         nameWithOwner = self.logic.nameWithOwner("origin")
+        isOrganizational = self._isArchivalRepo(nameWithOwner)
+
+        # #238: a table built with the term lookup should match this repo's specimen (warn), and the
+        # new baseline must agree with the color table (block Organizational, warn Personal).
+        releaseSpecies, releaseNonBio = self._releaseSpecimen()
+        if not self._confirmColorTableSpecies(colorTableNode, releaseSpecies, nonBiological=releaseNonBio):
+            return
+        if not self._confirmBaselineMatchesColorTable(
+                baselineNode, colorTableNode, organizational=isOrganizational, action="released"):
+            return
         newTag = self.logic.nextReleaseTag()
         plan = self.logic.releaseSnapshotPlan(newTag, baselineNode, colorTableNode, self.screenshots)
         if plan is None:
@@ -408,7 +418,7 @@ class ReleaseTabMixin:
         # Contributor credit (archival/org repos only): curate CONTRIBUTORS.json and stage it into the
         # working tree so prepareReleaseSnapshot's `git add --all` commits it in the release commit
         # (the shared-file invariant — all shared files change only at release; org-design Sec.9.6).
-        if self._isArchivalRepo(nameWithOwner):
+        if isOrganizational:
             if not self._curateContributorsForRelease(nameWithOwner):
                 return
 
@@ -773,13 +783,9 @@ class ReleaseTabMixin:
             slicer.util.showStatusMessage(f"Posted announcement to {ni} issues and {np} PRs.")
         self.updateAnnouncementState(nameWithOwner)  # reflect the just-posted announcement
 
-    def onBuildColorTableRelease(self):
-        """Open the term-lookup tool for the New Release form and load the result."""
-        from MorphoDepotLib.widget_termlookup import openTermLookupDialog
-
-        # Read species and subject type from the committed MorphoDepotAccession.json.
-        species = ""
-        nonBio = False
+    def _releaseSpecimen(self):
+        """(species, nonBiological) from the loaded repo's committed MorphoDepotAccession.json;
+        ("", False) when it can't be read or the subject type is unanswered."""
         try:
             if self.logic and self.logic.localRepo:
                 accPath = os.path.join(self.logic.localRepo.working_dir, "MorphoDepotAccession.json")
@@ -787,32 +793,22 @@ class ReleaseTabMixin:
                     with open(accPath) as fh:
                         accData = json.load(fh)
                     subjectType = (accData.get("subjectType") or ["", ""])[1] or ""
-                    isBio = "biological specimen" in subjectType.lower()
-                    if isBio:
-                        species = (accData.get("species") or ["", ""])[1] or ""
-                    elif subjectType:
-                        nonBio = True
+                    if "biological specimen" in subjectType.lower():
+                        return (accData.get("species") or ["", ""])[1] or "", False
+                    if subjectType:
+                        return "", True
         except Exception as e:
             logging.warning(f"Could not read MorphoDepotAccession.json for term-lookup: {e}")
+        return "", False
 
-        # Terms from selected baseline, else from current color table.
-        terms = []
-        seg = self.releaseUI.newBaselineSelector.currentNode()
-        if seg:
-            try:
-                segObj = seg.GetSegmentation()
-                terms = [segObj.GetNthSegment(i).GetName()
-                         for i in range(segObj.GetNumberOfSegments())]
-            except Exception:
-                pass
-        if not terms:
-            color = self.releaseUI.newColorSelector.currentNode()
-            if color:
-                try:
-                    terms = [color.GetColorName(i)
-                             for i in range(1, color.GetNumberOfColors())]
-                except Exception:
-                    pass
+    def onBuildColorTableRelease(self):
+        """Open the term-lookup tool for the New Release form and load the result."""
+        from MorphoDepotLib.widget_termlookup import openTermLookupDialog
+
+        species, nonBio = self._releaseSpecimen()
+        # Names from the selected baseline, else from the current color table (never a built-in one).
+        terms = self._termLookupNames(self.releaseUI.newBaselineSelector.currentNode(),
+                                      self.releaseUI.newColorSelector.currentNode())
 
         # Suggest a name from the current color table (if any).
         tableNameSuggestion = ""

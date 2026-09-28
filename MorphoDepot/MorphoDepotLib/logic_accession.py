@@ -289,6 +289,8 @@ jobs:
 
         The provenance file is **optional**: this helper never raises and nothing
         in the extension requires the file to be present.
+
+        Returns the file name it wrote (relative to *repoDir*), or None.
         """
         # Clean up any stale provenance files first (there should be at most one,
         # but glob defensively in case of manual edits).
@@ -304,13 +306,15 @@ jobs:
         except Exception:
             raw = None
         if not raw:
-            return
-        provPath = os.path.join(repoDir, f"{colorTableName}.terminology_provenance.json")
+            return None
+        provName = f"{colorTableName}.terminology_provenance.json"
         try:
-            with open(provPath, "w", encoding="utf-8") as fh:
+            with open(os.path.join(repoDir, provName), "w", encoding="utf-8") as fh:
                 fh.write(raw)
         except Exception as e:
             logging.warning(f"Could not write terminology provenance file: {e}")
+            return None
+        return provName
 
     def _stageRepoFiles(self, repoDir, sourceVolume, colorTable, accessionData, sourceSegmentation=None, screenshots=None, useOrg=False, targetOwner=None, enableAutoAssign=False):
         """Build the repository content on disk: save every file (including the CURATOR
@@ -360,7 +364,10 @@ jobs:
         colorTableName = colorTable.GetName()
         slicer.util.saveNode(colorTable, os.path.join(repoDir, colorTableName) + ".csv")
         repoFileNames.append(f"{colorTableName}.csv")
-        self._writeColorTableProvenance(repoDir, colorTableName, colorTable)
+        # The initial commit adds only the files listed here, so list the provenance file too.
+        provenanceName = self._writeColorTableProvenance(repoDir, colorTableName, colorTable)
+        if provenanceName:
+            repoFileNames.append(provenanceName)
 
         # Resolve the accessioned-specimen record (best-effort) so the derived provenance fields
         # land in MorphoDepotAccession.json and the README.  Never blocks staging.

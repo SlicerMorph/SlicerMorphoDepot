@@ -552,26 +552,12 @@ class CreateTabMixin:
         """Return segment/color names to pre-populate the term-lookup tool.
 
         Priority: baseline segment names (checkbox ticked + baseline selected),
-        then existing color table names, then empty (user types in the page).
+        then existing color table names (never Slicer's built-in tables), then
+        empty (user types in the page).
         """
         checkBox = getattr(self.createUI, "includeBaselineCheckBox", None)
-        if checkBox and checkBox.checked:
-            seg = self.createUI.segmentationSelector.currentNode()
-            if seg:
-                try:
-                    segObj = seg.GetSegmentation()
-                    return [segObj.GetNthSegment(i).GetName()
-                            for i in range(segObj.GetNumberOfSegments())]
-                except Exception:
-                    pass
-        color = self.createUI.colorSelector.currentNode()
-        if color:
-            try:
-                return [color.GetColorName(i)
-                        for i in range(1, color.GetNumberOfColors())]
-            except Exception:
-                pass
-        return []
+        seg = self.createUI.segmentationSelector.currentNode() if checkBox and checkBox.checked else None
+        return self._termLookupNames(seg, self.createUI.colorSelector.currentNode())
 
     def onBuildColorTable(self):
         """Open the term-lookup tool for the Create tab and load the result."""
@@ -701,27 +687,6 @@ class CreateTabMixin:
         email = self.createUI.goLiveEmail.text.strip()
         self.createUI.publishButton.enabled = bool(re.match(emailRegex, email))
 
-    def _isDefaultSlicerColorTable(self, colorNode):
-        """True if colorNode is a built-in/default Slicer color table rather than a real terminology
-        table.  Two cases: a procedural built-in (Labels/Grey/Rainbow/...), which the shared
-        _colorTableNotTerminology already detects by source type ('UserDefined'/'File' are the real
-        terminology types); or one of Slicer's shipped file-loaded color tables (GenericColors,
-        GenericAnatomyColors, the colormaps, brain atlases, ...), which report Type 'File' like a user
-        table and so are matched by name (UI #3a)."""
-        if self._colorTableNotTerminology(colorNode):
-            return True
-        shippedDefaults = {
-            "GenericColors", "GenericAnatomyColors", "AbdomenColors", "PelvisColor",
-            "64Color-Nonsemantic", "Slicer3_2010_Brain_Labels", "Slicer3_2010_Label_Colors",
-            "SPL-BrainAtlas-ColorFile", "SPL-BrainAtlas-2009-ColorFile", "SPL-BrainAtlas-2012-ColorFile",
-            "Cividis", "Inferno", "Magma", "Plasma", "Viridis", "ColdToHotRainbow", "HotToColdRainbow",
-            "DivergingBlueRed", "DarkBrightChartColors", "LightPaleChartColors", "MediumChartColors",
-        }
-        try:
-            return colorNode.GetName() in shippedDefaults  # shipped file-loaded default
-        except Exception:
-            return False
-
     def _collectAccessionInputs(self):
         """Validate the Create-tab selections and assemble accessionData.
 
@@ -809,6 +774,18 @@ class CreateTabMixin:
                         colorTable.SetTerminology(colorIndex, "SCT", "85756007", "Tissue", "SCT", "85756007", "Tissue")
                 else:
                     return None
+
+        # #238: a table built with the term lookup should match the specimen now described (warn),
+        # and a baseline must agree with the color table (block Organizational, warn Personal).
+        isOrganizational = accessionData["repoType"][1] == "Archival (intended for long-term maintenance)"
+        isBiological = accessionData.get("subjectType", ["", ""])[1] == "Biological specimen"
+        if not self._confirmColorTableSpecies(
+                colorTable, accessionData.get("species", ["", ""])[1] if isBiological else "",
+                nonBiological=not isBiological):
+            return None
+        if sourceSegmentation is not None and not self._confirmBaselineMatchesColorTable(
+                sourceSegmentation, colorTable, organizational=isOrganizational, action="staged"):
+            return None
 
         return sourceVolume, colorTable, sourceSegmentation, accessionData
 
