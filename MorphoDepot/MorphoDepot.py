@@ -403,8 +403,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
 
         formLayout = self.createUI.inputsCollapsibleButton.layout()
         formLayout.addRow("Source volume:", self.createUI.inputSelector)
-        formLayout.addRow("Color table:", self.createUI.colorSelector)
-        formLayout.addRow("Baseline segmentation:", self.createUI.segmentationSelector)
+        # Color table and baseline segmentation are in the Segmentation section (added below)
 
         self.createUI.accessionLayout = qt.QVBoxLayout()
         self.createUI.accessionCollapsibleButton.setLayout(self.createUI.accessionLayout)
@@ -495,6 +494,47 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.createUI.createSectionHeader.setAlignment(qt.Qt.AlignCenter)
         self.createUI.verticalLayout.insertWidget(1, self.createUI.createSectionHeader)
         self.createUI.verticalLayout.insertWidget(1, self.createUI.createSectionDivider)
+
+        # === Segmentation section (after Accession Form, before Create button) ===
+        # Color table is required for every repo; baseline is optional, gated by a checkbox.
+        self.createUI.segmentationCollapsibleButton = ctk.ctkCollapsibleButton()
+        self.createUI.segmentationCollapsibleButton.text = "Segmentation"
+        self.createUI.segmentationCollapsibleButton.collapsed = False
+        segSectionLayout = qt.QVBoxLayout(self.createUI.segmentationCollapsibleButton)
+
+        # Checkbox to include a baseline segmentation
+        self.createUI.includeBaselineCheckBox = qt.QCheckBox("Include a baseline segmentation")
+        self.createUI.includeBaselineCheckBox.checked = False
+        segSectionLayout.addWidget(self.createUI.includeBaselineCheckBox)
+
+        # Baseline selector row — only shown when the checkbox is ticked
+        self.createUI.baselineSelectorRow = qt.QWidget()
+        baselineRowLayout = qt.QFormLayout(self.createUI.baselineSelectorRow)
+        baselineRowLayout.setContentsMargins(16, 0, 0, 0)
+        baselineRowLayout.addRow("Baseline segmentation:", self.createUI.segmentationSelector)
+        self.createUI.baselineSelectorRow.visible = False
+        segSectionLayout.addWidget(self.createUI.baselineSelectorRow)
+
+        # Color table row with "Build color table…" button — always visible
+        colorRowWidget = qt.QWidget()
+        colorRowLayout = qt.QHBoxLayout(colorRowWidget)
+        colorRowLayout.setContentsMargins(0, 0, 0, 0)
+        colorRowLayout.addWidget(self.createUI.colorSelector, 1)
+        self.createUI.buildColorTableButton = qt.QPushButton("Build color table…")
+        self.createUI.buildColorTableButton.enabled = False
+        self.createUI.buildColorTableButton.toolTip = (
+            "Opens the MorphoDepot term-lookup tool to build a terminology-based "
+            "color table for this specimen and load it straight into the scene. "
+            "Fill in the Accession Form's subject type (and species for biological "
+            "specimens) first.")
+        colorRowLayout.addWidget(self.createUI.buildColorTableButton)
+        colorFormLayout = qt.QFormLayout()
+        colorFormLayout.addRow("Color table:", colorRowWidget)
+        segSectionLayout.addLayout(colorFormLayout)
+
+        # Insert the Segmentation section between the Accession Form and the Create button
+        segInsertIdx = self.createUI.verticalLayout.indexOf(self.createUI.createRepository)
+        self.createUI.verticalLayout.insertWidget(segInsertIdx, self.createUI.segmentationCollapsibleButton)
 
         # REGION 2 action: "Update Repository (staged)" sits beside the form's "Create (stage
         # privately)" button (shown only when editing a reopened repo).  Both are form actions
@@ -632,7 +672,16 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.releaseUI.newColorSelector.setMRMLScene(slicer.mrmlScene)
         self.releaseUI.newColorSelector.noneDisplay = "Select a color table (required)"
         self.releaseUI.newColorSelector.setCurrentNode(None)
-        self.releaseUI.newReleaseFormLayout.addRow("Color table:", self.releaseUI.newColorSelector)
+        releaseColorRowWidget = qt.QWidget()
+        releaseColorRowLayout = qt.QHBoxLayout(releaseColorRowWidget)
+        releaseColorRowLayout.setContentsMargins(0, 0, 0, 0)
+        releaseColorRowLayout.addWidget(self.releaseUI.newColorSelector, 1)
+        self.releaseUI.buildColorTableButton = qt.QPushButton("Build color table…")
+        self.releaseUI.buildColorTableButton.toolTip = (
+            "Opens the MorphoDepot term-lookup tool to build a terminology-based "
+            "color table and load it straight into the scene.")
+        releaseColorRowLayout.addWidget(self.releaseUI.buildColorTableButton)
+        self.releaseUI.newReleaseFormLayout.addRow("Color table:", releaseColorRowWidget)
 
         releaseScreenshotButtonsLayout = qt.QHBoxLayout()
         self.releaseUI.takeScreenshotButton = qt.QPushButton("Take Screenshot")
@@ -722,6 +771,8 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.configureUI.userEmailLineEdit.textChanged.connect(self.onUserEmailChanged)
         self.configureUI.ghPath.comboBox().connect("currentTextChanged(QString)", self.onGhPathChanged)
         self.configureUI.reloadButton.clicked.connect(self.onReload)
+        self.createUI.includeBaselineCheckBox.stateChanged.connect(self._onIncludeBaselineChanged)
+        self.createUI.buildColorTableButton.clicked.connect(self.onBuildColorTable)
         self.createUI.createRepository.clicked.connect(self.onCreateRepository)
         self.createUI.saveEditsButton.clicked.connect(self.onSaveEdits)
         self.createUI.publishButton.clicked.connect(self.onPublish)
@@ -755,6 +806,7 @@ class MorphoDepotWidget(ScriptedLoadableModuleWidget, VTKObservationMixin, Enabl
         self.releaseUI.announceButton.clicked.connect(self.onAnnounceUpcomingRelease)
         self.releaseUI.newBaselineSelector.connect("currentNodeChanged(vtkMRMLNode*)", lambda _: self.updateMakeReleaseEnabled())
         self.releaseUI.newColorSelector.connect("currentNodeChanged(vtkMRMLNode*)", lambda _: self.updateMakeReleaseEnabled())
+        self.releaseUI.buildColorTableButton.clicked.connect(self.onBuildColorTableRelease)
         self.releaseUI.takeScreenshotButton.clicked.connect(self.onTakeScreenshot)
         self.releaseUI.reviewScreenshotsButton.clicked.connect(self.onReviewScreenshots)
         self.searchUI.resultsTable.doubleClicked.connect(self.onSearchResultsDoubleClicked)

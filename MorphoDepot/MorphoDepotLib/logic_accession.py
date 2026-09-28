@@ -279,6 +279,43 @@ jobs:
             }
 """
 
+    def _writeColorTableProvenance(self, repoDir, colorTableName, colorNode):
+        """Write (or clean up) the terminology provenance side-car for a color table.
+
+        Removes all ``*.terminology_provenance.json`` files in *repoDir*, then
+        writes ``{colorTableName}.terminology_provenance.json`` when the color
+        node carries a ``MorphoDepot.terminologyProvenanceJson`` attribute (set by
+        the term-lookup dialog after a successful import).
+
+        The provenance file is **optional**: this helper never raises and nothing
+        in the extension requires the file to be present.
+
+        Returns the file name it wrote (relative to *repoDir*), or None.
+        """
+        # Clean up any stale provenance files first (there should be at most one,
+        # but glob defensively in case of manual edits).
+        for f in os.listdir(repoDir):
+            if f.endswith(".terminology_provenance.json"):
+                try:
+                    os.remove(os.path.join(repoDir, f))
+                except Exception:
+                    pass
+        # Write the new provenance file if the node carries one.
+        try:
+            raw = colorNode.GetAttribute("MorphoDepot.terminologyProvenanceJson") if colorNode else None
+        except Exception:
+            raw = None
+        if not raw:
+            return None
+        provName = f"{colorTableName}.terminology_provenance.json"
+        try:
+            with open(os.path.join(repoDir, provName), "w", encoding="utf-8") as fh:
+                fh.write(raw)
+        except Exception as e:
+            logging.warning(f"Could not write terminology provenance file: {e}")
+            return None
+        return provName
+
     def _stageRepoFiles(self, repoDir, sourceVolume, colorTable, accessionData, sourceSegmentation=None, screenshots=None, useOrg=False, targetOwner=None, enableAutoAssign=False):
         """Build the repository content on disk: save every file (including the CURATOR
         file), `git init`, and make the initial commit.  No GitHub interaction beyond the
@@ -327,6 +364,10 @@ jobs:
         colorTableName = colorTable.GetName()
         slicer.util.saveNode(colorTable, os.path.join(repoDir, colorTableName) + ".csv")
         repoFileNames.append(f"{colorTableName}.csv")
+        # The initial commit adds only the files listed here, so list the provenance file too.
+        provenanceName = self._writeColorTableProvenance(repoDir, colorTableName, colorTable)
+        if provenanceName:
+            repoFileNames.append(provenanceName)
 
         # Resolve the accessioned-specimen record (best-effort) so the derived provenance fields
         # land in MorphoDepotAccession.json and the README.  Never blocks staging.
@@ -1105,9 +1146,10 @@ jobs:
         # Replace the color table only if a new one was supplied (else keep the committed CSV).
         if colorTable is not None:
             for existing in os.listdir(repoDir):
-                if existing.endswith(".csv"):
+                if existing.endswith(".csv") or existing.endswith(".terminology_provenance.json"):
                     os.remove(os.path.join(repoDir, existing))
             slicer.util.saveNode(colorTable, os.path.join(repoDir, colorTable.GetName()) + ".csv")
+            self._writeColorTableProvenance(repoDir, colorTable.GetName(), colorTable)
 
         # Replace the baseline segmentation only if a new one was supplied.
         if sourceSegmentation is not None:
