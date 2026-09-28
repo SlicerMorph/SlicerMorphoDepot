@@ -118,6 +118,24 @@ nonBioQuery = urllib.parse.parse_qs(urllib.parse.urlparse(
     termlookup.buildTermLookupUrl(species="ignored", nonBio=True)).query)
 check("non-biological sends nonbio=1 and no species", nonBioQuery.get("nonbio") == ["1"] and "species" not in nonBioQuery)
 
+print("reading the page's answer")
+X = termlookup._EXPORT_JS
+check("the widget's own evalJS (webkitHidden) is ignored", termlookup.readExportResult("document.webkitHidden = false", "false") == (False, None))
+ours, data = termlookup.readExportResult(X, '{"ready": true, "name": "t"}')
+check("our request + export JSON -> accepted", ours and data == {"ready": True, "name": "t"})
+check("our request + unreadable answer -> ours, no data", termlookup.readExportResult(X, "") == (True, None))
+check("our request + non-object answer -> ours, no data", termlookup.readExportResult(X, "false") == (True, None))
+ours, data = termlookup.readExportResult(None, '{"ready": false, "reason": "x"}')
+check("signal without js: export-shaped answer is accepted", ours and data["reason"] == "x")
+check("signal without js: anything else is ignored silently", termlookup.readExportResult(None, "false") == (False, None))
+
+print("table name from the page")
+check("a valid name is kept", termlookup.safeTableName("Mus_musculus-brain.v2") == "Mus_musculus-brain.v2")
+check("path separators cannot escape the folder", "/" not in termlookup.safeTableName("../../etc/passwd"))
+check("dots-only falls back to the default", termlookup.safeTableName("..") == "terminology_color_table")
+check("spaces are replaced", termlookup.safeTableName("mouse brain") == "mouse_brain")
+check("empty falls back to the default", termlookup.safeTableName("") == "terminology_color_table")
+
 print("names sent to the page")
 baseline = FakeSegmentation("baseline", [FakeSegment("atrium"), FakeSegment(" Atrium "), FakeSegment(""),
                                          FakeSegment("skull")])

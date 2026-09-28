@@ -10,6 +10,7 @@ the running build, and explains the manual-load path.
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import urllib.parse
@@ -33,6 +34,40 @@ _EXPORT_JS = ("JSON.stringify(typeof window.TermLookupExport === 'function'"
 PROVENANCE_ATTRIBUTE = "MorphoDepot.terminologyProvenanceJson"
 SPECIES_ATTRIBUTE = "MorphoDepot.terminologySpecies"
 NON_BIOLOGICAL = "(non-biological)"
+
+# Same rule the Create tab applies to color table names (GitHub asset-safe).
+_VALID_TABLE_NAME = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$")
+_DEFAULT_TABLE_NAME = "terminology_color_table"
+
+
+def safeTableName(name):
+    """The page validates the name, but it also becomes a file name here, so never trust it: keep a
+    valid name as is, otherwise replace anything outside letters/digits/._- and trim the ends."""
+    name = (name or "").strip()
+    if _VALID_TABLE_NAME.match(name):
+        return name
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", name).strip("._-")
+    return cleaned if _VALID_TABLE_NAME.match(cleaned) else _DEFAULT_TABLE_NAME
+
+
+def readExportResult(js, result):
+    """Classify one evalResult from the web widget.  Returns (ours, data):
+    ours False -> not an answer to our request; ignore it silently.
+    ours True, data None -> our request, but the answer could not be read.
+    ours True, data dict -> the page's TermLookupExport() result.
+    `js` is the expression that produced the result.  qSlicerWebWidget evaluates expressions of its
+    own (document.webkitHidden on show/hide) and reports them through the same signal, so anything
+    else is ignored.  Builds whose signal does not carry `js` pass None: then only a result shaped
+    like our export ({"ready": ...}) is accepted."""
+    if js is not None and js != _EXPORT_JS:
+        return False, None
+    try:
+        data = json.loads(result)
+    except Exception:
+        data = None
+    if isinstance(data, dict) and "ready" in data:
+        return True, data
+    return (js is not None), None
 
 
 def _baseUrl():
@@ -160,14 +195,11 @@ def _runEmbeddedDialog(parent, url):
     resultHolder = {"node": None}
 
     def _onEvalResult(js, result):
-        if js != _EXPORT_JS:
+        ours, data = readExportResult(js, result)
+        if not ours:
             return  # the widget's own evalJS calls (e.g. document.webkitHidden), not our request
-        try:
-            data = json.loads(result)
-            if not isinstance(data, dict):
-                raise ValueError(f"expected an object, got {type(data).__name__}")
-        except Exception as exc:
-            logging.warning(f"TermLookupExport: unreadable result ({exc}); raw={result!r}")
+        if data is None:
+            logging.warning(f"TermLookupExport: unreadable result; raw={result!r}")
             slicer.util.warningDisplay(
                 _("Could not read the color table from the page. Please try again."),
                 windowTitle=_("Build color table"))
@@ -180,7 +212,7 @@ def _runEmbeddedDialog(parent, url):
                 windowTitle=_("Build color table"))
             return
         csvContent = data.get("csv") or ""
-        tableName = (data.get("name") or "terminology_color_table").strip()
+        tableName = safeTableName(data.get("name"))
         provenanceJson = data.get("provenance")
         builtFor = NON_BIOLOGICAL if data.get("nonBiological") else (data.get("species") or "")
 
@@ -230,15 +262,29 @@ def _runEmbeddedDialog(parent, url):
     except Exception:
         try:
             webWidget.connect("evalResult(QString)",
-                              lambda r: _onEvalResult("", r))
+                              lambda r: _onEvalResult(None, r))  # no js: accept only export-shaped results
         except Exception as exc:
             logging.warning(f"Could not connect evalResult signal: {exc}")
 
     useButton.clicked.connect(_onUseClicked)
 
+    # Enable "Use in Slicer" once the page has loaded.  A failed load before that (e.g. no network)
+    # keeps it disabled and says so.  Later failures are ignored: a link handed to the system browser
+    # ("View in OLS") is a cancelled navigation that can also report loadFinished(False).
+    pageLoaded = {"ok": False}
+
+    def _onLoadFinished(ok):
+        if ok:
+            pageLoaded["ok"] = True
+            useButton.enabled = True
+            hintLabel.text = _("Review the terms, then click <b>Use in Slicer</b> to load the table.")
+        elif not pageLoaded["ok"]:
+            useButton.enabled = False
+            hintLabel.text = _("The term-lookup page did not load. Check your internet connection, "
+                               "then close this window and try again.")
+
     try:
-        webWidget.connect("loadFinished(bool)",
-                          lambda ok: setattr(useButton, "enabled", True))
+        webWidget.connect("loadFinished(bool)", _onLoadFinished)
     except Exception:
         useButton.enabled = True  # can't detect load — enable immediately
 
