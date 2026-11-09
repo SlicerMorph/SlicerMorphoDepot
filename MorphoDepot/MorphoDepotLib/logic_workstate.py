@@ -15,7 +15,9 @@ cannot go stale, because there is nothing between them and GitHub.
 
 Measured cost, 2026-08-07 (limits: REST 5,000/hour, GraphQL 5,000 points/hour):
 
-    assigned issues          1 REST call, both tiers, topics inline
+    assigned issues          1 REST call + 1 GraphQL search, both tiers, topics inline
+                             (the search was added 2026-11-09: the REST call alone misses
+                             repos the segmenter can only read -- see assignedIssues)
     my open PRs              1 GraphQL request, 2 points
     repos I curate           1 GraphQL request per 100 owned repos, 1 point each
     PRs in those repos       1 GraphQL request per 50 repos, ~2 points
@@ -133,14 +135,104 @@ class WorkStateMixin:
     def assignedIssues(self):
         """Open issues assigned to the active user on MorphoDepot repos, newest GitHub state.
 
-        `GET /issues?filter=assigned` is a real-time REST endpoint -- not backed by the search
-        index that lags for freshly created repos -- and it answers for both tiers in one call:
-        personal repos and MorphoDepot-org repos come back together, with no tier distinction
-        anywhere in this method.
+        The MorphoDepot workflow requires NO access to the dataset repo: a segmenter is assigned
+        an issue on a public repo they have only read access to, and the extension forks it and
+        brings them the data.  Every issue assigned to the user must therefore be found whether
+        or not they are a member, collaborator, or on a team with access to the repo.
 
-        The response carries `repository.topics` inline, so the MorphoDepot filter costs no extra
-        request.  Filtering on the topic (rather than on the journal's repo list) is what keeps a
-        repo published minutes ago from being invisible here.
+        No single GitHub query does both of the things this list needs, so two always run and
+        their results merge (no tier branch anywhere):
+
+          * `GET /issues?filter=assigned` -- real time, so a repo published minutes ago lists
+            immediately.  But it only covers repos the user has an access relationship to
+            (owner, collaborator, team, org base permission).  It silently omits an issue on a
+            public repo the user can merely read -- the normal segmenter case.  Verified live
+            2026-11-09: amm554, assigned MorphoDepot/DeepTrenchA#5 with public read only, got 0
+            results here.
+          * GraphQL `search` for `is:issue is:open assignee:@me` -- covers every repo the user can
+            see, including read-only public ones, but is backed by the search index, which can
+            lag for a freshly created repo.
+
+        Both carry the repo's topics inline, so the MorphoDepot filter costs no extra request.
+        Filtering on the topic (rather than on the journal's repo list) is what keeps a repo
+        published minutes ago from being invisible here.
+
+        A failure of either query raises: a list missing one source's issues would look exactly
+        like "you have no more work", which is the failure this module exists to prevent.
+        """
+        issues = []
+        seen = set()
+        for issue in self._assignedIssuesRest() + self._assignedIssuesSearch():
+            key = (issue["repository"]["nameWithOwner"].lower(), issue["number"])
+            if key in seen:
+                continue
+            seen.add(key)
+            issues.append(issue)
+        return issues
+
+    def _issueRecord(self, number, title, url, nameWithOwner):
+        """The dict shape the Annotate tab consumes."""
+        return {
+            "number": number,
+            "title": title,
+            "url": url,
+            "repository": {"name": nameWithOwner.split("/")[-1],
+                           "nameWithOwner": nameWithOwner},
+        }
+
+    def _assignedIssuesSearch(self):
+        """Assigned open issues from the search index, which includes read-only public repos.
+
+        `type: ISSUE_ADVANCED` is GitHub's current issue search (the legacy `ISSUE` type is being
+        retired); `is:issue` keeps pull requests out.
+        """
+        query = """
+          query($q: String!, $cursor: String) {
+            search(type: ISSUE_ADVANCED, query: $q, first: %d, after: $cursor) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                ... on Issue {
+                  number title url
+                  repository {
+                    nameWithOwner
+                    repositoryTopics(first: 20) { nodes { topic { name } } }
+                  }
+                }
+              }
+            }
+          }
+        """ % _PAGE
+        nodes = []
+        cursor = None
+        for _ in range(_MAX_PAGES):
+            data = self._graphql(query, q="is:issue is:open assignee:@me archived:false",
+                                 cursor=cursor)
+            connection = data.get("search") or {}
+            nodes.extend(connection.get("nodes") or [])
+            pageInfo = connection.get("pageInfo") or {}
+            if not pageInfo.get("hasNextPage"):
+                break
+            cursor = pageInfo.get("endCursor")
+        else:
+            logging.warning(
+                f"Stopped after {_MAX_PAGES} pages of your assigned issues ({len(nodes)} "
+                "fetched); the list shown is incomplete.")
+        issues = []
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            repository = node.get("repository") or {}
+            if not self._hasMorphoTopic(repository):
+                continue
+            nameWithOwner = repository.get("nameWithOwner") or ""
+            if not nameWithOwner or node.get("number") is None:
+                continue
+            issues.append(self._issueRecord(node["number"], node.get("title", ""),
+                                            node.get("url", ""), nameWithOwner))
+        return issues
+
+    def _assignedIssuesRest(self):
+        """Assigned open issues from `GET /issues`: real time, but only repos the user has access to.
 
         The endpoint returns pull requests alongside issues; those carry a `pull_request` key and
         are dropped, since the Annotate tab lists work to start, not work already submitted.
@@ -162,13 +254,8 @@ class WorkStateMixin:
                 # builds the branch name and the fork checkout from it.  Skip rather than emit an
                 # entry that would fail later, and rather than KeyError out of the whole list.
                 continue
-            issues.append({
-                "number": entry["number"],
-                "title": entry.get("title", ""),
-                "url": entry.get("html_url", ""),
-                "repository": {"name": nameWithOwner.split("/")[-1],
-                               "nameWithOwner": nameWithOwner},
-            })
+            issues.append(self._issueRecord(entry["number"], entry.get("title", ""),
+                                            entry.get("html_url", ""), nameWithOwner))
         return issues
 
     def authoredPullRequests(self):
