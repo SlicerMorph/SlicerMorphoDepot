@@ -73,9 +73,10 @@ is still private. No automated job deletes repositories.
 
 ### R7. Words people read
 
-The only two words for repository kinds are **Organizational** and **Personal**. Use them in all
-new or changed text people read (dialogs, labels, tooltips, messages, docs). Older text that
-still uses other words is not to be renamed as a side task; that is the maintainer's call.
+The only two words for repository kinds are **Organizational** and **Personal**. Use them in any
+text you write that people read (dialogs, labels, tooltips, messages, docs). Existing text that
+still uses other words is not renamed just because you are editing the same file; that is the
+maintainer's call.
 
 The hidden `repoType` answer strings in `accession_schema.py` must **not** be renamed. They are
 stored in every `MorphoDepotAccession.json`, and `widget_create.py` depends on them exactly: it
