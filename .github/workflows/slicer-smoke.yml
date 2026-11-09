@@ -46,6 +46,9 @@ jobs:
       - name: Unit test tool discovery
         if: runner.os != 'Windows'
         run: python MorphoDepot/Testing/Python/test_tool_discovery.py
+      - name: Unit test term-lookup checks
+        if: runner.os != 'Windows'
+        run: python MorphoDepot/Testing/Python/test_termlookup.py
 
       # ---------------------------------------------------------------- Linux
       - name: Install Slicer (Linux)

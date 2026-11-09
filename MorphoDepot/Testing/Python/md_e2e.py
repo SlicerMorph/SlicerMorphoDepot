@@ -17,10 +17,12 @@ def _rm(name):
         slicer.mrmlScene.RemoveNode(n)
 
 
-def makeBaseline(name, nsegs, vol=None):
+def makeBaseline(name, nsegs, vol=None, colorNode=None):
     """A segmentation in the source-volume geometry with `nsegs` disjoint labeled blocks (so it has
     real segments + voxels). Used as the create baseline and, with a different nsegs + the loaded
-    repo's volume, as the changed release baseline (M6 keys on segment count)."""
+    repo's volume, as the changed release baseline (M6 keys on segment count).  With `colorNode`,
+    segment i takes the name and term of color entry i+1 -- what a user does in the Segment Editor --
+    so the baseline passes the #238 baseline/color-table agreement check."""
     import vtk
     _rm(name)
     if vol is None:
@@ -43,6 +45,13 @@ def makeBaseline(name, nsegs, vol=None):
     seg.SetReferenceImageGeometryParameterFromVolumeNode(vol)
     slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(labelVol, seg)
     slicer.mrmlScene.RemoveNode(labelVol)
+    if colorNode is not None:
+        segmentation = seg.GetSegmentation()
+        for i in range(segmentation.GetNumberOfSegments()):
+            segment = segmentation.GetNthSegment(i)
+            segment.SetName(colorNode.GetColorName(i + 1))
+            segment.SetTag(slicer.vtkSegment.GetTerminologyEntryTagName(),
+                           colorNode.GetTerminologyAsString(i + 1))
     return seg
 
 
@@ -58,14 +67,17 @@ def setupCreateFixtures(baselineSegs=0):
 
     ct = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLColorTableNode", E2E_COLOR)
     ct.SetTypeToUser()
-    ct.SetNumberOfColors(3)
+    # One entry per possible baseline segment (the 20^3 volume fits at most 4), so create and
+    # release baselines can match the table (#238 agreement check).
+    structures = [("StructureA", 1.0, 0.0, 0.0), ("StructureB", 0.0, 1.0, 0.0),
+                  ("StructureC", 0.0, 0.0, 1.0), ("StructureD", 1.0, 1.0, 0.0)]
+    ct.SetNumberOfColors(len(structures) + 1)
     ct.SetColor(0, "Background", 0.0, 0.0, 0.0, 0.0)
-    ct.SetColor(1, "StructureA", 1.0, 0.0, 0.0, 1.0)
-    ct.SetTerminology(1, "SCT", "85756007", "Tissue", "SCT", "85756007", "Tissue")
-    ct.SetColor(2, "StructureB", 0.0, 1.0, 0.0, 1.0)
-    ct.SetTerminology(2, "SCT", "85756007", "Tissue", "SCT", "85756007", "Tissue")
+    for i, (label, r, g, b) in enumerate(structures, start=1):
+        ct.SetColor(i, label, r, g, b, 1.0)
+        ct.SetTerminology(i, "SCT", "85756007", "Tissue", "SCT", "85756007", "Tissue")
 
-    seg = makeBaseline("mdteste2ebaseline", baselineSegs) if baselineSegs else None
+    seg = makeBaseline("mdteste2ebaseline", baselineSegs, colorNode=ct) if baselineSegs else None
     H.goTab("Create")
     H.w.createUI.inputSelector.setCurrentNode(vol)
     H.w.createUI.colorSelector.setCurrentNode(ct)
@@ -161,7 +173,8 @@ def e2eChangedBaseline(nsegs):
         vol = vols[0] if vols else None
     if vol is None:
         return {"error": "no loaded source volume found for the release baseline"}
-    seg = makeBaseline("mdteste2e-newbaseline", nsegs, vol=vol)
+    seg = makeBaseline("mdteste2e-newbaseline", nsegs, vol=vol,
+                       colorNode=H.w.releaseUI.newColorSelector.currentNode())
     H.w.releaseUI.newBaselineSelector.setCurrentNode(seg)
     slicer.app.processEvents()
     return {"newBaselineSegs": seg.GetSegmentation().GetNumberOfSegments(),
