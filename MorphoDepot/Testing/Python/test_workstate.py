@@ -50,12 +50,17 @@ class FakeLogic(workstate.WorkStateMixin):
     was actually asked of GitHub, not only on what came back.
     """
 
-    def __init__(self, restResponse=None, graphqlPages=None, curated=None, curatedError=None):
+    def __init__(self, restResponse=None, graphqlPages=None, curated=None, curatedError=None,
+                 searchPages=None):
         self.restResponse = restResponse if restResponse is not None else []
         self.graphqlPages = list(graphqlPages or [])
+        # Assigned-issue search pages, kept apart from graphqlPages so the existing PR/repo tests
+        # do not have to account for it.  No pages recorded means an empty search result.
+        self.searchPages = list(searchPages or [])
         self.curated = curated or []
         self.curatedError = curatedError
         self.queries = []
+        self.searchCommands = []
         self.restCommands = []
 
     def ghJSON(self, command):
@@ -65,6 +70,11 @@ class FakeLogic(workstate.WorkStateMixin):
     def gh(self, command):
         query = next(part[len("query="):] for part in command if part.startswith("query="))
         self.queries.append(query)
+        if "search(" in query:
+            self.searchCommands.append(command)
+            if not self.searchPages:
+                return json.dumps(_searchPage([]))
+            return json.dumps(self.searchPages.pop(0))
         if not self.graphqlPages:
             raise AssertionError("more GraphQL calls than recorded pages")
         return json.dumps(self.graphqlPages.pop(0))
@@ -104,6 +114,17 @@ def repoNode(nameWithOwner, topics):
 
 
 MD = ["md-rana-clamitans", "morphodepot"]
+
+
+def searchIssue(number, title, nameWithOwner, topics):
+    return {"number": number, "title": title,
+            "url": f"https://github.com/{nameWithOwner}/issues/{number}",
+            "repository": repoNode(nameWithOwner, topics)}
+
+
+def _searchPage(nodes, hasNext=False, cursor=None):
+    return {"data": {"search": {
+        "pageInfo": {"hasNextPage": hasNext, "endCursor": cursor}, "nodes": nodes}}}
 
 
 # --- assigned issues (Annotate) ----------------------------------------------------------
@@ -198,6 +219,76 @@ def test_an_entry_with_no_number_is_skipped_not_fatal():
     ])
     check("the numberless entry is skipped and the rest survive",
           [i["number"] for i in logic.issueList()] == [3])
+
+
+def test_an_issue_on_a_read_only_repo_is_listed():
+    """THE core MorphoDepot case: the segmenter has no access to the repo beyond public read.
+
+    `GET /issues?filter=assigned` omits such an issue entirely (verified live 2026-11-09:
+    amm554 assigned MorphoDepot/DeepTrenchA#5, org base permission none, not on any team with
+    access -> 0 results).  The search half must supply it.
+    """
+    logic = FakeLogic(restResponse=[], searchPages=[_searchPage([
+        searchIssue(5, "murat test", "MorphoDepot/DeepTrenchA",
+                    ["md-oncorhynchus-rastrosus", "morphodepot"])])])
+    issues = logic.issueList()
+    check("read-only-repo issue is listed",
+          [(i["repository"]["nameWithOwner"], i["number"]) for i in issues]
+          == [("MorphoDepot/DeepTrenchA", 5)])
+    check("both sources are always queried",
+          len(logic.restCommands) == 1 and len(logic.searchCommands) == 1)
+
+
+def test_search_asks_for_open_issues_assigned_to_me():
+    logic = FakeLogic()
+    logic.issueList()
+    sent = " ".join(logic.searchCommands[0])
+    check("query is is:issue is:open assignee:@me",
+          all(term in sent for term in ("is:issue", "is:open", "assignee:@me")))
+
+
+def test_an_issue_in_both_sources_appears_once():
+    logic = FakeLogic(
+        restResponse=[restIssue(2, "Segment the premaxilla",
+                                "muratmaga/rana-clamitans-full-body", MD)],
+        searchPages=[_searchPage([
+            searchIssue(2, "Segment the premaxilla", "muratmaga/rana-clamitans-full-body", MD),
+            searchIssue(5, "murat test", "MorphoDepot/DeepTrenchA", ["morphodepot"])])])
+    check("deduplicated, REST entry first, search-only entry added",
+          [(i["repository"]["nameWithOwner"], i["number"]) for i in logic.issueList()]
+          == [("muratmaga/rana-clamitans-full-body", 2), ("MorphoDepot/DeepTrenchA", 5)])
+
+
+def test_search_results_are_filtered_by_topic_and_shape():
+    logic = FakeLogic(searchPages=[_searchPage([
+        searchIssue(6, "Monthly SU snapshot", "MorphoCloud/MorphoCloudAnalytics", []),
+        {},  # a non-Issue search node arrives as an empty object
+        searchIssue(5, "murat test", "MorphoDepot/DeepTrenchA", ["morphodepot"])])])
+    issues = logic.issueList()
+    check("only the morphodepot-topic issue survives, in the tab's shape",
+          [(i["number"], i["title"], i["repository"]["name"]) for i in issues]
+          == [(5, "murat test", "DeepTrenchA")])
+
+
+def test_search_paginates():
+    logic = FakeLogic(searchPages=[
+        _searchPage([searchIssue(1, "a", "o/r1", ["morphodepot"])], hasNext=True, cursor="c1"),
+        _searchPage([searchIssue(2, "b", "o/r2", ["morphodepot"])])])
+    check("both pages are read", [i["number"] for i in logic.issueList()] == [1, 2])
+    check("the second request carries the cursor", "cursor=c1" in logic.searchCommands[1])
+
+
+def test_a_failed_search_raises_rather_than_shortening_the_list():
+    logic = FakeLogic(
+        restResponse=[restIssue(2, "Segment the premaxilla",
+                                "muratmaga/rana-clamitans-full-body", MD)],
+        searchPages=[{"errors": [{"message": "API rate limit exceeded"}]}])
+    try:
+        logic.issueList()
+        raised = False
+    except RuntimeError:
+        raised = True
+    check("a search failure is an error, not a silently shorter list", raised)
 
 
 # --- authored pull requests (Annotate, segmenter) ----------------------------------------
