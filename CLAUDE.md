@@ -34,5 +34,7 @@ maintainer.
 ## Repository facts
 
 - Development happens on `main`; `5.10` is the stable branch.
-- `CMakeLists.txt` must list every `MorphoDepotLib/*.py` (R8).
-- Unit tests: `python3 MorphoDepot/Testing/Python/test_workstate.py` (no Slicer needed).
+- `MorphoDepot/CMakeLists.txt` must list every `MorphoDepotLib/*.py` (R8).
+- Unit tests that run without Slicer: every `MorphoDepot/Testing/Python/test_*.py`, e.g.
+  `for t in MorphoDepot/Testing/Python/test_*.py; do python3 "$t" || break; done`.
+  Passing them is not a live check (P1).

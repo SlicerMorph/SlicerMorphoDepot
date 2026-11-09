@@ -28,4 +28,5 @@ count. If a live check could not be run, say so here. -->
 
 ## Unit tests
 
-<!-- Commands run and result. -->
+<!-- Commands run and result. Unit tests built on recorded or invented GitHub responses are not
+live checks and do not count as evidence of how GitHub behaves (WORKFLOW_RULES.md, P1). -->

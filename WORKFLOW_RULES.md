@@ -73,14 +73,19 @@ is still private. No automated job deletes repositories.
 
 ### R7. Words people read
 
-The only two words for repository kinds are **Organizational** and **Personal**. The hidden
-`repoType` answer strings in `accession_schema.py` must **not** be renamed:
-`widget_create.py` routes a repository by `startswith("Archival")`, so a rename silently sends
-every repository to the creator's personal account.
+The only two words for repository kinds are **Organizational** and **Personal**. Use them in all
+new or changed text people read (dialogs, labels, tooltips, messages, docs). Older text that
+still uses other words is not to be renamed as a side task; that is the maintainer's call.
+
+The hidden `repoType` answer strings in `accession_schema.py` must **not** be renamed. They are
+stored in every `MorphoDepotAccession.json`, and `widget_create.py` depends on them exactly: it
+routes a repository by `startswith("Archival")` (a rename silently sends every repository to the
+creator's personal account) and compares the full string
+`"Archival (intended for long-term maintenance)"` to block a default color table.
 
 ### R8. The packaged extension must load
 
-`CMakeLists.txt` must list every `MorphoDepotLib/*.py`. A missing entry ships a module that fails
+`MorphoDepot/CMakeLists.txt` must list every `MorphoDepotLib/*.py`. A missing entry ships a module that fails
 to import in the Extensions Manager build while working fine from a source checkout.
 
 ---
@@ -109,6 +114,8 @@ request template). "Not touched" needs a one-line reason.
 These code paths always touch at least R1–R5:
 
 - `MorphoDepotLib/logic_workstate.py`: Annotate and Review lists
+- `MorphoDepotLib/logic_repoclerk.py`: the journal, which supplies the CURATOR half of the
+  reviewer's repository list (R5) and lags behind GitHub (R3)
 - `MorphoDepotLib/logic_github.py`: issue/PR lookups (`issuePR`, …)
 - `MorphoDepotLib/logic_repo.py`: loading an issue, forking, cloning (`loadIssue`, …)
 - `MorphoDepotLib/logic_contribute.py`: committing, `requestReview`, `approvePR`
