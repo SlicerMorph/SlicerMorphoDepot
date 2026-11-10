@@ -104,6 +104,34 @@ class WorkStateMixin:
             raise RuntimeError(f"GitHub GraphQL error: {messages}")
         return payload.get("data") or {}
 
+    def _restArray(self, command, what):
+        """The JSON array a paginated `gh api` REST call returns; anything else raises.
+
+        Not `ghJSON()`: that turns output it cannot parse into `[]`, which here would read as
+        "nothing assigned to you" -- the failure this module exists to prevent.  gh 2.70 merges
+        the pages of an array into one array (checked live 2026-11-09); pages printed back to
+        back (`[...][...]`) are accepted too, so a gh that does not merge still works.
+        """
+        text = (self.gh(command) or "").strip()
+        if not text:
+            raise RuntimeError(f"GitHub returned nothing for {what}")
+        decoder = json.JSONDecoder()
+        entries = []
+        position = 0
+        while position < len(text):
+            try:
+                value, position = decoder.raw_decode(text, position)
+            except ValueError as e:
+                raise RuntimeError(f"Could not parse the GitHub response for {what}: {e}")
+            if not isinstance(value, list):
+                raise RuntimeError(
+                    f"GitHub returned {type(value).__name__} instead of a list for {what}: "
+                    f"{text[:200]}")
+            entries.extend(value)
+            while position < len(text) and text[position].isspace():
+                position += 1
+        return entries
+
     def _paginate(self, query, connectionKey, what):
         """Every node of `viewer.<connectionKey>`, following pages until GitHub says stop.
 
@@ -237,10 +265,9 @@ class WorkStateMixin:
         The endpoint returns pull requests alongside issues; those carry a `pull_request` key and
         are dropped, since the Annotate tab lists work to start, not work already submitted.
         """
-        raw = self.ghJSON(["api", "--paginate",
-                           f"/issues?filter=assigned&state=open&per_page={_PAGE}"])
-        if not isinstance(raw, list):
-            return []
+        raw = self._restArray(["api", "--paginate",
+                               f"/issues?filter=assigned&state=open&per_page={_PAGE}"],
+                              "your assigned issues")
         issues = []
         for entry in raw:
             if not isinstance(entry, dict) or "pull_request" in entry:
