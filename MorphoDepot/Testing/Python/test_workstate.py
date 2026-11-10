@@ -63,11 +63,15 @@ class FakeLogic(workstate.WorkStateMixin):
         self.searchCommands = []
         self.restCommands = []
 
-    def ghJSON(self, command):
-        self.restCommands.append(command)
-        return self.restResponse
-
     def gh(self, command):
+        # No ghJSON stub on purpose: the REST call must go through gh() and parse its own output,
+        # because ghJSON() turns unparseable output into [] (an empty work list).
+        if not any(part.startswith("query=") for part in command):
+            self.restCommands.append(command)
+            # A str is raw gh output, sent as is; anything else is serialised as GitHub would.
+            if isinstance(self.restResponse, str):
+                return self.restResponse
+            return json.dumps(self.restResponse)
         query = next(part[len("query="):] for part in command if part.startswith("query="))
         self.queries.append(query)
         if "search(" in query:
@@ -243,8 +247,9 @@ def test_search_asks_for_open_issues_assigned_to_me():
     logic = FakeLogic()
     logic.issueList()
     sent = " ".join(logic.searchCommands[0])
-    check("query is is:issue is:open assignee:@me",
-          all(term in sent for term in ("is:issue", "is:open", "assignee:@me")))
+    check("query is is:issue is:open assignee:@me archived:false",
+          all(term in sent
+              for term in ("is:issue", "is:open", "assignee:@me", "archived:false")))
 
 
 def test_an_issue_in_both_sources_appears_once():
@@ -289,6 +294,51 @@ def test_a_failed_search_raises_rather_than_shortening_the_list():
     except RuntimeError:
         raised = True
     check("a search failure is an error, not a silently shorter list", raised)
+
+
+def test_hitting_the_search_page_backstop_is_reported():
+    """Same rule as the PR backstop: a truncated assigned-issue list must say so."""
+    page = _searchPage([searchIssue(1, "a", "o/r", ["morphodepot"])], hasNext=True, cursor="c")
+    logic = FakeLogic(searchPages=[page] * workstate._MAX_PAGES)
+    warnings = _captureWarnings(logic.issueList)
+    check("the search stops at the backstop", len(logic.searchCommands) == workstate._MAX_PAGES)
+    check("stopping at the backstop logs a warning",
+          any("assigned issues" in w and "incomplete" in w for w in warnings))
+
+
+def test_a_rest_answer_that_is_not_a_list_raises():
+    """R4: an error object from GitHub (bad token, rate limit) is not "nothing assigned"."""
+    logic = FakeLogic(restResponse={"message": "Bad credentials"})
+    check("a non-list REST answer is an error, not an empty list",
+          _raises(logic.issueList, RuntimeError))
+
+
+def test_an_unparseable_rest_answer_raises():
+    logic = FakeLogic(restResponse="gh: something went wrong")
+    check("unparseable REST output is an error, not an empty list",
+          _raises(logic.issueList, RuntimeError))
+
+
+def test_an_empty_rest_answer_raises():
+    logic = FakeLogic(restResponse="")
+    check("empty REST output is an error, not an empty list",
+          _raises(logic.issueList, RuntimeError))
+
+
+def test_rest_pages_printed_back_to_back_are_merged():
+    """A gh that prints each page's array separately (`[...][...]`) must still list everything."""
+    first = json.dumps([restIssue(2, "a", "muratmaga/rana-clamitans-full-body", MD)])
+    second = json.dumps([restIssue(3, "b", "muratmaga/rana-clamitans-full-body", MD)])
+    logic = FakeLogic(restResponse=first + "\n" + second)
+    check("both pages are listed", [i["number"] for i in logic.issueList()] == [2, 3])
+
+
+def test_an_empty_rest_list_is_not_an_error():
+    """Nothing assigned through REST is a normal answer, not a failure."""
+    logic = FakeLogic(restResponse=[], searchPages=[_searchPage([
+        searchIssue(5, "murat test", "MorphoDepot/DeepTrenchA", ["morphodepot"])])])
+    check("an empty REST list still lists the search results",
+          [i["number"] for i in logic.issueList()] == [5])
 
 
 # --- authored pull requests (Annotate, segmenter) ----------------------------------------
